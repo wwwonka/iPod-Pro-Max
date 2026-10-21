@@ -54,9 +54,9 @@ enum IPodGeneration: String, Codable, CaseIterable {
     /// What the app can do with this generation.
     var supportLevel: IPodSupportLevel {
         switch self {
-        case .first, .second, .third, .fourth, .photo, .mini1, .mini2, .nano1, .nano2, .video1, .video2:
+        case .first, .second, .third, .fourth, .photo, .mini1, .mini2, .nano1, .nano2, .video1, .video2, .classic3:
             return .full
-        case .classic1, .classic2, .classic3, .nano3, .nano4:
+        case .classic1, .classic2, .nano3, .nano4:
             return .experimental
         case .unknown:
             return .experimental

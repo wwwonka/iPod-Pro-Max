@@ -48,8 +48,13 @@ struct VideosView: View {
                     }
                 }
                 Button { appState.requestAddFiles = true } label: { Label("Add Videos", systemImage: "plus") }
+                if !library.missingPaths.isEmpty {
+                    Button(role: .destructive) { library.removeMissingTracks() } label: { Label("Remove Missing Files", systemImage: "exclamationmark.triangle") }
+                        .help("Remove videos whose files were deleted or moved outside iPod Pro Max")
+                }
             }
         }
+        .task { await library.refreshMissingFiles() }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             Task {
                 var urls: [URL] = []
@@ -78,16 +83,27 @@ struct VideosView: View {
         Table(visible, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Sync") { t in
                 Toggle("", isOn: Binding(get: { t.syncEnabled }, set: { library.setSync($0, forTracks: selection.contains(t.id) ? selection : [t.id]) })).labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
             .width(40)
             TableColumn("Title", value: \.title) { t in
                 HStack(spacing: 8) {
                     ArtworkThumb(url: library.artworkURL(t.artworkKey), size: 28, cornerRadius: 3, placeholder: "film")
                     Text(t.title).lineLimit(1)
-                    if !t.fileExists { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("File not found") }
+                    if library.missingPaths.contains(t.path) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("File not found") }
                 }
             }
             .width(min: 200, ideal: 340)
+            TableColumn("Category") { t in
+                Picker("", selection: Binding(
+                    get: { t.videoCategory ?? .movie },
+                    set: { v in library.setVideoCategory(v, forTracks: selection.contains(t.id) ? selection : [t.id]) }
+                )) {
+                    ForEach(VideoCategory.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+            }
+            .width(min: 90, ideal: 110)
             TableColumn("Time", value: \.durationMs) { t in Text(Format.duration(ms: t.durationMs)).monospacedDigit() }.width(70)
             TableColumn("Source") { t in
                 Text("\(t.videoWidth ?? 0)×\(t.videoHeight ?? 0) \(t.fileExtension.uppercased())").foregroundStyle(.secondary)
@@ -104,6 +120,11 @@ struct VideosView: View {
             let target = ids.isEmpty ? selection : ids
             Button("Sync to iPod") { library.setSync(true, forTracks: target) }
             Button("Don't Sync") { library.setSync(false, forTracks: target) }
+            Menu("Category") {
+                ForEach(VideoCategory.allCases, id: \.self) { c in
+                    Button(c.title) { library.setVideoCategory(c, forTracks: target) }
+                }
+            }
             Divider()
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting(library.tracks.filter { target.contains($0.id) }.map(\.url))

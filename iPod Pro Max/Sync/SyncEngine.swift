@@ -14,6 +14,7 @@ struct SyncOptions: Sendable {
     var writeArtwork = true
     var syncPodcasts = true
     var syncPhotos = true
+    var useAlbumArtistForGrouping = true
     var maxParallelCopies = 1
 }
 
@@ -115,6 +116,7 @@ final class SyncEngine: @unchecked Sendable {
 
         // 2. Figure out what should be on the device.
         report("Planning", "Comparing library and iPod…")
+        let resolvedTracks = await resolveAudiobookTracks(request.tracks)
         let dbidsOnDevice = Set(db.tracks.map(\.dbid))
         let ourDBIDs = Set(record.trackDBIDs.values).union(record.episodeDBIDs.values)
 
@@ -129,15 +131,19 @@ final class SyncEngine: @unchecked Sendable {
         var trackIDByDBID: [UInt64: UUID] = [:]
         var episodeIDByDBID: [UInt64: UUID] = [:]
 
-        for t in request.tracks {
+        for t in resolvedTracks {
             guard t.fileExists else {
                 result.failed.append("Missing file: \(t.title)")
                 continue
             }
             if let dbid = record.trackDBIDs[t.id], dbidsOnDevice.contains(dbid), deviceFileExists(db, dbid: dbid) {
-                desiredDBIDs.insert(dbid)
-                trackIDByDBID[dbid] = t.id
-                continue
+                if needsLyricsFix(t, record: record) {
+                    note("Re-copying “\(t.title)” to fix its lyrics tag on this iPod.")
+                } else {
+                    desiredDBIDs.insert(dbid)
+                    trackIDByDBID[dbid] = t.id
+                    continue
+                }
             }
             let estimate: Int64
             if t.isVideo {
@@ -233,6 +239,14 @@ final class SyncEngine: @unchecked Sendable {
                     report("Converting", "\(i + 1) of \(adds.count): \(name)", fraction: bytesNeeded > 0 ? Double(copied) / Double(bytesNeeded) : nil)
                     source = try await Transcoder.cachedAAC(for: t, cacheDir: request.transcodeDir)
                     ext = "m4a"
+                } else if let t = add.libraryTrack, t.hasLyrics, ext == "mp3" {
+                    // The classic's Lyrics screen only reads ID3v2.3 USLT; most taggers write v2.4.
+                    let dest = request.transcodeDir.appendingPathComponent("Lyrics").appendingPathComponent("\(t.id.uuidString).mp3")
+                    if let fixed = try LyricsTagFixup.ensureID3v23(for: source, destination: dest) {
+                        source = fixed
+                        note("Rewrote ID3 tag to v2.3 so lyrics show: \(name)")
+                    }
+                    record.lyricsFixedDates[t.id] = t.dateModified ?? Date()
                 }
                 let (ipodPath, destURL) = try allocateDestination(device: device, folderCount: folderCount, ext: ext)
                 try fm.copyItem(at: source, to: destURL)
@@ -262,17 +276,18 @@ final class SyncEngine: @unchecked Sendable {
         }
 
         // 7. Refresh mutable metadata on tracks we manage.
-        let libraryByID = Dictionary(request.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let libraryByID = Dictionary(resolvedTracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var episodeByID: [UUID: (PodcastShow, PodcastEpisode)] = [:]
         for s in request.shows { for e in s.episodes { episodeByID[e.id] = (s, e) } }
         for i in db.tracks.indices {
             let dbid = db.tracks[i].dbid
             if let tid = trackIDByDBID[dbid], let lt = libraryByID[tid] {
+                let albumArtist = Self.resolvedAlbumArtist(for: lt, groupByAlbumArtist: request.options.useAlbumArtistForGrouping)
                 if lt.rating > 0 { db.tracks[i].rating = UInt8(lt.rating * 20) }
                 db.tracks[i].title = lt.title
-                db.tracks[i].artist = lt.artist
+                db.tracks[i].artist = albumArtist ?? lt.artist
                 db.tracks[i].album = lt.album
-                db.tracks[i].albumArtist = lt.albumArtist
+                db.tracks[i].albumArtist = albumArtist
                 db.tracks[i].genre = lt.genre
                 db.tracks[i].composer = lt.composer
                 db.tracks[i].year = UInt32(max(lt.year, 0))
@@ -281,6 +296,10 @@ final class SyncEngine: @unchecked Sendable {
                 db.tracks[i].discNumber = UInt32(max(lt.discNumber, 0))
                 db.tracks[i].discCount = UInt32(max(lt.discCount, 0))
                 db.tracks[i].compilation = lt.compilation ? 1 : 0
+                db.tracks[i].lyricsFlag = lt.hasLyrics ? 1 : 0
+                db.tracks[i].sortArtist = SortKey.articleAware(db.tracks[i].artist).flatMap { $0 == db.tracks[i].artist ? nil : $0 }
+                db.tracks[i].sortAlbumArtist = SortKey.articleAware(albumArtist).flatMap { $0 == albumArtist ? nil : $0 }
+                db.tracks[i].sortAlbum = chronoSortAlbum(for: lt, albumArtist: albumArtist)
             } else if let eid = episodeIDByDBID[dbid], let (show, ep) = episodeByID[eid] {
                 db.tracks[i].title = ep.title
                 db.tracks[i].album = show.title
@@ -381,6 +400,14 @@ final class SyncEngine: @unchecked Sendable {
         return FileManager.default.fileExists(atPath: url.path)
     }
 
+    /// True when a track already on this iPod has lyrics tagged in a version the classic ignores, and
+    /// hasn't already been re-copied (with the fix) since its current `dateModified`.
+    private func needsLyricsFix(_ t: LibraryTrack, record: DeviceSyncRecord) -> Bool {
+        guard t.hasLyrics, t.fileExtension.lowercased() == "mp3" else { return false }
+        if let dm = t.dateModified, record.lyricsFixedDates[t.id] == dm { return false } // already handled since this edit
+        return (LyricsTagFixup.id3Version(of: t.url) ?? 0) >= 4
+    }
+
     private func ensureMusicFolders(device: IPodDevice) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: device.musicDir, withIntermediateDirectories: true)
@@ -405,16 +432,113 @@ final class SyncEngine: @unchecked Sendable {
         throw SyncError.writeFailed("Couldn't find a free file name on the iPod.")
     }
 
+    // MARK: - Audiobook merging
+
+    /// Multi-file audiobooks don't play well as separate iPod tracks (one bookmark per chapter, no
+    /// continuous playback, no real chapter navigation). For any book with more than one chapter file,
+    /// this merges them into one cached .m4b with real chapter markers and returns a single synthetic
+    /// track for it — standing in for the whole book — so the rest of the pipeline (dedup, add/remove,
+    /// dbid tracking) treats it exactly like any other single-file track. Single-chapter books and
+    /// everything else pass through unchanged.
+    private func resolveAudiobookTracks(_ tracks: [LibraryTrack]) async -> [LibraryTrack] {
+        let audiobooks = tracks.filter(\.isAudiobook)
+        guard !audiobooks.isEmpty else { return tracks }
+        let others = tracks.filter { !$0.isAudiobook }
+
+        let byBook = Dictionary(grouping: audiobooks) { "\($0.album ?? "")\u{1}\($0.artist ?? "")" }
+        var resolved: [LibraryTrack] = []
+        for (_, chapters) in byBook {
+            let sorted = chapters.sorted { ($0.trackNumber, $0.title) < ($1.trackNumber, $1.title) }
+            guard sorted.count > 1 else {
+                resolved.append(contentsOf: sorted)
+                continue
+            }
+            do {
+                resolved.append(try await mergedAudiobookTrack(chapters: sorted))
+            } catch {
+                note("Couldn't merge “\(sorted.first?.album ?? "audiobook")” into one file (\(error.localizedDescription)); syncing its chapters separately instead.")
+                resolved.append(contentsOf: sorted)
+            }
+        }
+        return others + resolved
+    }
+
+    /// Caches the merge in `transcodeDir/Audiobooks`, keyed by the first chapter's (stable) id, and
+    /// only redoes it when a source chapter is newer than the cached file.
+    private func mergedAudiobookTrack(chapters: [LibraryTrack]) async throws -> LibraryTrack {
+        let first = chapters[0]
+        let cacheDir = request.transcodeDir.appendingPathComponent("Audiobooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let dest = cacheDir.appendingPathComponent("\(first.id.uuidString).m4b")
+
+        let newestSource = chapters.compactMap { try? $0.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }.max() ?? .distantFuture
+        let cacheDate = try? dest.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        if cacheDate == nil || cacheDate! < newestSource {
+            try await AudiobookMuxer.merge(chapters: chapters.map { (title: $0.title, url: $0.url) }, to: dest)
+        }
+
+        var merged = first
+        merged.title = first.album ?? first.title
+        merged.trackNumber = 0
+        merged.trackCount = 0
+        merged.path = dest.path
+        merged.fileExtension = "m4b"
+        merged.durationMs = chapters.reduce(0) { $0 + $1.durationMs }
+        merged.fileSize = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? chapters.reduce(0) { $0 + $1.fileSize }
+        return merged
+    }
+
     // MARK: - Track construction
+
+    /// Prefers the tagged album artist for grouping (when `groupByAlbumArtist` is on); falls back to
+    /// "Various Artists" for a tagged compilation with no album artist, otherwise nil (per-track
+    /// artist is used as-is). Off, this is a no-op so the on-device Artist always matches the file tag.
+    private static func resolvedAlbumArtist(for t: LibraryTrack, groupByAlbumArtist: Bool) -> String? {
+        guard groupByAlbumArtist else { return nil }
+        if let aa = t.albumArtist, !aa.isEmpty { return aa }
+        if t.compilation, let a = t.artist, !a.isEmpty { return "Various Artists" }
+        return nil
+    }
+
+    private static func albumKey(album: String, artist: String?) -> String { "\(album)\u{1}\(artist ?? "")" }
+
+    /// The "most common tagged year" per album, keyed the same way the device groups that album, so
+    /// every track of an album gets the same year even if one file is mistagged.
+    private static func canonicalAlbumYears(for tracks: [LibraryTrack], groupByAlbumArtist: Bool) -> [String: Int] {
+        var counts: [String: [Int: Int]] = [:]
+        for t in tracks where t.year > 0 {
+            guard let album = t.album, !album.isEmpty else { continue }
+            let key = albumKey(album: album, artist: resolvedAlbumArtist(for: t, groupByAlbumArtist: groupByAlbumArtist) ?? t.artist)
+            counts[key, default: [:]][t.year, default: 0] += 1
+        }
+        return counts.compactMapValues { byYear in byYear.max(by: { $0.value < $1.value })?.key }
+    }
+
+    /// Sort key only — never shown on screen. The album's title stays "Amnesiac"; its Sort Album
+    /// becomes "7998 Amnesiac" (9999 minus the year), so the device's own plain alphabetical sort —
+    /// ascending, since it has no concept of "newest first" — reads newest-to-oldest instead.
+    private func chronoSortAlbum(for t: LibraryTrack, albumArtist: String?) -> String? {
+        guard let album = t.album, !album.isEmpty else { return nil }
+        let year = albumYears[Self.albumKey(album: album, artist: albumArtist ?? t.artist)] ?? (t.year > 0 ? t.year : nil)
+        guard let year else { return nil }
+        return String(format: "%04d ", max(0, 9999 - year)) + album
+    }
+
+    /// Computed once per sync from every track being synced.
+    private lazy var albumYears: [String: Int] = Self.canonicalAlbumYears(for: request.tracks, groupByAlbumArtist: request.options.useAlbumArtistForGrouping)
 
     private func makeTrack(from t: LibraryTrack, ipodPath: String, fileSize: UInt32, extOnDevice: String) -> IPodTrack {
         var track = IPodTrack(dbid: IPodTrack.randomDBID())
         if t.isVideo { return makeVideoTrack(from: t, ipodPath: ipodPath, fileSize: fileSize) }
         let info = IPodFileType.info(forExtension: extOnDevice, isLossless: t.isLossless && !t.needsTranscode)
         track.title = t.title
-        track.artist = t.artist
+        // Various-artist albums (features, compilations) otherwise fragment into one Artists-list
+        // entry per track and repeat the album once per artist in Cover Flow: group by album artist
+        // instead of the per-track artist whenever one is tagged — unless the user turned that off.
+        let resolvedAlbumArtist = Self.resolvedAlbumArtist(for: t, groupByAlbumArtist: request.options.useAlbumArtistForGrouping)
+        track.artist = resolvedAlbumArtist ?? t.artist
         track.album = t.album
-        track.albumArtist = t.albumArtist
+        track.albumArtist = resolvedAlbumArtist
         track.genre = t.genre
         track.composer = t.composer
         track.comment = t.comment
@@ -446,7 +570,18 @@ final class SyncEngine: @unchecked Sendable {
         track.mediaType = IPodMediaType.audio
         track.markUnplayed = 0x01
         track.hasArtwork = 0x02
-        track.sortArtist = SortKey.articleAware(t.artist).flatMap { $0 == t.artist ? nil : $0 }
+        track.lyricsFlag = t.hasLyrics ? 1 : 0
+        track.sortArtist = SortKey.articleAware(track.artist).flatMap { $0 == track.artist ? nil : $0 }
+        track.sortAlbumArtist = SortKey.articleAware(track.albumArtist).flatMap { $0 == track.albumArtist ? nil : $0 }
+        track.sortAlbum = chronoSortAlbum(for: t, albumArtist: resolvedAlbumArtist)
+        if t.isAudiobook {
+            track.mediaType = IPodMediaType.audiobook
+            track.rememberPlaybackPosition = 1
+            // Mirror the podcast track's flags (the only other "remembered position" media type
+            // we write): skip in Shuffle, and flag4, which iTunes sets alongside remember-position.
+            track.skipWhenShuffling = 1
+            track.flag4 = 0x01
+        }
         return track
     }
 
@@ -471,7 +606,11 @@ final class SyncEngine: @unchecked Sendable {
         track.year = UInt32(max(t.year, 0))
         track.bitrate = t.durationMs > 0 ? UInt32(Double(fileSize) * 8 / Double(t.durationMs)) : 0
         track.sampleRate = 44100
-        track.mediaType = IPodMediaType.movie
+        switch t.videoCategory ?? .movie {
+        case .movie: track.mediaType = IPodMediaType.movie
+        case .tvShow: track.mediaType = IPodMediaType.tvShow
+        case .musicVideo: track.mediaType = IPodMediaType.musicVideo
+        }
         track.movieFlag = 1
         track.markUnplayed = 0x01
         track.hasArtwork = 0x02

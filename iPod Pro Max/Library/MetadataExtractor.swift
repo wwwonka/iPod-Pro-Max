@@ -32,6 +32,8 @@ struct ExtractedMetadata {
     var artworkData: Data?
     var isPodcast = false
     var releaseDate: Date?
+    /// Whether the file carries a lyrics tag (USLT / ©lyr / Vorbis LYRICS), so the iPod shows its Lyrics screen.
+    var hasLyrics = false
 }
 
 enum MetadataExtractor {
@@ -137,6 +139,8 @@ enum MetadataExtractor {
                 if let n = await num() { md.compilation = n != 0 }
             case .commonIdentifierArtwork, .id3MetadataAttachedPicture, .iTunesMetadataCoverArt:
                 if md.artworkData == nil, let d = try? await item.load(.dataValue), !d.isEmpty { md.artworkData = d }
+            case .id3MetadataUnsynchronizedLyric, .iTunesMetadataLyrics:
+                if let s = await str(), !s.isEmpty { md.hasLyrics = true }
             default:
                 // Vorbis comments (FLAC/OGG) arrive with plain string keys.
                 if let vk = (item.key as? String)?.uppercased(), item.keySpace == .init(rawValue: "vorb") || item.identifier?.rawValue.hasPrefix("vorb/") == true {
@@ -159,6 +163,8 @@ enum MetadataExtractor {
                     case "COMPILATION": if let n = await num() { md.compilation = n != 0 }
                     case "METADATA_BLOCK_PICTURE", "COVERART":
                         if md.artworkData == nil, let d = try? await item.load(.dataValue), !d.isEmpty { md.artworkData = d }
+                    case "LYRICS", "UNSYNCEDLYRICS", "UNSYNCEDLYRIC":
+                        if let s = await str(), !s.isEmpty { md.hasLyrics = true }
                     default: break
                     }
                     continue

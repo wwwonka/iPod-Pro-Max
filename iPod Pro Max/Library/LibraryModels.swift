@@ -15,6 +15,21 @@ enum TrackSource: String, Codable {
 enum MediaKind: String, Codable {
     case song
     case video
+    case audiobook
+}
+
+/// Which Videos submenu a video appears under on the iPod (Movies/TV Shows/Music Videos), driven by
+/// the track's mediaType bits — no special playlist needed, unlike Podcasts.
+enum VideoCategory: String, Codable, CaseIterable {
+    case movie, tvShow, musicVideo
+
+    var title: String {
+        switch self {
+        case .movie: return "Movie"
+        case .tvShow: return "TV Show"
+        case .musicVideo: return "Music Video"
+        }
+    }
 }
 
 struct LibraryTrack: Identifiable, Codable, Hashable {
@@ -26,6 +41,8 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
     var kind: MediaKind?
     var videoWidth: Int?
     var videoHeight: Int?
+    /// nil defaults to Movie for backward compatibility with libraries saved before categories existed.
+    var videoCategory: VideoCategory?
 
     var title: String
     var artist: String?
@@ -49,6 +66,7 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
     var isLossless: Bool = false
     var compilation: Bool = false
     var bpm: Int = 0
+    var hasLyrics: Bool = false
     /// 0…5 stars
     var rating: Int = 0
     var playCount: Int = 0
@@ -62,6 +80,7 @@ struct LibraryTrack: Identifiable, Codable, Hashable {
 
     var mediaKind: MediaKind { kind ?? .song }
     var isVideo: Bool { mediaKind == .video }
+    var isAudiobook: Bool { mediaKind == .audiobook }
 
     /// Songs in non-iPod formats are converted to AAC; every video is converted to iPod H.264.
     var needsTranscode: Bool {
@@ -111,6 +130,19 @@ struct PodcastEpisode: Identifiable, Codable, Hashable {
     var localURL: URL? { localPath.map { URL(fileURLWithPath: $0) } }
 }
 
+/// Where a show's episodes come from. `rss` is a standard feed; `ohdio` and `youtube` are fetched
+/// natively (Radio-Canada's OHdio API, a YouTube channel/playlist via yt-dlp) and converted into the
+/// same shape, so the rest of the app (storage, UI, sync, download) never needs to know the difference.
+enum PodcastSourceKind: String, Codable {
+    case rss, ohdio, youtube
+
+    static func detect(from url: URL) -> PodcastSourceKind {
+        if OHdioFeed.isOHdioURL(url) { return .ohdio }
+        if YouTubeFeed.isYouTubeURL(url) { return .youtube }
+        return .rss
+    }
+}
+
 struct PodcastShow: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
     var feedURL: URL
@@ -119,6 +151,7 @@ struct PodcastShow: Identifiable, Codable, Hashable {
     var summary: String?
     var imageURL: URL?
     var artworkKey: String?
+    var sourceKind: PodcastSourceKind = .rss
     /// Number of most-recent episodes to keep downloaded and on the iPod (0 = all downloaded episodes).
     var keepLatest: Int = 5
     var syncEnabled: Bool = true
@@ -168,9 +201,18 @@ struct DeviceSyncRecord: Codable, Hashable {
     var removeUnknownTracks: Bool = false
     var syncVideos: Bool? = true
     var syncPhotos: Bool? = true
+    var syncAudiobooks: Bool? = true
+    /// Whether syncing replaces a track's Artist with its Album Artist on this iPod (see SyncEngine);
+    /// on by default since that's what keeps multi-artist albums from fragmenting on the device.
+    var useAlbumArtistForGrouping: Bool? = true
+    /// Track id → the `dateModified` it had when its lyrics tag was last confirmed/repaired on this
+    /// iPod. Lets a sync re-copy a track to fix its lyrics exactly once per edit, not on every sync.
+    var lyricsFixedDates: [UUID: Date] = [:]
 
     var videosEnabled: Bool { syncVideos ?? true }
     var photosEnabled: Bool { syncPhotos ?? true }
+    var audiobooksEnabled: Bool { syncAudiobooks ?? true }
+    var albumArtistGroupingEnabled: Bool { useAlbumArtistForGrouping ?? true }
 }
 
 /// Which Photos-app albums go to iPods (a library-wide choice; each iPod can turn photo syncing off).
@@ -191,4 +233,6 @@ struct LibraryDocument: Codable {
     var shows: [PodcastShow] = []
     var deviceRecords: [String: DeviceSyncRecord] = [:]
     var photoSelection: PhotoSelection? = PhotoSelection()
+    /// Folder the user pointed Audiobooks at; rescanned on demand.
+    var audiobooksFolderPath: String? = nil
 }

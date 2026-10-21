@@ -47,22 +47,25 @@ struct IPodDevice: Identifiable, Hashable {
     // MARK: Capabilities
 
     var checksumType: IPodChecksumType {
-        if let v = extendedDBVersion {
-            switch v {
-            case 0, 1, 2: return .none
-            case 3: return .hash58
-            case 4: return .hash72
-            case 5: return .hashAB
-            default: return .unknown
-            }
-        }
+        // DBVersion in SysInfoExtended is the iTunesDB format version (e.g. 0x30 on a real 2009
+        // classic), not a hash-scheme id — only early iPods report it in the 0-2 range here. For
+        // every other value, trust the model table's hash requirement instead of guessing .unknown.
+        if let v = extendedDBVersion, v <= 2 { return .none }
         return generation.checksum
     }
 
     var supportLevel: IPodSupportLevel {
         switch checksumType {
         case .none: return generation == .unknown ? .experimental : .full
-        case .hash58: return firewireGUID == nil ? .unsupported : .experimental
+        case .hash58:
+            guard firewireGUID != nil else { return .unsupported }
+            // Confirmed working on real classic3 (160 GB, 2009) hardware: hash58 signing, playlists,
+            // artwork, podcasts/audiobooks, sort fields. Earlier classics share the mechanism but
+            // weren't the hardware actually tested, so stay experimental out of caution; nano 3G/4G too.
+            switch generation {
+            case .classic3: return .full
+            default: return .experimental
+            }
         default: return .unsupported
         }
     }

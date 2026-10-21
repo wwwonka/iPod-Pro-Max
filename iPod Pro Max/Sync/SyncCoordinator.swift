@@ -25,6 +25,9 @@ final class SyncCoordinator {
 
     private(set) var statuses: [String: Status] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
+    /// The detached task actually running `SyncEngine.run()`. Cancelling only `tasks` doesn't reach it,
+    /// since `Task.detached` starts an independent task tree that doesn't inherit its parent's cancellation.
+    private var engineTasks: [String: Task<SyncResult, Error>] = [:]
 
     let library: LibraryStore
     let devices: DeviceMonitor
@@ -44,6 +47,7 @@ final class SyncCoordinator {
 
     func cancel(_ device: IPodDevice) {
         tasks[device.id]?.cancel()
+        engineTasks[device.id]?.cancel()
     }
 
     func startSync(_ device: IPodDevice, downloadPodcastsFirst: Bool = true) {
@@ -62,9 +66,12 @@ final class SyncCoordinator {
         options.writeArtwork = defaults.object(forKey: "syncArtwork") as? Bool ?? true
         options.syncPodcasts = record.syncPodcasts
         options.syncPhotos = record.photosEnabled
+        options.useAlbumArtistForGrouping = record.albumArtistGroupingEnabled
 
         let task = Task { [weak self] in
             guard let self else { return }
+            self.update(device.id) { $0.phase = "Checking library"; $0.detail = "Looking for edited tags…" }
+            await library.refreshChangedTrackMetadata()
             if downloadPodcastsFirst && record.syncPodcasts && !library.pendingEpisodeDownloads.isEmpty {
                 self.update(device.id) { $0.phase = "Podcasts"; $0.detail = "Downloading new episodes…" }
                 await library.downloadPendingEpisodes()
@@ -89,8 +96,10 @@ final class SyncCoordinator {
                     }
                 }
             }
+            let engineTask = Task.detached(priority: .userInitiated) { try await engine.run() }
+            self.engineTasks[deviceID] = engineTask
             do {
-                let result = try await Task.detached(priority: .userInitiated) { try await engine.run() }.value
+                let result = try await engineTask.value
                 library.updateRecord(result.record)
                 library.applyPlayback(trackStats: result.trackStats, episodeStats: result.episodeStats)
                 library.pruneOldDownloads()
@@ -122,6 +131,7 @@ final class SyncCoordinator {
                 }
             }
             self.tasks[deviceID] = nil
+            self.engineTasks[deviceID] = nil
         }
         tasks[device.id] = task
     }

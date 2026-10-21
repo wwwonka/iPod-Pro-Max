@@ -747,22 +747,44 @@ struct ITunesDBWriter {
 
 /// Sorting helpers approximating iTunes' collation for the on-device library index.
 enum SortKey {
+    /// Leading articles (English, French, German, Spanish, Italian) ignored for alphabetical position,
+    /// so e.g. "The Who", "Les Rita Mitsouko" and "Die Ärzte" don't all pile up under one letter.
+    /// Dutch ("de", "het", "een") and Portuguese ("o", "a", "os", "as") are deliberately left out: at
+    /// one or two letters plus a space, they're common word starts in other languages (an artist named
+    /// "De La Soul" or "A Tribe Called Quest" would get mis-sorted), unlike the longer words here.
+    static let articles = [
+        "the ", "a ", "an ", // English
+        "le ", "la ", "les ", "un ", "une ", "des ", // French
+        "der ", "die ", "das ", // German
+        "el ", "los ", "las ", "una ", "unos ", "unas ", // Spanish (shares "un "/"una " with French/Italian)
+        "il ", "lo ", "gli ", "uno ", // Italian
+    ]
+
     static func collate(_ s: String?) -> String {
         guard let s, !s.isEmpty else { return "" }
         var key = s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
         key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        for article in ["the ", "a ", "an "] where key.hasPrefix(article) && key.count > article.count {
-            key.removeFirst(article.count)
-            break
+        if key.hasPrefix("l'"), key.count > 2 {
+            key.removeFirst(2)
+        } else {
+            for article in articles where key.hasPrefix(article) && key.count > article.count {
+                key.removeFirst(article.count)
+                break
+            }
         }
         return key
     }
 
-    /// Returns "Artist, The" style sort names like iTunes does for artists with a leading "The".
+    /// Returns "Artist, The" / "Mitsouko, Les" style sort names, like iTunes does for a leading article.
     static func articleAware(_ s: String?) -> String? {
         guard let s else { return nil }
-        if s.lowercased().hasPrefix("the "), s.count > 4 {
-            return String(s.dropFirst(4)) + ", The"
+        let lower = s.lowercased()
+        if lower.hasPrefix("l'"), s.count > 2 {
+            return String(s.dropFirst(2)) + ", L'"
+        }
+        for article in articles where lower.hasPrefix(article) && s.count > article.count {
+            let word = String(article.dropLast())
+            return String(s.dropFirst(article.count)) + ", " + word.prefix(1).uppercased() + word.dropFirst()
         }
         return s
     }

@@ -19,6 +19,7 @@ final class LibraryStore {
     var shows: [PodcastShow] = []
     var deviceRecords: [String: DeviceSyncRecord] = [:]
     var photoSelection = PhotoSelection()
+    var audiobooksFolderPath: String?
 
     // Transient UI state
     var isImporting = false
@@ -27,6 +28,9 @@ final class LibraryStore {
     var downloadProgress: [UUID: Double] = [:]
     var refreshingShows: Set<UUID> = []
     var lastError: String?
+    /// Paths that didn't exist on disk the last time `refreshMissingFiles()` ran. `LibraryTrack.fileExists`
+    /// hits the disk synchronously, so views check this cache instead of calling it per row per render.
+    var missingPaths: Set<String> = []
 
     let baseDir: URL
     let artworkDir: URL
@@ -52,24 +56,166 @@ final class LibraryStore {
             try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         }
         load()
+        Task { await backfillLyricsIfNeeded() }
+        Task { await refreshMissingFiles() }
+    }
+
+    /// Re-checks which library files are missing from disk (e.g. deleted in Finder), off the main
+    /// thread, and caches the result in `missingPaths` for views to read without hitting the disk.
+    func refreshMissingFiles() async {
+        let paths = tracks.map(\.path)
+        let missing = await Task.detached(priority: .utility) {
+            Set(paths.filter { !FileManager.default.fileExists(atPath: $0) })
+        }.value
+        missingPaths = missing
+    }
+
+    /// Removes every track whose file no longer exists (per the last `refreshMissingFiles()`).
+    @discardableResult
+    func removeMissingTracks() -> Int {
+        let ids = Set(tracks.filter { missingPaths.contains($0.path) }.map(\.id))
+        guard !ids.isEmpty else { return 0 }
+        removeTracks(ids: ids)
+        return ids.count
     }
 
     // MARK: - Persistence
+
+    /// Tracks imported before lyrics detection existed were never checked for a lyrics tag, so their
+    /// `hasLyrics` is stuck at its default `false` regardless of what the file actually carries. Runs
+    /// once (gated by a UserDefaults flag) and just re-reads each file's tags, no re-import needed.
+    private func backfillLyricsIfNeeded() async {
+        let key = "lyricsBackfillDone_v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let candidates = tracks.filter { !$0.isVideo && !$0.hasLyrics && $0.fileExists }
+        var changed = false
+        for t in candidates {
+            guard let md = try? await MetadataExtractor.extract(from: t.url), md.hasLyrics else { continue }
+            guard let i = tracks.firstIndex(where: { $0.id == t.id }) else { continue }
+            tracks[i].hasLyrics = true
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        if changed { scheduleSave() } // never save just because this housekeeping pass ran and found nothing
+    }
+
+    /// Re-reads tags for any track whose file was modified since we last scanned it (e.g. edited in
+    /// another app since the last sync), so the next sync pushes the new metadata to an iPod that
+    /// already has the file — no re-copy, no duplicate, just the on-device database record updated.
+    ///
+    /// The cheap "did this change" check (one disk stat) runs for the whole library, which is fine;
+    /// the expensive part (AVFoundation re-extraction) only runs for files that actually need it, and
+    /// runs several at once instead of one at a time — doing that serially for a large library is what
+    /// made this take forever. A 2-second tolerance also avoids false positives from sub-second mtime
+    /// rounding flagging the entire library as "changed" on every sync.
+    func refreshChangedTrackMetadata() async {
+        guard !Task.isCancelled else { return }
+        let candidates: [(id: UUID, url: URL, modified: Date)] = tracks.compactMap { t in
+            guard !t.isVideo, !t.isAudiobook,
+                  let modified = try? t.url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  modified.timeIntervalSince(t.dateModified ?? .distantPast) > 2 else { return nil }
+            return (t.id, t.url, modified)
+        }
+        guard !candidates.isEmpty else { return }
+
+        let artworkDir = self.artworkDir
+        let results = await withTaskGroup(of: (UUID, Date, ExtractedMetadata)?.self) { group -> [(UUID, Date, ExtractedMetadata)] in
+            var iterator = candidates.makeIterator()
+            var running = 0
+            var collected: [(UUID, Date, ExtractedMetadata)] = []
+            func addNext() {
+                guard let next = iterator.next() else { return }
+                running += 1
+                group.addTask {
+                    guard let md = try? await MetadataExtractor.extract(from: next.url) else { return nil }
+                    return (next.id, next.modified, md)
+                }
+            }
+            for _ in 0..<8 { addNext() }
+            while let result = await group.next() {
+                running -= 1
+                if let result { collected.append(result) }
+                if !Task.isCancelled { addNext() }
+            }
+            return collected
+        }
+        guard !Task.isCancelled, !results.isEmpty else { return }
+
+        var byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        for (id, modified, md) in results {
+            guard var t = byID[id] else { continue }
+            t.title = md.title ?? t.title
+            t.artist = md.artist
+            t.album = md.album
+            t.albumArtist = md.albumArtist
+            t.genre = md.genre
+            t.composer = md.composer
+            t.comment = md.comment
+            t.grouping = md.grouping
+            t.year = md.year
+            t.trackNumber = md.trackNumber
+            t.trackCount = md.trackCount
+            t.discNumber = md.discNumber
+            t.discCount = md.discCount
+            t.durationMs = md.durationMs
+            t.bitrate = md.bitrate
+            t.sampleRate = md.sampleRate
+            t.isLossless = md.isLossless
+            t.compilation = md.compilation
+            t.bpm = md.bpm
+            t.hasLyrics = md.hasLyrics
+            t.dateModified = modified
+            if let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: t.url), let key = Self.storeArtwork(art, in: artworkDir) {
+                t.artworkKey = key
+            }
+            byID[id] = t
+        }
+        for i in tracks.indices {
+            if let updated = byID[tracks[i].id] { tracks[i] = updated }
+        }
+        scheduleSave()
+    }
 
     func load() {
         guard let data = try? Data(contentsOf: documentURL) else { return }
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let doc = try decoder.decode(LibraryDocument.self, from: data)
+            let doc = try decoder.decode(LibraryDocument.self, from: Self.backfillMissingKeys(in: data) ?? data)
             tracks = doc.tracks
             playlists = doc.playlists
             shows = doc.shows
             deviceRecords = doc.deviceRecords
             photoSelection = doc.photoSelection ?? PhotoSelection()
+            audiobooksFolderPath = doc.audiobooksFolderPath
         } catch {
             lastError = "Couldn't read the library file: \(error.localizedDescription)"
         }
+    }
+
+    /// A Swift default value on a stored property (e.g. `var hasLyrics: Bool = false`) only applies
+    /// when constructing the struct in code — it does nothing for Decodable synthesis, which still
+    /// requires the key to be present and throws for the whole document otherwise. Fields added to
+    /// LibraryTrack/PodcastShow/DeviceSyncRecord after 1.0 shipped would otherwise make any library
+    /// saved before that change fail to load at all. This patches the raw JSON to backfill just those
+    /// keys (when absent) before decoding, so older library files keep loading as new fields are added.
+    private static func backfillMissingKeys(in data: Data) -> Data? {
+        guard var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        if var tracks = root["tracks"] as? [[String: Any]] {
+            for i in tracks.indices where tracks[i]["hasLyrics"] == nil { tracks[i]["hasLyrics"] = false }
+            root["tracks"] = tracks
+        }
+        if var shows = root["shows"] as? [[String: Any]] {
+            for i in shows.indices where shows[i]["sourceKind"] == nil { shows[i]["sourceKind"] = "rss" }
+            root["shows"] = shows
+        }
+        if var records = root["deviceRecords"] as? [String: [String: Any]] {
+            // [UUID: Date] encodes as a flat array (alternating key, value), not a JSON object — same
+            // shape as the other UUID-keyed dictionaries (trackDBIDs, etc.) already in this record.
+            for key in records.keys where records[key]?["lyricsFixedDates"] == nil { records[key]?["lyricsFixedDates"] = [Any]() }
+            root["deviceRecords"] = records
+        }
+        return try? JSONSerialization.data(withJSONObject: root)
     }
 
     func scheduleSave() {
@@ -82,7 +228,18 @@ final class LibraryStore {
     }
 
     func saveNow() {
-        let doc = LibraryDocument(tracks: tracks, playlists: playlists, shows: shows, deviceRecords: deviceRecords, photoSelection: photoSelection)
+        // Safety net: a save that would wipe everything, while the file on disk is clearly not empty,
+        // is almost certainly a bug (e.g. a load failed and left this object's in-memory state at its
+        // defaults) rather than something a person did — no normal action empties tracks, playlists,
+        // shows and device records all at once. Refuse it instead of silently destroying the library.
+        if tracks.isEmpty, playlists.isEmpty, shows.isEmpty, deviceRecords.isEmpty {
+            let existingSize = (try? documentURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if existingSize > 500 {
+                lastError = "Refused to save: the library in memory is empty but the saved file isn't. Restart iPod Pro Max rather than continuing — this usually means the file failed to load."
+                return
+            }
+        }
+        let doc = LibraryDocument(tracks: tracks, playlists: playlists, shows: shows, deviceRecords: deviceRecords, photoSelection: photoSelection, audiobooksFolderPath: audiobooksFolderPath)
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -131,8 +288,9 @@ final class LibraryStore {
 
     // MARK: - Tracks
 
-    var songs: [LibraryTrack] { tracks.filter { !$0.isVideo } }
+    var songs: [LibraryTrack] { tracks.filter { !$0.isVideo && !$0.isAudiobook } }
     var videos: [LibraryTrack] { tracks.filter { $0.isVideo } }
+    var audiobooks: [LibraryTrack] { tracks.filter { $0.isAudiobook } }
 
     func track(id: UUID) -> LibraryTrack? { tracks.first { $0.id == id } }
 
@@ -149,6 +307,11 @@ final class LibraryStore {
 
     func setSync(_ enabled: Bool, forTracks ids: Set<UUID>) {
         for i in tracks.indices where ids.contains(tracks[i].id) { tracks[i].syncEnabled = enabled }
+        scheduleSave()
+    }
+
+    func setVideoCategory(_ category: VideoCategory, forTracks ids: Set<UUID>) {
+        for i in tracks.indices where ids.contains(tracks[i].id) { tracks[i].videoCategory = category }
         scheduleSave()
     }
 
@@ -219,6 +382,7 @@ final class LibraryStore {
                 t.isLossless = md.isLossless
                 t.compilation = md.compilation
                 t.bpm = md.bpm
+                t.hasLyrics = md.hasLyrics
                 t.dateModified = attrs?.contentModificationDate
                 let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: url)
                 let key = art.flatMap { Self.storeArtwork($0, in: artworkDir) }
@@ -253,6 +417,116 @@ final class LibraryStore {
             }
         }
         return out.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    // MARK: - Audiobooks
+
+    /// Points Audiobooks at a folder and rescans it. Pass nil to clear the folder and remove all audiobooks.
+    func setAudiobooksFolder(_ url: URL?) async {
+        audiobooksFolderPath = url?.path
+        scheduleSave()
+        if let url {
+            await rescanAudiobooks(folder: url)
+        } else {
+            tracks.removeAll { $0.isAudiobook }
+            scheduleSave()
+        }
+    }
+
+    func rescanAudiobooks() async {
+        guard let path = audiobooksFolderPath else { return }
+        await rescanAudiobooks(folder: URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    private func rescanAudiobooks(folder: URL) async {
+        isImporting = true
+        importStatus = "Scanning audiobooks…"
+        importProgress = nil
+        defer {
+            isImporting = false
+            importStatus = nil
+            importProgress = nil
+        }
+        let books = await Task.detached(priority: .userInitiated) { Self.collectAudiobookFiles(folder) }.value
+        let existingByPath = Dictionary(tracks.filter(\.isAudiobook).map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+        let artworkDir = self.artworkDir
+        var kept: [LibraryTrack] = []
+        let totalFiles = books.reduce(0) { $0 + $1.files.count }
+        var done = 0
+
+        for book in books {
+            var bookTracks: [LibraryTrack] = []
+            var bookAuthor: String?
+            var bookArtworkKey: String?
+
+            for (idx, url) in book.files.enumerated() {
+                done += 1
+                if let existing = existingByPath[url.path] {
+                    if bookAuthor == nil, let a = existing.artist, !a.isEmpty { bookAuthor = a }
+                    if bookArtworkKey == nil { bookArtworkKey = existing.artworkKey }
+                    bookTracks.append(existing)
+                    continue
+                }
+                importStatus = "Importing \(url.lastPathComponent)"
+                importProgress = totalFiles > 0 ? Double(done) / Double(totalFiles) : nil
+                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                guard let md = try? await MetadataExtractor.extract(from: url) else { continue }
+                var t = LibraryTrack(path: url.path, title: md.title ?? url.deletingPathExtension().lastPathComponent, fileExtension: url.pathExtension.lowercased())
+                t.kind = .audiobook
+                t.album = book.title
+                t.genre = "Audiobooks"
+                t.trackNumber = book.files.count > 1 ? idx + 1 : max(md.trackNumber, 0)
+                t.trackCount = book.files.count > 1 ? book.files.count : max(md.trackCount, 0)
+                t.durationMs = md.durationMs
+                t.bitrate = md.bitrate
+                t.sampleRate = md.sampleRate
+                t.fileSize = Int64(attrs?.fileSize ?? 0)
+                t.isLossless = md.isLossless
+                t.hasLyrics = md.hasLyrics
+                t.dateModified = attrs?.contentModificationDate
+                let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: url)
+                t.artworkKey = art.flatMap { Self.storeArtwork($0, in: artworkDir) }
+                if bookAuthor == nil, let a = md.albumArtist ?? md.artist, !a.isEmpty { bookAuthor = a }
+                if bookArtworkKey == nil { bookArtworkKey = t.artworkKey }
+                bookTracks.append(t)
+            }
+
+            // Chapter files are often tagged inconsistently (narrator vs. author vs. nothing), which
+            // otherwise fragments one book into several "albums" on the iPod. Force every chapter to
+            // the same artist/album-artist and the same artwork, so the book groups as a single unit.
+            let author = bookAuthor ?? "Unknown Author"
+            for i in bookTracks.indices {
+                bookTracks[i].artist = author
+                bookTracks[i].albumArtist = author
+                if bookTracks[i].artworkKey == nil { bookTracks[i].artworkKey = bookArtworkKey }
+            }
+            kept.append(contentsOf: bookTracks)
+        }
+        tracks.removeAll { $0.isAudiobook }
+        tracks.append(contentsOf: kept)
+        scheduleSave()
+    }
+
+    /// A subfolder becomes a multi-chapter book (files sorted by name); a loose audio file becomes a
+    /// single-chapter book named after itself.
+    nonisolated static func collectAudiobookFiles(_ folder: URL) -> [(title: String, files: [URL])] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        var books: [(title: String, files: [URL])] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDir {
+                guard let e = fm.enumerator(at: entry, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+                var files: [URL] = []
+                for case let f as URL in e where MetadataExtractor.isAudioFile(f) { files.append(f) }
+                guard !files.isEmpty else { continue }
+                files.sort { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                books.append((title: entry.lastPathComponent, files: files))
+            } else if MetadataExtractor.isAudioFile(entry) {
+                books.append((title: entry.deletingPathExtension().lastPathComponent, files: [entry]))
+            }
+        }
+        return books
     }
 
     /// Loads the Music app catalog off the main thread.
@@ -398,8 +672,10 @@ final class LibraryStore {
     @discardableResult
     func subscribe(feedURL: URL) async throws -> PodcastShow {
         if let existing = shows.first(where: { $0.feedURL == feedURL }) { return existing }
-        let feed = try await Self.fetchFeed(feedURL)
+        let kind = PodcastSourceKind.detect(from: feedURL)
+        let feed = try await Self.fetchFeed(feedURL, kind: kind)
         var show = PodcastShow(feedURL: feedURL, title: feed.title, author: feed.author, summary: feed.summary, imageURL: feed.imageURL)
+        show.sourceKind = kind
         show.keepLatest = UserDefaults.standard.object(forKey: "defaultKeepLatest") as? Int ?? 5
         show.episodes = feed.episodes.map { Self.makeEpisode($0) }
         show.lastRefreshed = Date()
@@ -430,8 +706,9 @@ final class LibraryStore {
         refreshingShows.insert(id)
         defer { refreshingShows.remove(id) }
         let url = shows[i].feedURL
+        let kind = shows[i].sourceKind
         do {
-            let feed = try await Self.fetchFeed(url)
+            let feed = try await Self.fetchFeed(url, kind: kind)
             guard let idx = shows.firstIndex(where: { $0.id == id }) else { return }
             var show = shows[idx]
             show.title = feed.title.isEmpty ? show.title : feed.title
@@ -491,7 +768,15 @@ final class LibraryStore {
         return e
     }
 
-    nonisolated static func fetchFeed(_ url: URL) async throws -> ParsedFeed {
+    nonisolated static func fetchFeed(_ url: URL, kind: PodcastSourceKind) async throws -> ParsedFeed {
+        switch kind {
+        case .rss: return try await fetchRSSFeed(url)
+        case .ohdio: return try await OHdioFeed.fetch(url: url)
+        case .youtube: return try await YouTubeFeed.fetch(url: url)
+        }
+    }
+
+    nonisolated static func fetchRSSFeed(_ url: URL) async throws -> ParsedFeed {
         var request = URLRequest(url: url)
         request.setValue("iPod Pro Max/1.0 (Macintosh)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 30
@@ -543,52 +828,72 @@ final class LibraryStore {
         if ep.isDownloaded || activeDownloads[episodeID] != nil { return }
         let dir = podcastsDir.appendingPathComponent(show.id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var ext = ep.enclosureURL.pathExtension.lowercased()
-        if ext.isEmpty || ext.count > 4 {
-            if let mime = ep.mimeType?.lowercased() {
-                ext = mime.contains("mp4") || mime.contains("m4a") || mime.contains("aac") ? "m4a" : "mp3"
-            } else { ext = "mp3" }
-        }
-        let dest = dir.appendingPathComponent("\(ep.id.uuidString).\(ext)")
         downloadProgress[episodeID] = 0
-        let task = Task { [weak self] in
-            do {
-                let delegate = DownloadProgressDelegate { fraction in
-                    Task { @MainActor in self?.downloadProgress[episodeID] = fraction }
+
+        let task: Task<Void, Never>
+        switch show.sourceKind {
+        case .youtube:
+            let dest = dir.appendingPathComponent("\(ep.id.uuidString).m4a")
+            task = Task { [weak self] in
+                do {
+                    try await YouTubeFeed.downloadAudio(videoID: ep.enclosureURL.lastPathComponent, to: dest) { fraction in
+                        Task { @MainActor in self?.downloadProgress[episodeID] = fraction }
+                    }
+                    await self?.finishEpisodeDownload(showID: showID, episodeID: episodeID, dest: dest)
+                } catch {
+                    if !(error is CancellationError) {
+                        await MainActor.run { self?.lastError = "Download failed for “\(ep.title)”: \(error.localizedDescription)" }
+                    }
                 }
-                let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-                defer { session.finishTasksAndInvalidate() }
-                var request = URLRequest(url: ep.enclosureURL)
-                request.setValue("iPod Pro Max/1.0 (Macintosh)", forHTTPHeaderField: "User-Agent")
-                let (tmp, response) = try await session.download(for: request)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw IPodDBError.io("Server returned status \(http.statusCode)")
-                }
-                if FileManager.default.fileExists(atPath: dest.path) { try? FileManager.default.removeItem(at: dest) }
-                try FileManager.default.moveItem(at: tmp, to: dest)
-                let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
-                var durationMs: Int? = nil
-                if let md = try? await MetadataExtractor.extract(from: dest), md.durationMs > 0 { durationMs = md.durationMs }
-                await MainActor.run {
-                    guard let self, let si = self.shows.firstIndex(where: { $0.id == showID }),
-                          let ei = self.shows[si].episodes.firstIndex(where: { $0.id == episodeID }) else { return }
-                    self.shows[si].episodes[ei].localPath = dest.path
-                    self.shows[si].episodes[ei].fileSize = size
-                    if let d = durationMs { self.shows[si].episodes[ei].durationMs = d }
-                    self.scheduleSave()
-                }
-            } catch {
-                if !(error is CancellationError) {
-                    await MainActor.run { self?.lastError = "Download failed for “\(ep.title)”: \(error.localizedDescription)" }
-                }
+                await MainActor.run { self?.downloadProgress[episodeID] = nil; self?.activeDownloads[episodeID] = nil }
             }
-            await MainActor.run {
-                self?.downloadProgress[episodeID] = nil
-                self?.activeDownloads[episodeID] = nil
+        case .rss, .ohdio:
+            task = Task { [weak self] in
+                do {
+                    let sourceURL = show.sourceKind == .ohdio ? try await OHdioFeed.resolveMediaURL(from: ep.enclosureURL) : ep.enclosureURL
+                    var ext = sourceURL.pathExtension.lowercased()
+                    if ext.isEmpty || ext.count > 4 {
+                        if let mime = ep.mimeType?.lowercased() {
+                            ext = mime.contains("mp4") || mime.contains("m4a") || mime.contains("aac") ? "m4a" : "mp3"
+                        } else { ext = "mp3" }
+                    }
+                    let dest = dir.appendingPathComponent("\(ep.id.uuidString).\(ext)")
+                    let delegate = DownloadProgressDelegate { fraction in
+                        Task { @MainActor in self?.downloadProgress[episodeID] = fraction }
+                    }
+                    let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+                    defer { session.finishTasksAndInvalidate() }
+                    var request = URLRequest(url: sourceURL)
+                    request.setValue("iPod Pro Max/1.0 (Macintosh)", forHTTPHeaderField: "User-Agent")
+                    let (tmp, response) = try await session.download(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        throw IPodDBError.io("Server returned status \(http.statusCode)")
+                    }
+                    if FileManager.default.fileExists(atPath: dest.path) { try? FileManager.default.removeItem(at: dest) }
+                    try FileManager.default.moveItem(at: tmp, to: dest)
+                    await self?.finishEpisodeDownload(showID: showID, episodeID: episodeID, dest: dest)
+                } catch {
+                    if !(error is CancellationError) {
+                        await MainActor.run { self?.lastError = "Download failed for “\(ep.title)”: \(error.localizedDescription)" }
+                    }
+                }
+                await MainActor.run { self?.downloadProgress[episodeID] = nil; self?.activeDownloads[episodeID] = nil }
             }
         }
         activeDownloads[episodeID] = task
         await task.value
+    }
+
+    private func finishEpisodeDownload(showID: UUID, episodeID: UUID, dest: URL) async {
+        let size = (try? dest.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
+        var durationMs: Int? = nil
+        if let md = try? await MetadataExtractor.extract(from: dest), md.durationMs > 0 { durationMs = md.durationMs }
+        guard let si = shows.firstIndex(where: { $0.id == showID }),
+              let ei = shows[si].episodes.firstIndex(where: { $0.id == episodeID }) else { return }
+        shows[si].episodes[ei].localPath = dest.path
+        shows[si].episodes[ei].fileSize = size
+        if let d = durationMs { shows[si].episodes[ei].durationMs = d }
+        scheduleSave()
     }
 
     func deleteDownload(showID: UUID, episodeID: UUID) {
@@ -646,16 +951,19 @@ final class LibraryStore {
     func tracksToSync(for record: DeviceSyncRecord) -> [LibraryTrack] {
         var out: [LibraryTrack]
         if record.syncAllMusic {
-            out = tracks.filter { $0.syncEnabled && !$0.isVideo }
+            out = tracks.filter { $0.syncEnabled && !$0.isVideo && !$0.isAudiobook }
         } else {
             var ids = Set<UUID>()
             for pl in playlists where record.selectedPlaylistIDs.contains(pl.id) {
                 ids.formUnion(pl.trackIDs)
             }
-            out = tracks.filter { ids.contains($0.id) && $0.syncEnabled && !$0.isVideo }
+            out = tracks.filter { ids.contains($0.id) && $0.syncEnabled && !$0.isVideo && !$0.isAudiobook }
         }
         if record.videosEnabled {
             out += tracks.filter { $0.isVideo && $0.syncEnabled }
+        }
+        if record.audiobooksEnabled {
+            out += tracks.filter { $0.isAudiobook && $0.syncEnabled }
         }
         return out
     }

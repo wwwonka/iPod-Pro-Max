@@ -95,6 +95,7 @@ final class AppState {
         switch UserDefaults.standard.string(forKey: "initialSelection") {
         case "podcasts": return .podcasts
         case "videos": return .videos
+        case "audiobooks": return .audiobooks
         case "photos": return .photos
         case "device": return nil
         default: return .music
@@ -122,6 +123,7 @@ enum SidebarItem: Hashable {
     case music
     case videos
     case podcasts
+    case audiobooks
     case photos
     case playlist(UUID)
 }

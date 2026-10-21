@@ -90,6 +90,8 @@ struct ContentView: View {
             VideosView()
         case .podcasts:
             PodcastsView()
+        case .audiobooks:
+            AudiobooksView()
         case .photos:
             PhotosView()
         case .playlist(let id):
@@ -164,6 +166,41 @@ struct MenuRequestHandler: ViewModifier {
     }
 }
 
+/// The fixed library sections, in a user-customizable order persisted across launches.
+enum LibraryItemKind: String, CaseIterable, Codable {
+    case music, videos, podcasts, audiobooks, photos
+
+    var title: String {
+        switch self {
+        case .music: return "Music"
+        case .videos: return "Videos"
+        case .podcasts: return "Podcasts"
+        case .audiobooks: return "Audiobooks"
+        case .photos: return "Photos"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .music: return "music.note"
+        case .videos: return "film"
+        case .podcasts: return "antenna.radiowaves.left.and.right"
+        case .audiobooks: return "book.closed"
+        case .photos: return "photo.on.rectangle.angled"
+        }
+    }
+
+    var sidebarItem: SidebarItem {
+        switch self {
+        case .music: return .music
+        case .videos: return .videos
+        case .podcasts: return .podcasts
+        case .audiobooks: return .audiobooks
+        case .photos: return .photos
+        }
+    }
+}
+
 struct SidebarView: View {
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?
     private var library: LibraryStore { envLibrary ?? AppServices.shared.library }
@@ -173,6 +210,20 @@ struct SidebarView: View {
     private var sync: SyncCoordinator { envSync ?? AppServices.shared.sync }
     @Environment(AppState.self) private var envAppState: AppState?
     private var appState: AppState { envAppState ?? AppServices.shared.appState }
+    @State private var libraryOrder: [LibraryItemKind] = SidebarView.loadLibraryOrder()
+
+    private static let orderKey = "sidebarLibraryOrder"
+
+    private static func loadLibraryOrder() -> [LibraryItemKind] {
+        guard let saved = UserDefaults.standard.array(forKey: orderKey) as? [String] else { return LibraryItemKind.allCases }
+        let known = saved.compactMap { LibraryItemKind(rawValue: $0) }
+        let missing = LibraryItemKind.allCases.filter { !known.contains($0) }
+        return known + missing
+    }
+
+    private func saveLibraryOrder() {
+        UserDefaults.standard.set(libraryOrder.map(\.rawValue), forKey: Self.orderKey)
+    }
 
     var body: some View {
         @Bindable var appState = appState
@@ -184,26 +235,23 @@ struct SidebarView: View {
                         .selectionDisabled()
                 } else {
                     ForEach(devices.devices) { d in
-                        HStack {
-                            Label(deviceName(d), systemImage: "ipod")
-                            Spacer()
-                            if sync.isSyncing(d) {
-                                ProgressView().controlSize(.small)
+                        DeviceSidebarRow(device: d, name: deviceName(d), isSyncing: sync.isSyncing(d))
+                            .tag(SidebarItem.device(d.id))
+                            .contextMenu {
+                                Button("Sync") { sync.startSync(d) }.disabled(sync.isSyncing(d))
+                                Button("Eject") { Task { try? await devices.eject(d) } }
                             }
-                        }
-                        .tag(SidebarItem.device(d.id))
-                        .contextMenu {
-                            Button("Sync") { sync.startSync(d) }.disabled(sync.isSyncing(d))
-                            Button("Eject") { Task { try? await devices.eject(d) } }
-                        }
                     }
                 }
             }
             Section("Library") {
-                Label("Music", systemImage: "music.note").tag(SidebarItem.music)
-                Label("Videos", systemImage: "film").tag(SidebarItem.videos)
-                Label("Podcasts", systemImage: "antenna.radiowaves.left.and.right").tag(SidebarItem.podcasts)
-                Label("Photos", systemImage: "photo.on.rectangle.angled").tag(SidebarItem.photos)
+                ForEach(libraryOrder, id: \.self) { kind in
+                    Label(kind.title, systemImage: kind.icon).tag(kind.sidebarItem)
+                }
+                .onMove { from, to in
+                    libraryOrder.move(fromOffsets: from, toOffset: to)
+                    saveLibraryOrder()
+                }
             }
             Section("Playlists") {
                 ForEach(library.playlists) { pl in
@@ -230,6 +278,40 @@ struct SidebarView: View {
 
     private func deviceName(_ d: IPodDevice) -> String {
         library.deviceRecords[d.id]?.deviceName ?? d.displayName
+    }
+}
+
+/// A sidebar iPod row that also accepts drag-and-drop from the library (e.g. selected audiobooks)
+/// to turn their sync flag on.
+private struct DeviceSidebarRow: View {
+    let device: IPodDevice
+    let name: String
+    let isSyncing: Bool
+    @Environment(LibraryStore.self) private var envLibrary: LibraryStore?
+    private var library: LibraryStore { envLibrary ?? AppServices.shared.library }
+    @State private var isDropTargeted = false
+
+    var body: some View {
+        HStack {
+            Label(name, systemImage: "ipod")
+            Spacer()
+            if isSyncing {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.vertical, isDropTargeted ? 2 : 0)
+        .background(isDropTargeted ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .dropDestination(for: TrackIDsTransfer.self, action: { items, _ in
+            let ids = Set(items.flatMap(\.ids))
+            guard !ids.isEmpty else { return false }
+            library.setSync(true, forTracks: ids)
+            if ids.contains(where: { library.track(id: $0)?.isAudiobook == true }) {
+                var r = library.record(for: device)
+                r.syncAudiobooks = true
+                library.updateRecord(r)
+            }
+            return true
+        }, isTargeted: { isDropTargeted = $0 })
     }
 }
 

@@ -72,7 +72,9 @@ struct ArtworkThumb: View {
         .task(id: url) {
             guard let url else { image = nil; return }
             let target = size * 2
-            let loaded: NSImage? = await Task.detached(priority: .utility) {
+            // CGImage (unlike NSImage) is Sendable, so the resize work can cross back from the
+            // detached task cleanly; NSImage is only ever touched here on the main actor.
+            let resized: CGImage? = await Task.detached(priority: .utility) {
                 guard let cg = ImageLoading.cgImage(from: url) else { return nil }
                 let longest = max(cg.width, cg.height)
                 let scale = min(1, target / CGFloat(longest))
@@ -81,10 +83,11 @@ struct ArtworkThumb: View {
                                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
                 ctx.interpolationQuality = .medium
                 ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-                guard let out = ctx.makeImage() else { return nil }
-                return NSImage(cgImage: out, size: NSSize(width: w, height: h))
+                return ctx.makeImage()
             }.value
-            if !Task.isCancelled { image = loaded }
+            if !Task.isCancelled {
+                image = resized.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+            }
         }
     }
 }

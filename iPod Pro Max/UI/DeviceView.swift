@@ -27,9 +27,11 @@ struct DeviceView: View {
         var songs = 0
         var podcasts = 0
         var videos = 0
+        var audiobooks = 0
         var musicBytes: Int64 = 0
         var podcastBytes: Int64 = 0
         var videoBytes: Int64 = 0
+        var audiobookBytes: Int64 = 0
         var photoBytes: Int64 = 0
         var photos = 0
         var name = ""
@@ -113,7 +115,7 @@ struct DeviceView: View {
 
     private var unsupportedBanner: some View {
         banner(color: .red, icon: "xmark.octagon.fill", title: "This iPod isn't supported yet",
-               text: "\(device.displayModelName) needs a database signature that iPod Pro Max 1.0 can't produce. iPod Video, iPod nano (1st & 2nd gen), iPod photo, iPod mini and the original click-wheel iPods are fully supported.")
+               text: "\(device.displayModelName) needs a database signature that iPod Pro Max 1.0 can't produce. iPod Video, iPod nano (1st & 2nd gen), iPod photo, iPod mini, iPod classic and the original click-wheel iPods are fully supported.")
     }
 
     private var experimentalBanner: some View {
@@ -141,9 +143,10 @@ struct DeviceView: View {
         let music = contents?.musicBytes ?? 0
         let podcasts = contents?.podcastBytes ?? 0
         let videos = contents?.videoBytes ?? 0
+        let audiobooks = contents?.audiobookBytes ?? 0
         let photos = contents?.photoBytes ?? 0
-        let used = max(stats.used, music + podcasts + videos + photos)
-        let other = max(used - music - podcasts - videos - photos, 0)
+        let used = max(stats.used, music + podcasts + videos + audiobooks + photos)
+        let other = max(used - music - podcasts - videos - audiobooks - photos, 0)
         return VStack(alignment: .leading, spacing: 8) {
             GeometryReader { geo in
                 HStack(spacing: 1) {
@@ -151,6 +154,7 @@ struct DeviceView: View {
                         Rectangle().fill(Color.blue).frame(width: geo.size.width * CGFloat(music) / CGFloat(stats.total))
                         Rectangle().fill(Color.purple).frame(width: geo.size.width * CGFloat(podcasts) / CGFloat(stats.total))
                         Rectangle().fill(Color.orange).frame(width: geo.size.width * CGFloat(videos) / CGFloat(stats.total))
+                        Rectangle().fill(Color.pink).frame(width: geo.size.width * CGFloat(audiobooks) / CGFloat(stats.total))
                         Rectangle().fill(Color.green).frame(width: geo.size.width * CGFloat(photos) / CGFloat(stats.total))
                         Rectangle().fill(Color.gray.opacity(0.6)).frame(width: geo.size.width * CGFloat(other) / CGFloat(stats.total))
                     }
@@ -163,6 +167,7 @@ struct DeviceView: View {
                 legend(.blue, "Music", Format.bytes(music), detail: contents.map { "\($0.songs) songs" })
                 legend(.purple, "Podcasts", Format.bytes(podcasts), detail: contents.map { "\($0.podcasts) episodes" })
                 if videos > 0 { legend(.orange, "Videos", Format.bytes(videos), detail: contents.map { "\($0.videos)" }) }
+                if audiobooks > 0 { legend(.pink, "Audiobooks", Format.bytes(audiobooks), detail: contents.map { "\($0.audiobooks)" }) }
                 if photos > 0 { legend(.green, "Photos", Format.bytes(photos), detail: contents.map { "\($0.photos)" }) }
                 legend(.gray, "Other", Format.bytes(other))
                 legend(Color.secondary.opacity(0.3), "Free", Format.bytes(stats.free))
@@ -231,11 +236,13 @@ struct DeviceView: View {
 
     private var planSummary: String {
         let all = library.tracksToSync(for: record)
-        let tracks = all.filter { !$0.isVideo }
+        let tracks = all.filter { !$0.isVideo && !$0.isAudiobook }
         let videos = all.filter { $0.isVideo }
+        let audiobooks = all.filter { $0.isAudiobook }
         let bytes = tracks.reduce(Int64(0)) { $0 + $1.fileSize }
         var parts = ["\(tracks.count) song\(tracks.count == 1 ? "" : "s") (\(Format.bytes(bytes)))"]
         if !videos.isEmpty { parts.append("\(videos.count) video\(videos.count == 1 ? "" : "s")") }
+        if !audiobooks.isEmpty { parts.append("\(audiobooks.count) audiobook\(audiobooks.count == 1 ? "" : "s")") }
         if record.photosEnabled && device.generation.supportsPhotos && !library.photoSelection.isEmpty {
             parts.append("photos from \(library.photoSelection.includeAllPhotos ? "your whole library" : "\(library.photoSelection.albumIDs.count) album\(library.photoSelection.albumIDs.count == 1 ? "" : "s")")")
         }
@@ -279,6 +286,8 @@ struct DeviceView: View {
                     Text("This iPod's firmware has no Podcasts menu.").font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("Sync videos", isOn: Binding(get: { record.videosEnabled }, set: { v in var r = record; r.syncVideos = v; library.updateRecord(r) }))
+                Toggle("Sync audiobooks", isOn: Binding(get: { record.audiobooksEnabled }, set: { v in var r = record; r.syncAudiobooks = v; library.updateRecord(r) }))
+                    .disabled(library.audiobooks.isEmpty)
                 Toggle("Sync photos", isOn: Binding(get: { record.photosEnabled }, set: { v in var r = record; r.syncPhotos = v; library.updateRecord(r) }))
                     .disabled(!device.generation.supportsPhotos)
                 if !device.generation.supportsPhotos {
@@ -288,6 +297,10 @@ struct DeviceView: View {
                 }
                 Toggle("Remove songs that aren't in this library", isOn: Binding(get: { record.removeUnknownTracks }, set: { v in var r = record; r.removeUnknownTracks = v; library.updateRecord(r) }))
                 Text("When on, songs that were put on the iPod by iTunes or another Mac are deleted during sync so the iPod mirrors this library. Turn it off to keep them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Toggle("Use Album Artist for Grouping", isOn: Binding(get: { record.albumArtistGroupingEnabled }, set: { v in var r = record; r.useAlbumArtistForGrouping = v; library.updateRecord(r) }))
+                Text("Replaces the Artist tag with Album Artist on this iPod so albums stay grouped in the Artists view. Your library files are not modified.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(6)
@@ -321,6 +334,7 @@ struct DeviceView: View {
                 for t in db.tracks {
                     if t.isPodcast { c.podcasts += 1; c.podcastBytes += Int64(t.fileSize) }
                     else if t.mediaType & IPodMediaType.movie != 0 || t.mediaType & IPodMediaType.musicVideo != 0 || t.mediaType & IPodMediaType.tvShow != 0 { c.videos += 1; c.videoBytes += Int64(t.fileSize) }
+                    else if t.mediaType & IPodMediaType.audiobook != 0 { c.audiobooks += 1; c.audiobookBytes += Int64(t.fileSize) }
                     else { c.songs += 1; c.musicBytes += Int64(t.fileSize) }
                 }
                 let photosDir = dev.mountPoint.appendingPathComponent("Photos")

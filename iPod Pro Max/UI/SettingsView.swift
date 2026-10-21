@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("ejectAfterSync") private var ejectAfterSync = false
     @AppStorage("syncArtwork") private var syncArtwork = true
     @AppStorage("defaultKeepLatest") private var defaultKeepLatest = 5
+    @AppStorage("youtubeCookiesBrowser") private var youtubeCookiesBrowser = ""
 
     var body: some View {
         TabView {
@@ -80,6 +81,30 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
+
+            Form {
+                Section("YouTube Sign-In") {
+                    Text("YouTube has no sign-in API for apps like this one. Instead, iPod Pro Max can reuse the cookies from a browser you're already signed into YouTube in, via yt-dlp. This fixes age-restricted or “sign in to confirm you're not a bot” failures, and unlocks members-only/unlisted videos you have access to.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Picker("Use cookies from", selection: $youtubeCookiesBrowser) {
+                        Text("Don't sign in").tag("")
+                        Text("Chrome").tag("chrome")
+                        Text("Safari").tag("safari")
+                        Text("Firefox").tag("firefox")
+                        Text("Edge").tag("edge")
+                        Text("Brave").tag("brave")
+                    }
+                    if youtubeCookiesBrowser == "safari" {
+                        Text("Safari's cookie storage is locked down by macOS; this may need Full Disk Access for iPod Pro Max in System Settings › Privacy & Security.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if !youtubeCookiesBrowser.isEmpty {
+                        Text("Sign in to YouTube in \(youtubeCookiesBrowser.capitalized) normally; iPod Pro Max reads that session each time it talks to YouTube. This choice is saved across launches.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("YouTube", systemImage: "play.rectangle") }
         }
         .frame(width: 560, height: 420)
     }
