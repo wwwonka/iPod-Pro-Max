@@ -225,7 +225,7 @@ enum LibraryItemKind: String, CaseIterable, Codable {
         case .music: return "music.note"
         case .videos: return "film"
         case .podcasts: return "antenna.radiowaves.left.and.right"
-        case .audiobooks: return "book.closed"
+        case .audiobooks: return "book"
         case .photos: return "photo.on.rectangle.angled"
         }
     }
