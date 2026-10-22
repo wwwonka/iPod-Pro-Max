@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("syncArtwork") private var syncArtwork = true
     @AppStorage("defaultKeepLatest") private var defaultKeepLatest = 5
     @AppStorage("youtubeCookiesBrowser") private var youtubeCookiesBrowser = ""
+    @AppStorage("scanLibraryOnLaunch") private var scanLibraryOnLaunch = true
 
     var body: some View {
         TabView {
@@ -33,6 +34,17 @@ struct SettingsView: View {
                         Text("the latest 10 episodes").tag(10)
                         Text("all episodes").tag(0)
                     }
+                }
+                Section("Music Folder") {
+                    LabeledContent("Folder") {
+                        HStack {
+                            Text(library.musicFolderPath ?? "None").font(.caption).lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(library.musicFolderPath == nil ? .secondary : .primary)
+                            Button("Choose…") { Task { await FileImportActions.chooseMusicFolder(library: library) } }
+                        }
+                    }
+                    Toggle("Check for new files when iPod Pro Max opens", isOn: $scanLibraryOnLaunch)
+                    Text("New songs added to this folder show up in your library automatically. You can also scan any time with Library ▸ Scan Library Folder for New Files.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Library") {
                     LabeledContent("Location") {

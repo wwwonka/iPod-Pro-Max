@@ -19,7 +19,9 @@ private struct ArtistGroup: Identifiable {
 
     var trackCount: Int { albums.reduce(0) { $0 + $1.tracks.count } }
     var allSynced: Bool { albums.allSatisfy(\.allSynced) }
+    var noneSynced: Bool { albums.allSatisfy { $0.tracks.allSatisfy { !$0.syncEnabled } } }
     var allTrackIDs: [UUID] { albums.flatMap { $0.tracks.map(\.id) } }
+    var totalDurationMs: Int { albums.reduce(0) { $0 + $1.totalDurationMs } }
 }
 
 private struct AlbumGroup: Identifiable {
@@ -31,6 +33,7 @@ private struct AlbumGroup: Identifiable {
     let tracks: [LibraryTrack]
 
     var allSynced: Bool { tracks.allSatisfy(\.syncEnabled) }
+    var totalDurationMs: Int { tracks.reduce(0) { $0 + $1.durationMs } }
 }
 
 /// Key used to group by Album Artist (falling back to Artist), matching how the iPod itself groups
@@ -38,6 +41,13 @@ private struct AlbumGroup: Identifiable {
 private func groupArtistName(_ t: LibraryTrack) -> String {
     let name = (t.albumArtist?.isEmpty == false ? t.albumArtist : t.artist) ?? ""
     return name.isEmpty ? "Unknown Artist" : name
+}
+
+/// "12 songs, 48 min" style summary.
+private func songsSummary(count: Int, durationMs: Int) -> String {
+    let minutes = durationMs / 60_000
+    let time = minutes >= 60 ? "\(minutes / 60) hr \(minutes % 60) min" : "\(minutes) min"
+    return "\(count) song\(count == 1 ? "" : "s"), \(time)"
 }
 
 struct MusicView: View {
@@ -75,6 +85,7 @@ struct MusicView: View {
                                message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.") {
                     AnyView(HStack {
                         Button("Add Files…") { appState.requestAddFiles = true }
+                        Button("Choose Library Folder…") { appState.requestChooseLibraryFolder = true }
                         Button("Import from Music App…") { appState.showMusicImport = true }
                     })
                 }
@@ -84,6 +95,13 @@ struct MusicView: View {
                 table
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !selection.isEmpty {
+                SelectionBar(selection: $selection, library: library, onNewPlaylist: { showNewPlaylistFromSelection = true })
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: selection.isEmpty)
         .navigationTitle("Music")
         .navigationSubtitle(subtitle)
         .searchable(text: $search, placement: .toolbar, prompt: "Search songs")
@@ -102,12 +120,16 @@ struct MusicView: View {
                     }
                 }
                 Picker("View", selection: $mode) {
-                    Text("By Artist").tag(MusicViewMode.byArtist)
-                    Text("All Songs").tag(MusicViewMode.allSongs)
+                    Label("By Artist", systemImage: "music.mic").tag(MusicViewMode.byArtist)
+                    Label("All Songs", systemImage: "list.bullet").tag(MusicViewMode.allSongs)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .help("Browse by artist or as a list of all songs")
                 .onChange(of: mode) { _, v in UserDefaults.standard.set(v.rawValue, forKey: "musicViewMode") }
+                Button { appState.requestScanLibrary = true } label: { Label("Scan Library Folder", systemImage: "arrow.clockwise") }
+                    .help("Check the library folder for new files")
+                    .disabled(library.isScanningLibrary)
                 Button { appState.requestAddFiles = true } label: { Label("Add Files", systemImage: "plus") }
                     .help("Add audio files or folders to the library")
                 Button { appState.showMusicImport = true } label: { Label("Import from Music", systemImage: "square.and.arrow.down") }
@@ -127,6 +149,12 @@ struct MusicView: View {
         .task(id: searchedTracks) { recomputeDerived() }
         .task(id: sortOrder) { recomputeDerived() }
         .onAppear { recomputeDerived() }
+        .onChange(of: library.tracks.map(\.id)) { _, ids in
+            // Drop selected IDs whose tracks were removed, so the selection bar never counts ghosts.
+            let live = Set(ids)
+            if !selection.isSubset(of: live) { selection.formIntersection(live) }
+        }
+        .onExitCommand { selection.removeAll() }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             Task {
                 var urls: [URL] = []
@@ -203,12 +231,15 @@ struct MusicView: View {
     private var artistsSplitView: some View {
         HSplitView {
             artistSidebar
-                .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
+                .frame(minWidth: 200, idealWidth: 250, maxWidth: 340)
             if let id = selectedArtistID, let group = cachedArtistGroups.first(where: { $0.id == id }) {
-                ArtistDetailView(group: group, library: library, selection: $selection)
-                    .frame(minWidth: 420)
+                ArtistDetailView(group: group, library: library, selection: $selection,
+                                 onNewPlaylist: { showNewPlaylistFromSelection = true })
+                    .id(group.id)
+                    .frame(minWidth: 460)
             } else {
-                Text("Select an artist").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                ContentUnavailableView("Select an Artist", systemImage: "music.mic")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onAppear { if selectedArtistID == nil { selectedArtistID = cachedArtistGroups.first?.id } }
@@ -216,17 +247,28 @@ struct MusicView: View {
             if let id = selectedArtistID, !ids.contains(id) { selectedArtistID = ids.first }
             else if selectedArtistID == nil { selectedArtistID = ids.first }
         }
+        .onChange(of: selectedArtistID) { selection.removeAll() }
     }
 
     private var artistSidebar: some View {
         List(selection: $selectedArtistID) {
             ForEach(cachedArtistGroups) { group in
                 HStack(spacing: 10) {
-                    ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 28, cornerRadius: 14)
-                    Text(group.name).lineLimit(1)
-                    Spacer()
+                    ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 34, cornerRadius: 17, placeholder: "music.mic")
+                        .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(group.name).lineLimit(1)
+                        Text("\(group.albums.count) album\(group.albums.count == 1 ? "" : "s") · \(group.trackCount) song\(group.trackCount == 1 ? "" : "s")")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    SyncStateBadge(allSynced: group.allSynced, noneSynced: group.noneSynced)
                 }
+                .padding(.vertical, 2)
                 .tag(group.id)
+                .draggable(TrackIDsTransfer(ids: group.allTrackIDs)) {
+                    DragPreview(count: group.trackCount, artworkURL: library.artworkURL(group.artworkKey), title: group.name)
+                }
                 .contextMenu {
                     Button("Sync to iPod") { library.setSync(true, forTracks: Set(group.allTrackIDs)) }
                     Button("Don't Sync") { library.setSync(false, forTracks: Set(group.allTrackIDs)) }
@@ -239,7 +281,7 @@ struct MusicView: View {
     // MARK: - All Songs (flat table)
 
     private var table: some View {
-        Table(cachedVisibleTracks, selection: $selection, sortOrder: $sortOrder) {
+        Table(of: LibraryTrack.self, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Sync") { t in
                 Toggle("", isOn: Binding(get: { t.syncEnabled }, set: { library.setSync($0, forTracks: selection.contains(t.id) ? selection : [t.id]) }))
                     .labelsHidden()
@@ -248,7 +290,7 @@ struct MusicView: View {
             .width(40)
             TableColumn("Title", value: \.title) { t in
                 HStack(spacing: 8) {
-                    ArtworkThumb(url: library.artworkURL(t.artworkKey), size: 22, cornerRadius: 3)
+                    ArtworkThumb(url: library.artworkURL(t.artworkKey), size: 24, cornerRadius: 4)
                     Text(t.title).lineLimit(1)
                     if library.missingPaths.contains(t.path) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("File not found")
@@ -258,124 +300,413 @@ struct MusicView: View {
             .width(min: 180, ideal: 300)
             TableColumn("Artist", value: \.artistForSort) { t in Text(t.displayArtist).lineLimit(1) }
             TableColumn("Album", value: \.albumForSort) { t in Text(t.displayAlbum).lineLimit(1) }
-            TableColumn("Time", value: \.durationMs) { t in Text(Format.duration(ms: t.durationMs)).monospacedDigit() }
+            TableColumn("Time", value: \.durationMs) { t in Text(Format.duration(ms: t.durationMs)).monospacedDigit().foregroundStyle(.secondary) }
                 .width(60)
-            TableColumn("Genre", value: \.genreForSort) { t in Text(t.genre ?? "").lineLimit(1) }
+            TableColumn("Genre", value: \.genreForSort) { t in Text(t.genre ?? "").lineLimit(1).foregroundStyle(.secondary) }
                 .width(min: 60, ideal: 100)
             TableColumn("Format", value: \.fileExtension) { t in
-                Text(t.formatLabel).foregroundStyle(t.needsTranscode ? .orange : .primary)
+                Text(t.formatLabel).foregroundStyle(t.needsTranscode ? .orange : .secondary)
             }
             .width(min: 60, ideal: 90)
-            TableColumn("Plays", value: \.playCount) { t in Text(t.playCount == 0 ? "" : "\(t.playCount)").monospacedDigit() }
+            TableColumn("Plays", value: \.playCount) { t in Text(t.playCount == 0 ? "" : "\(t.playCount)").monospacedDigit().foregroundStyle(.secondary) }
                 .width(45)
-            TableColumn("Size", value: \.fileSize) { t in Text(Format.bytes(t.fileSize)).monospacedDigit() }
+            TableColumn("Size", value: \.fileSize) { t in Text(Format.bytes(t.fileSize)).monospacedDigit().foregroundStyle(.secondary) }
                 .width(70)
+        } rows: {
+            ForEach(cachedVisibleTracks) { t in
+                TableRow(t).draggable(TrackIDsTransfer(ids: selection.contains(t.id) ? Array(selection) : [t.id]))
+            }
         }
+        .alternatingRowBackgrounds()
         .contextMenu(forSelectionType: UUID.self) { ids in
-            let target = ids.isEmpty ? selection : ids
-            Menu("Add to Playlist") {
+            TrackContextMenu(ids: ids.isEmpty ? selection : ids, library: library, selection: $selection,
+                             onNewPlaylist: { showNewPlaylistFromSelection = true })
+        }
+    }
+}
+
+/// Context menu shared by the table and the artist view; acts on `ids`.
+private struct TrackContextMenu: View {
+    let ids: Set<UUID>
+    let library: LibraryStore
+    @Binding var selection: Set<UUID>
+    let onNewPlaylist: () -> Void
+
+    var body: some View {
+        Menu("Add to Playlist") {
+            ForEach(library.playlists) { pl in
+                Button(pl.name) { library.addTracks(orderedIDs, toPlaylist: pl.id) }
+            }
+            if !library.playlists.isEmpty { Divider() }
+            Button("New Playlist…") {
+                selection = ids
+                onNewPlaylist()
+            }
+        }
+        Button("Sync to iPod") { library.setSync(true, forTracks: ids) }
+        Button("Don't Sync") { library.setSync(false, forTracks: ids) }
+        Divider()
+        Button("Show in Finder") {
+            let urls = library.tracks.filter { ids.contains($0.id) }.map(\.url)
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        }
+        Button("Remove from Library", role: .destructive) {
+            library.removeTracks(ids: ids)
+            selection.subtract(ids)
+        }
+    }
+
+    /// Library order rather than Set order, so a playlist built from a selection keeps album order.
+    private var orderedIDs: [UUID] { library.tracks.filter { ids.contains($0.id) }.map(\.id) }
+}
+
+/// Floating bar shown while songs are selected: what's selected, plus the common actions on it.
+private struct SelectionBar: View {
+    @Binding var selection: Set<UUID>
+    let library: LibraryStore
+    let onNewPlaylist: () -> Void
+
+    var body: some View {
+        let tracks = library.tracks.filter { selection.contains($0.id) }
+        let allSynced = tracks.allSatisfy(\.syncEnabled)
+        HStack(spacing: 12) {
+            Image(systemName: "music.note.list")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("\(tracks.count) song\(tracks.count == 1 ? "" : "s") selected").font(.callout.weight(.semibold))
+                Text("\(Format.bytes(tracks.reduce(Int64(0)) { $0 + $1.fileSize })) · drag onto an iPod in the sidebar to add")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Menu {
                 ForEach(library.playlists) { pl in
-                    Button(pl.name) { library.addTracks(Array(target), toPlaylist: pl.id) }
+                    Button(pl.name) { library.addTracks(tracks.map(\.id), toPlaylist: pl.id) }
                 }
                 if !library.playlists.isEmpty { Divider() }
-                Button("New Playlist…") {
-                    selection = target
-                    showNewPlaylistFromSelection = true
-                }
+                Button("New Playlist…", action: onNewPlaylist)
+            } label: {
+                Label("Add to Playlist", systemImage: "text.badge.plus")
             }
-            Button("Sync to iPod") { library.setSync(true, forTracks: target) }
-            Button("Don't Sync") { library.setSync(false, forTracks: target) }
-            Divider()
-            Button("Show in Finder") {
-                let urls = library.tracks.filter { target.contains($0.id) }.map(\.url)
-                NSWorkspace.shared.activateFileViewerSelecting(urls)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Button {
+                library.setSync(!allSynced, forTracks: selection)
+            } label: {
+                Label(allSynced ? "Don't Sync" : "Sync to iPod", systemImage: allSynced ? "minus.circle" : "checkmark.circle")
             }
-            Button("Remove from Library", role: .destructive) {
-                library.removeTracks(ids: target)
-                selection.subtract(target)
+            Button {
+                selection.removeAll()
+            } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Deselect (Esc)")
+        }
+        .controlSize(.regular)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+    }
+}
+
+/// Small sync-state indicator for an artist row: filled when everything syncs, half when some does.
+private struct SyncStateBadge: View {
+    let allSynced: Bool
+    let noneSynced: Bool
+
+    var body: some View {
+        if allSynced {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor).help("All songs sync to iPod")
+        } else if !noneSynced {
+            Image(systemName: "circle.lefthalf.filled").foregroundStyle(.secondary).help("Some songs sync to iPod")
+        }
+    }
+}
+
+/// What follows the pointer while dragging songs toward an iPod.
+private struct DragPreview: View {
+    let count: Int
+    let artworkURL: URL?
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ArtworkThumb(url: artworkURL, size: 32, cornerRadius: 5)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.callout.weight(.semibold)).lineLimit(1)
+                Text("\(count) song\(count == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
             }
         }
+        .padding(8)
+        .frame(maxWidth: 260, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+/// Row frames in the track list's coordinate space, for hit-testing a click-and-drag sweep. A plain
+/// reference type on purpose: rows reporting their frames while scrolling shouldn't re-render the view.
+private final class RowFrames {
+    var frames: [UUID: CGRect] = [:]
+
+    /// The row under `y`, or the nearest one when `y` falls in a gap (e.g. on an album header).
+    func row(atY y: CGFloat) -> UUID? {
+        if let hit = frames.first(where: { $0.value.minY <= y && y < $0.value.maxY }) { return hit.key }
+        return frames.min { abs($0.value.midY - y) < abs($1.value.midY - y) }?.key
     }
 }
 
 /// Right-hand pane for the selected artist: one section per album, big artwork, numbered tracklist —
 /// everything needed to decide what of theirs goes on the iPod.
+///
+/// Track selection works like a Finder list: click selects, ⌘-click toggles, ⇧-click extends, and
+/// click-and-drag starting on an unselected song sweeps a range. Dragging a selected song instead
+/// picks up the whole selection, which can be dropped onto an iPod in the sidebar.
 private struct ArtistDetailView: View {
     let group: ArtistGroup
     let library: LibraryStore
     @Binding var selection: Set<UUID>
+    let onNewPlaylist: () -> Void
+
+    @State private var rowFrames = RowFrames()
+    @State private var anchorID: UUID?
+    @State private var sweepBase: Set<UUID>?
+
+    private static let space = "artistTracks"
+
+    private var orderedIDs: [UUID] { group.allTrackIDs }
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: 28) {
                 header
                 ForEach(group.albums) { album in
                     albumSection(album)
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 24)
+            .coordinateSpace(.named(Self.space))
+        }
+        .background {
+            // Clicking empty space clears the selection, like any macOS list.
+            Color.clear.contentShape(Rectangle()).onTapGesture { selection.removeAll() }
         }
     }
+
+    // MARK: Header
 
     private var header: some View {
-        HStack {
-            Text(group.name).font(.title.bold())
+        HStack(alignment: .center, spacing: 18) {
+            ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 96, cornerRadius: 48, placeholder: "music.mic")
+                .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.name).font(.largeTitle.bold()).lineLimit(2)
+                Text("\(group.albums.count) album\(group.albums.count == 1 ? "" : "s") · \(songsSummary(count: group.trackCount, durationMs: group.totalDurationMs))")
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
-            Toggle("Sync all", isOn: Binding(
+            Toggle(isOn: Binding(
                 get: { group.allSynced },
                 set: { v in library.setSync(v, forTracks: Set(group.allTrackIDs)) }
-            ))
-            .toggleStyle(.checkbox)
+            )) {
+                Label(group.allSynced ? "Syncing All" : "Sync All", systemImage: group.allSynced ? "checkmark" : "arrow.triangle.2.circlepath")
+            }
+            .toggleStyle(.button)
+            .controlSize(.large)
+            .help("Put every song by this artist on your iPod")
         }
+        .padding(18)
+        .background {
+            ZStack {
+                ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 120, cornerRadius: 0)
+                    .scaleEffect(6)
+                    .blur(radius: 50)
+                    .opacity(0.35)
+                LinearGradient(colors: [.clear, Color(nsColor: .windowBackgroundColor).opacity(0.6)], startPoint: .top, endPoint: .bottom)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .allowsHitTesting(false)
+        }
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
     }
+
+    // MARK: Albums
 
     private func albumSection(_ album: AlbumGroup) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 14) {
-                ArtworkThumb(url: library.artworkURL(album.artworkKey), size: 72, cornerRadius: 6)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(album.title).font(.headline)
-                    HStack(spacing: 6) {
-                        if let g = album.genre { Text(g) }
-                        if album.year > 0 { Text(String(album.year)) }
-                        Text("\(album.tracks.count) song\(album.tracks.count == 1 ? "" : "s")")
+        HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 10) {
+                ArtworkThumb(url: library.artworkURL(album.artworkKey), size: 150, cornerRadius: 8)
+                    .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+                    .draggable(TrackIDsTransfer(ids: album.tracks.map(\.id))) {
+                        DragPreview(count: album.tracks.count, artworkURL: library.artworkURL(album.artworkKey), title: album.title)
                     }
-                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Drag onto an iPod in the sidebar to add this album")
+                Toggle(isOn: Binding(get: { album.allSynced }, set: { v in library.setSync(v, forTracks: Set(album.tracks.map(\.id))) })) {
+                    Text("Sync album")
                 }
-                Spacer()
-                Toggle("", isOn: Binding(get: { album.allSynced }, set: { v in library.setSync(v, forTracks: Set(album.tracks.map(\.id))) }))
-                    .labelsHidden().toggleStyle(.checkbox)
+                .toggleStyle(.checkbox)
             }
-            VStack(spacing: 0) {
-                ForEach(album.tracks) { t in
-                    trackRow(t)
-                    if t.id != album.tracks.last?.id { Divider() }
+            .frame(width: 150)
+
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(album.title).font(.title2.bold()).lineLimit(2)
+                    Text([album.genre, album.year > 0 ? String(album.year) : nil, songsSummary(count: album.tracks.count, durationMs: album.totalDurationMs)]
+                        .compactMap { $0 }.joined(separator: " · "))
+                        .font(.callout).foregroundStyle(.secondary)
                 }
+                VStack(spacing: 0) {
+                    ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, t in
+                        TrackRowView(track: t, library: library,
+                                     isSelected: selection.contains(t.id),
+                                     isSweeping: sweepBase != nil,
+                                     isStriped: index.isMultiple(of: 2),
+                                     dragPayload: dragPayload(for: t.id),
+                                     dragTitle: selection.contains(t.id) && selection.count > 1 ? "\(selection.count) songs" : t.title,
+                                     dragArtworkURL: library.artworkURL(album.artworkKey ?? t.artworkKey),
+                                     onClick: { click(t.id) },
+                                     sweep: sweepGesture(from: t.id),
+                                     contextIDs: selection.contains(t.id) ? selection : [t.id],
+                                     selection: $selection,
+                                     onNewPlaylist: onNewPlaylist)
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { rowFrames.frames[t.id] = $0 }
+                            .onDisappear { rowFrames.frames[t.id] = nil }
+                    }
+                }
+                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
             }
-            .padding(.leading, 86)
         }
     }
 
-    private func trackRow(_ t: LibraryTrack) -> some View {
+    // MARK: Selection
+
+    private func dragPayload(for id: UUID) -> TrackIDsTransfer {
+        guard selection.contains(id), selection.count > 1 else { return TrackIDsTransfer(ids: [id]) }
+        return TrackIDsTransfer(ids: orderedIDs.filter(selection.contains))
+    }
+
+    private func click(_ id: UUID) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), let anchorID, let range = range(from: anchorID, to: id) {
+            selection = flags.contains(.command) ? selection.union(range) : Set(range)
+            return
+        }
+        if flags.contains(.command) {
+            if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+        } else {
+            selection = [id]
+        }
+        anchorID = id
+    }
+
+    private func range(from a: UUID, to b: UUID) -> [UUID]? {
+        guard let i = orderedIDs.firstIndex(of: a), let j = orderedIDs.firstIndex(of: b) else { return nil }
+        return Array(orderedIDs[min(i, j)...max(i, j)])
+    }
+
+    /// Click-and-drag starting on an unselected song selects every song between it and the pointer;
+    /// with ⌘ held it adds that range to the existing selection instead of replacing it.
+    private func sweepGesture(from id: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named(Self.space))
+            .onChanged { value in
+                if sweepBase == nil {
+                    sweepBase = NSEvent.modifierFlags.contains(.command) ? selection : []
+                    anchorID = id
+                }
+                guard let current = rowFrames.row(atY: value.location.y), let range = range(from: id, to: current) else { return }
+                selection = (sweepBase ?? []).union(range)
+            }
+            .onEnded { _ in sweepBase = nil }
+    }
+}
+
+/// One song in an album's tracklist. Its own view so hover state stays local to the row.
+private struct TrackRowView<Sweep: Gesture>: View {
+    let track: LibraryTrack
+    let library: LibraryStore
+    let isSelected: Bool
+    /// True while a sweep is in progress anywhere in the list. Rows keep their sweep gesture until it
+    /// ends: swapping the origin row to `.draggable` as soon as the sweep selects it would tear down
+    /// the very gesture that's tracking the pointer.
+    let isSweeping: Bool
+    let isStriped: Bool
+    let dragPayload: TrackIDsTransfer
+    let dragTitle: String
+    let dragArtworkURL: URL?
+    let onClick: () -> Void
+    let sweep: Sweep
+    let contextIDs: Set<UUID>
+    @Binding var selection: Set<UUID>
+    let onNewPlaylist: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        let row = content
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onClick)
+            .onHover { isHovered = $0 }
+            .contextMenu {
+                TrackContextMenu(ids: contextIDs, library: library, selection: $selection, onNewPlaylist: onNewPlaylist)
+            }
+        // A drag that starts on a selected song carries the selection out (to an iPod); one that starts
+        // on an unselected song sweeps out a new selection instead.
+        if isSelected && !isSweeping {
+            row.draggable(dragPayload) {
+                DragPreview(count: dragPayload.ids.count, artworkURL: dragArtworkURL, title: dragTitle)
+            }
+        } else {
+            row.gesture(sweep)
+        }
+    }
+
+    private var content: some View {
         HStack(spacing: 10) {
-            Text(t.trackNumber > 0 ? "\(t.trackNumber)" : "–")
-                .font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 20, alignment: .trailing)
-            Text(t.title).lineLimit(1)
-            if library.missingPaths.contains(t.path) {
+            Text(track.trackNumber > 0 ? "\(track.trackNumber)" : "–")
+                .font(.callout).monospacedDigit()
+                .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+                .frame(width: 22, alignment: .trailing)
+            Text(track.title)
+                .lineLimit(1)
+                .foregroundStyle(isSelected ? Color.white : track.syncEnabled ? Color.primary : Color.secondary)
+            if track.hasLyrics {
+                Image(systemName: "quote.bubble").font(.caption2)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.7) : Color.secondary.opacity(0.7))
+                    .help("Has lyrics")
+            }
+            if library.missingPaths.contains(track.path) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help("File not found")
             }
-            Spacer()
-            Text(Format.duration(ms: t.durationMs)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            Toggle("", isOn: Binding(get: { t.syncEnabled }, set: { v in library.setSync(v, forTracks: [t.id]) }))
-                .labelsHidden().toggleStyle(.checkbox)
+            Spacer(minLength: 8)
+            Text(Format.duration(ms: track.durationMs))
+                .font(.callout).monospacedDigit()
+                .foregroundStyle(isSelected ? Color.white.opacity(0.85) : Color.secondary)
+            Toggle("", isOn: Binding(
+                get: { track.syncEnabled },
+                set: { v in library.setSync(v, forTracks: isSelected ? selection : [track.id]) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+            .help(track.syncEnabled ? "Syncs to iPod" : "Doesn't sync to iPod")
         }
-        .padding(.vertical, 4)
-        .contextMenu {
-            Button("Sync to iPod") { library.setSync(true, forTracks: [t.id]) }
-            Button("Don't Sync") { library.setSync(false, forTracks: [t.id]) }
-            Divider()
-            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([t.url]) }
-            Button("Remove from Library", role: .destructive) { library.removeTracks(ids: [t.id]) }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 6).fill(Color.accentColor)
+            } else if isHovered {
+                RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06))
+            } else if isStriped {
+                RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.025))
+            }
         }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 1)
     }
 }

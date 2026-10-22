@@ -117,9 +117,30 @@ struct MenuRequestHandler: ViewModifier {
     private var sync: SyncCoordinator { envSync ?? AppServices.shared.sync }
     @Environment(AppState.self) private var envAppState: AppState?
     private var appState: AppState { envAppState ?? AppServices.shared.appState }
+    @State private var confirmRemoveMissing = false
 
     func body(content: Content) -> some View {
         content
+            .onChange(of: appState.requestScanLibrary) { _, v in
+                guard v else { return }
+                appState.requestScanLibrary = false
+                Task { await scanLibrary() }
+            }
+            .onChange(of: appState.requestChooseLibraryFolder) { _, v in
+                guard v else { return }
+                appState.requestChooseLibraryFolder = false
+                Task { await FileImportActions.chooseMusicFolder(library: library) }
+            }
+            .onChange(of: appState.requestRemoveMissing) { _, v in
+                guard v else { return }
+                appState.requestRemoveMissing = false
+                confirmRemoveMissing = true
+            }
+            .confirmationDialog("Remove \(library.missingPaths.count) missing file\(library.missingPaths.count == 1 ? "" : "s") from your library?", isPresented: $confirmRemoveMissing) {
+                Button("Remove", role: .destructive) { library.removeMissingTracks() }
+            } message: {
+                Text("Copies already on an iPod stay there — turn on “Remove songs that aren't in this library” in that iPod's sync options to clear them too.")
+            }
             .onChange(of: appState.requestAddFiles) { _, v in
                 guard v else { return }
                 appState.requestAddFiles = false
@@ -145,6 +166,25 @@ struct MenuRequestHandler: ViewModifier {
                 appState.requestEject = false
                 eject()
             }
+    }
+
+    /// Menu-initiated scan: unlike the silent one at launch, this reports what it found.
+    private func scanLibrary() async {
+        guard library.musicFolderPath != nil else {
+            await FileImportActions.chooseMusicFolder(library: library)
+            return
+        }
+        guard let added = await library.scanLibraryFolders() else {
+            appState.alert = AlertMessage(title: "Library Folder Not Found",
+                                          message: "\(library.musicFolderPath ?? "The folder") isn't available. If it's on an external drive, connect it and try again.")
+            return
+        }
+        var message = added == 0 ? "No new files were found." : "Added \(added) new file\(added == 1 ? "" : "s")."
+        let missing = library.missingPaths.count
+        if missing > 0 {
+            message += " \(missing) song\(missing == 1 ? " is" : "s are") missing from disk — use Library ▸ Remove Missing Files to clean them up."
+        }
+        appState.alert = AlertMessage(title: "Library Scanned", message: message)
     }
 
     private func startSync() {
@@ -281,35 +321,67 @@ struct SidebarView: View {
     }
 }
 
-/// A sidebar iPod row that also accepts drag-and-drop from the library (e.g. selected audiobooks)
-/// to turn their sync flag on.
+/// A sidebar iPod row that also accepts drag-and-drop from the library (songs, albums, artists,
+/// audiobooks): dropped items are set to sync and a sync starts shortly after, so they land on the iPod.
 private struct DeviceSidebarRow: View {
     let device: IPodDevice
     let name: String
     let isSyncing: Bool
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?
     private var library: LibraryStore { envLibrary ?? AppServices.shared.library }
+    @Environment(SyncCoordinator.self) private var envSync: SyncCoordinator?
+    private var sync: SyncCoordinator { envSync ?? AppServices.shared.sync }
     @State private var isDropTargeted = false
+    @State private var justAdded: Int?
 
     var body: some View {
         HStack {
             Label(name, systemImage: "ipod")
             Spacer()
+            if let justAdded {
+                Text("+\(justAdded)")
+                    .font(.caption2.weight(.semibold)).monospacedDigit()
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Color.accentColor, in: Capsule())
+                    .foregroundStyle(.white)
+                    .transition(.scale.combined(with: .opacity))
+            }
             if isSyncing {
                 ProgressView().controlSize(.small)
             }
         }
-        .padding(.vertical, isDropTargeted ? 2 : 0)
-        .background(isDropTargeted ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.vertical, 2)
+        .background {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.18))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 1.5))
+                    .padding(.horizontal, -6)
+            }
+        }
+        .animation(.snappy(duration: 0.2), value: isDropTargeted)
+        .help("Drag songs, albums or artists here to put them on this iPod")
         .dropDestination(for: TrackIDsTransfer.self, action: { items, _ in
-            let ids = Set(items.flatMap(\.ids))
+            let ids = Set(items.flatMap(\.ids)).filter { library.track(id: $0) != nil }
             guard !ids.isEmpty else { return false }
             library.setSync(true, forTracks: ids)
-            if ids.contains(where: { library.track(id: $0)?.isAudiobook == true }) {
-                var r = library.record(for: device)
+            var r = library.record(for: device)
+            var recordChanged = false
+            if ids.contains(where: { library.track(id: $0)?.isAudiobook == true }), !r.audiobooksEnabled {
                 r.syncAudiobooks = true
-                library.updateRecord(r)
+                recordChanged = true
             }
+            if ids.contains(where: { library.track(id: $0)?.isVideo == true }), !r.videosEnabled {
+                r.syncVideos = true
+                recordChanged = true
+            }
+            if recordChanged { library.updateRecord(r) }
+            withAnimation(.snappy) { justAdded = (justAdded ?? 0) + ids.count }
+            Task {
+                try? await Task.sleep(for: .seconds(2.5))
+                withAnimation(.snappy) { justAdded = nil }
+            }
+            sync.scheduleSync(device)
             return true
         }, isTargeted: { isDropTargeted = $0 })
     }
@@ -361,6 +433,20 @@ enum FileImportActions {
         panel.allowedContentTypes = [.audio, .movie, .video, .folder, .mp3, .mpeg4Audio, .wav, .aiff, .mpeg4Movie, .quickTimeMovie, .appleProtectedMPEG4Video]
         guard await panel.begin() == .OK else { return }
         await library.importFiles(panel.urls)
+    }
+
+    @MainActor
+    static func chooseMusicFolder(library: LibraryStore) async {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Library Folder"
+        panel.message = "Choose the folder your music is stored in. iPod Pro Max checks it for new files every time it opens."
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if let path = library.musicFolderPath { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
+        guard await panel.begin() == .OK, let url = panel.url else { return }
+        await library.setMusicFolder(url)
     }
 }
 

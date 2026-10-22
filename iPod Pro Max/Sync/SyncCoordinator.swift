@@ -28,6 +28,7 @@ final class SyncCoordinator {
     /// The detached task actually running `SyncEngine.run()`. Cancelling only `tasks` doesn't reach it,
     /// since `Task.detached` starts an independent task tree that doesn't inherit its parent's cancellation.
     private var engineTasks: [String: Task<SyncResult, Error>] = [:]
+    private var pendingSyncs: [String: Task<Void, Never>] = [:]
 
     let library: LibraryStore
     let devices: DeviceMonitor
@@ -134,6 +135,22 @@ final class SyncCoordinator {
             self.engineTasks[deviceID] = nil
         }
         tasks[device.id] = task
+    }
+
+    /// Starts a sync once a burst of drag-and-drop additions settles. If a sync is already running, waits
+    /// for it to finish and syncs again, so items dropped mid-sync aren't left waiting for the next one.
+    func scheduleSync(_ device: IPodDevice, after delay: Duration = .seconds(2)) {
+        pendingSyncs[device.id]?.cancel()
+        pendingSyncs[device.id] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            while let self, !Task.isCancelled, self.isSyncing(device) {
+                try? await Task.sleep(for: .seconds(1))
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.pendingSyncs[device.id] = nil
+            guard let current = self.devices.device(id: device.id) else { return }
+            self.startSync(current)
+        }
     }
 
     private func update(_ id: String, _ body: (inout Status) -> Void) {

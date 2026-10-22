@@ -235,4 +235,6 @@ struct LibraryDocument: Codable {
     var photoSelection: PhotoSelection? = PhotoSelection()
     /// Folder the user pointed Audiobooks at; rescanned on demand.
     var audiobooksFolderPath: String? = nil
+    /// Folder the music library lives in; scanned for new files at launch and from Library ▸ Scan.
+    var musicFolderPath: String? = nil
 }

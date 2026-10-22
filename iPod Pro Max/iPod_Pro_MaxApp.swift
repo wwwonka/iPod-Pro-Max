@@ -46,6 +46,19 @@ struct iPod_Pro_MaxApp: App {
                 Button("Refresh Podcasts") { appState.requestRefreshPodcasts = true }
                     .keyboardShortcut("r", modifiers: .command)
             }
+            CommandMenu("Library") {
+                Button("Scan Library Folder for New Files") { appState.requestScanLibrary = true }
+                    .keyboardShortcut("r", modifiers: [.command, .option])
+                    .disabled(library.isScanningLibrary)
+                Button("Choose Library Folder…") { appState.requestChooseLibraryFolder = true }
+                Button("Show Library Folder in Finder") {
+                    if let path = library.musicFolderPath { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path) }
+                }
+                .disabled(library.musicFolderPath == nil)
+                Divider()
+                Button("Remove Missing Files") { appState.requestRemoveMissing = true }
+                    .disabled(library.missingPaths.isEmpty)
+            }
             CommandMenu("iPod") {
                 Button("Sync") { appState.requestSync = true }
                     .keyboardShortcut("s", modifiers: .command)
@@ -109,6 +122,9 @@ final class AppState {
     var requestRefreshPodcasts = false
     var requestSync = false
     var requestEject = false
+    var requestScanLibrary = false
+    var requestChooseLibraryFolder = false
+    var requestRemoveMissing = false
     var alert: AlertMessage?
 }
 

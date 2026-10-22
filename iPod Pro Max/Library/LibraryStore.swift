@@ -20,9 +20,11 @@ final class LibraryStore {
     var deviceRecords: [String: DeviceSyncRecord] = [:]
     var photoSelection = PhotoSelection()
     var audiobooksFolderPath: String?
+    var musicFolderPath: String?
 
     // Transient UI state
     var isImporting = false
+    var isScanningLibrary = false
     var importStatus: String?
     var importProgress: Double?
     var downloadProgress: [UUID: Double] = [:]
@@ -57,7 +59,14 @@ final class LibraryStore {
         }
         load()
         Task { await backfillLyricsIfNeeded() }
-        Task { await refreshMissingFiles() }
+        if UserDefaults.standard.object(forKey: "scanLibraryOnLaunch") as? Bool ?? true {
+            Task {
+                inferMusicFolderIfNeeded()
+                await scanLibraryFolders()
+            }
+        } else {
+            Task { await refreshMissingFiles() }
+        }
     }
 
     /// Re-checks which library files are missing from disk (e.g. deleted in Finder), off the main
@@ -188,6 +197,7 @@ final class LibraryStore {
             deviceRecords = doc.deviceRecords
             photoSelection = doc.photoSelection ?? PhotoSelection()
             audiobooksFolderPath = doc.audiobooksFolderPath
+            musicFolderPath = doc.musicFolderPath
         } catch {
             lastError = "Couldn't read the library file: \(error.localizedDescription)"
         }
@@ -239,7 +249,7 @@ final class LibraryStore {
                 return
             }
         }
-        let doc = LibraryDocument(tracks: tracks, playlists: playlists, shows: shows, deviceRecords: deviceRecords, photoSelection: photoSelection, audiobooksFolderPath: audiobooksFolderPath)
+        let doc = LibraryDocument(tracks: tracks, playlists: playlists, shows: shows, deviceRecords: deviceRecords, photoSelection: photoSelection, audiobooksFolderPath: audiobooksFolderPath, musicFolderPath: musicFolderPath)
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -316,8 +326,9 @@ final class LibraryStore {
     }
 
     /// Imports audio and video files (folders are searched recursively). Returns the number of items added.
+    /// Files under `excludingFolder` are skipped (used to keep the Audiobooks folder out of a music scan).
     @discardableResult
-    func importFiles(_ urls: [URL]) async -> Int {
+    func importFiles(_ urls: [URL], excludingFolder: String? = nil) async -> Int {
         isImporting = true
         importStatus = "Looking for media files…"
         importProgress = nil
@@ -328,7 +339,10 @@ final class LibraryStore {
         }
         let files = await Task.detached(priority: .userInitiated) { Self.collectAudioFiles(urls) }.value
         let existing = Set(tracks.map(\.path))
-        let toImport = files.filter { !existing.contains($0.path) }
+        let excludedPrefix = excludingFolder.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
+        let toImport = files.filter { f in
+            !existing.contains(f.path) && !(excludedPrefix.map { f.path.hasPrefix($0) } ?? false)
+        }
         guard !toImport.isEmpty else { return 0 }
 
         var added = 0
@@ -417,6 +431,63 @@ final class LibraryStore {
             }
         }
         return out.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    // MARK: - Library folder
+
+    /// Points the music library at a folder and scans it for files not in the library yet.
+    func setMusicFolder(_ url: URL?) async {
+        musicFolderPath = url?.path
+        scheduleSave()
+        if url != nil { await scanLibraryFolders() }
+    }
+
+    /// Brings the library up to date with what's on disk: imports files added to the music folder (and
+    /// the Audiobooks folder) since the last scan, re-reads tags of files edited elsewhere, and refreshes
+    /// which files have gone missing. Never removes anything by itself — a folder on an unplugged drive
+    /// looks empty, and treating that as "everything was deleted" would wipe the library.
+    /// Returns the number of new songs/videos imported from the music folder, or nil if it couldn't run.
+    @discardableResult
+    func scanLibraryFolders() async -> Int? {
+        guard !isScanningLibrary else { return nil }
+        isScanningLibrary = true
+        defer { isScanningLibrary = false }
+
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        if let path = audiobooksFolderPath, fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+            await rescanAudiobooks()
+        }
+        var added: Int?
+        if let path = musicFolderPath, fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+            added = await importFiles([URL(fileURLWithPath: path, isDirectory: true)], excludingFolder: audiobooksFolderPath)
+        }
+        await refreshChangedTrackMetadata()
+        await refreshMissingFiles()
+        return added
+    }
+
+    /// Libraries created before the music folder setting existed have no folder recorded. If every song
+    /// lives under one reasonably specific folder (e.g. ~/Music/Music Library — not ~ or ~/Music, which
+    /// would sweep in unrelated media), adopt it so launch scans work without any setup.
+    func inferMusicFolderIfNeeded() {
+        guard musicFolderPath == nil else { return }
+        let paths = songs.map(\.path)
+        guard paths.count >= 10 else { return }
+        var common = (paths[0] as NSString).deletingLastPathComponent.split(separator: "/").map(String.init)
+        for p in paths.dropFirst() {
+            let parts = (p as NSString).deletingLastPathComponent.split(separator: "/")
+            var n = 0
+            while n < min(common.count, parts.count), common[n] == parts[n] { n += 1 }
+            common.removeLast(common.count - n)
+            if common.isEmpty { return }
+        }
+        let folder = "/" + common.joined(separator: "/")
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let tooBroad = [home, home + "/Music", home + "/Desktop", home + "/Downloads", home + "/Documents"]
+        guard common.count >= 3, !tooBroad.contains(folder), !folder.contains("/Music/Music/Media") else { return }
+        musicFolderPath = folder
+        scheduleSave()
     }
 
     // MARK: - Audiobooks
