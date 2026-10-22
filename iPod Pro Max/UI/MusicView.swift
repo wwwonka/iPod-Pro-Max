@@ -69,18 +69,29 @@ struct MusicView: View {
     // underlying data actually changes; a toggle on one track re-renders this view but shouldn't repeat it.
     @State private var cachedArtistGroups: [ArtistGroup] = []
     @State private var cachedVisibleTracks: [LibraryTrack] = []
+    @State private var cachedSubtitle = ""
+    /// Bumped whenever `cachedArtistGroups` is rebuilt, so the artist list can skip re-rendering otherwise.
+    @State private var groupsVersion = 0
 
-    private var searchedTracks: [LibraryTrack] {
-        guard !search.isEmpty else { return library.songs }
+    /// What the cached data depends on. Keyed on the library's revision counter rather than the tracks
+    /// themselves: comparing thousands of tracks on every render was itself a noticeable cost.
+    private struct DerivedKey: Equatable {
+        var revision: Int
+        var search: String
+        var sortOrder: [KeyPathComparator<LibraryTrack>]
+    }
+
+    private func searchedTracks(in songs: [LibraryTrack]) -> [LibraryTrack] {
+        guard !search.isEmpty else { return songs }
         let q = search.lowercased()
-        return library.songs.filter {
+        return songs.filter {
             $0.title.lowercased().contains(q) || ($0.artist?.lowercased().contains(q) ?? false) || ($0.album?.lowercased().contains(q) ?? false) || ($0.genre?.lowercased().contains(q) ?? false)
         }
     }
 
     var body: some View {
         Group {
-            if library.songs.isEmpty {
+            if !library.tracks.contains(where: { !$0.isVideo && !$0.isAudiobook }) {
                 EmptyStateView(icon: "music.note", title: "No Music Yet",
                                message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.") {
                     AnyView(HStack {
@@ -103,7 +114,7 @@ struct MusicView: View {
         }
         .animation(.snappy(duration: 0.25), value: selection.isEmpty)
         .navigationTitle("Music")
-        .navigationSubtitle(subtitle)
+        .navigationSubtitle(cachedSubtitle)
         .searchable(text: $search, placement: .toolbar, prompt: "Search songs")
         .searchFocused($searchFieldFocused)
         .background {
@@ -146,12 +157,11 @@ struct MusicView: View {
             Text("Copies already on an iPod stay there — turn on “Remove songs that aren't in this library” in that iPod's sync options to clear them too.")
         }
         .task { await library.refreshMissingFiles() }
-        .task(id: searchedTracks) { recomputeDerived() }
-        .task(id: sortOrder) { recomputeDerived() }
-        .onAppear { recomputeDerived() }
-        .onChange(of: library.tracks.map(\.id)) { _, ids in
+        .task(id: DerivedKey(revision: library.tracksRevision, search: search, sortOrder: sortOrder)) { recomputeDerived() }
+        .onChange(of: library.tracksRevision) {
             // Drop selected IDs whose tracks were removed, so the selection bar never counts ghosts.
-            let live = Set(ids)
+            guard !selection.isEmpty else { return }
+            let live = Set(library.tracks.map(\.id))
             if !selection.isSubset(of: live) { selection.formIntersection(live) }
         }
         .onExitCommand { selection.removeAll() }
@@ -182,14 +192,18 @@ struct MusicView: View {
     }
 
     private func recomputeDerived() {
-        cachedVisibleTracks = searchedTracks.sorted(using: sortOrder)
-        let byArtist = Dictionary(grouping: searchedTracks, by: groupArtistName)
+        let songs = library.songs
+        let searched = searchedTracks(in: songs)
+        cachedVisibleTracks = searched.sorted(using: sortOrder)
+        let byArtist = Dictionary(grouping: searched, by: groupArtistName)
         var groups: [ArtistGroup] = []
         for (name, tracks) in byArtist {
             groups.append(Self.makeArtistGroup(name: name, tracks: tracks))
         }
         groups.sort { SortKey.collate($0.name) < SortKey.collate($1.name) }
         cachedArtistGroups = groups
+        groupsVersion &+= 1
+        cachedSubtitle = Self.subtitle(for: songs)
     }
 
     private static func makeArtistGroup(name: String, tracks: [LibraryTrack]) -> ArtistGroup {
@@ -219,11 +233,14 @@ struct MusicView: View {
                            year: year, genre: genre, artworkKey: artworkKey, tracks: sorted)
     }
 
-    private var subtitle: String {
-        let n = library.songs.count
-        let synced = library.songs.filter(\.syncEnabled).count
-        let bytes = library.songs.filter(\.syncEnabled).reduce(Int64(0)) { $0 + $1.fileSize }
-        return "\(n) song\(n == 1 ? "" : "s"), \(synced) set to sync, \(Format.bytes(bytes))"
+    private static func subtitle(for songs: [LibraryTrack]) -> String {
+        var synced = 0
+        var bytes: Int64 = 0
+        for t in songs where t.syncEnabled {
+            synced += 1
+            bytes += t.fileSize
+        }
+        return "\(songs.count) song\(songs.count == 1 ? "" : "s"), \(synced) set to sync, \(Format.bytes(bytes))"
     }
 
     // MARK: - By Artist (master-detail, like the iPod's own Artists list)
@@ -251,8 +268,27 @@ struct MusicView: View {
     }
 
     private var artistSidebar: some View {
+        ArtistListView(groups: cachedArtistGroups, version: groupsVersion, selectedArtistID: $selectedArtistID, library: library)
+            .equatable()
+    }
+}
+
+/// The artist column. Equatable on purpose: hundreds of rows with drag and context-menu modifiers are
+/// expensive to rebuild, and without this every change in the Music view (selecting a song, the
+/// selection bar appearing) rebuilt the whole list.
+private struct ArtistListView: View, Equatable {
+    let groups: [ArtistGroup]
+    let version: Int
+    @Binding var selectedArtistID: String?
+    let library: LibraryStore
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.version == b.version && a.selectedArtistID == b.selectedArtistID
+    }
+
+    var body: some View {
         List(selection: $selectedArtistID) {
-            ForEach(cachedArtistGroups) { group in
+            ForEach(groups) { group in
                 HStack(spacing: 10) {
                     ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 34, cornerRadius: 17, placeholder: "music.mic")
                         .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
@@ -277,7 +313,9 @@ struct MusicView: View {
         }
         .listStyle(.sidebar)
     }
+}
 
+extension MusicView {
     // MARK: - All Songs (flat table)
 
     private var table: some View {

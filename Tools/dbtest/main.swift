@@ -49,6 +49,18 @@ struct DBTest {
             }
             return
         }
+        // `dbtest <music folder> <scratch dir> --import-bench`: times a full import of a folder into a
+        // fresh, throwaway library (the music files are only read).
+        if args.contains("--import-bench") {
+            try? fm.removeItem(at: ipod)
+            let start = ContinuousClock.now
+            let store = await MainActor.run { LibraryStore(baseDir: ipod) }
+            let added = await store.importFiles([samples])
+            let elapsed = ContinuousClock.now - start
+            await MainActor.run { store.saveNow() }
+            print("imported \(added) files in \(elapsed.formatted(.units(allowed: [.seconds, .milliseconds]))) using up to \(ProcessInfo.processInfo.activeProcessorCount) cores")
+            return
+        }
         if args.contains("--migration") {
             let libDir = samples.appendingPathComponent("lib")
             try? FileManager.default.removeItem(at: libDir)

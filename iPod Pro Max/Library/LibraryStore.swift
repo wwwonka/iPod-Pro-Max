@@ -10,11 +10,31 @@ import Foundation
 import Observation
 import CryptoKit
 import AppKit
+import os
+
+/// Every track of an album usually embeds the same cover. Decoding and re-encoding it as JPEG is the
+/// most expensive part of reading a file, so during one import pass each distinct embedded image
+/// (by a hash of its raw bytes, which is cheap) is stored once and its key reused. Safe to share
+/// across concurrent import tasks.
+final class ArtworkKeyCache: Sendable {
+    private let keys = OSAllocatedUnfairLock(initialState: [SHA256Digest: String]())
+
+    func key(for data: Data, in artworkDir: URL) -> String? {
+        let digest = SHA256.hash(data: data)
+        if let key = keys.withLock({ $0[digest] }) { return key }
+        guard let key = LibraryStore.storeArtwork(data, in: artworkDir) else { return nil }
+        keys.withLock { $0[digest] = key }
+        return key
+    }
+}
 
 @MainActor
 @Observable
 final class LibraryStore {
-    var tracks: [LibraryTrack] = []
+    var tracks: [LibraryTrack] = [] { didSet { tracksRevision &+= 1 } }
+    /// Bumped on every change to `tracks`. Views key their cached derived data on this instead of
+    /// comparing thousands of tracks on every render.
+    private(set) var tracksRevision = 0
     var playlists: [LibraryPlaylist] = []
     var shows: [PodcastShow] = []
     var deviceRecords: [String: DeviceSyncRecord] = [:]
@@ -128,19 +148,25 @@ final class LibraryStore {
         guard !candidates.isEmpty else { return }
 
         let artworkDir = self.artworkDir
-        let results = await withTaskGroup(of: (UUID, Date, ExtractedMetadata)?.self) { group -> [(UUID, Date, ExtractedMetadata)] in
+        let artCache = ArtworkKeyCache()
+        let width = max(2, ProcessInfo.processInfo.activeProcessorCount)
+        typealias Refreshed = (id: UUID, modified: Date, md: ExtractedMetadata, artworkKey: String?)
+        let results = await withTaskGroup(of: Refreshed?.self) { group -> [Refreshed] in
             var iterator = candidates.makeIterator()
             var running = 0
-            var collected: [(UUID, Date, ExtractedMetadata)] = []
+            var collected: [Refreshed] = []
             func addNext() {
                 guard let next = iterator.next() else { return }
                 running += 1
                 group.addTask {
-                    guard let md = try? await MetadataExtractor.extract(from: next.url) else { return nil }
-                    return (next.id, next.modified, md)
+                    guard var md = try? await MetadataExtractor.extract(from: next.url) else { return nil }
+                    // Artwork re-encoding happens here on the worker, never on the main actor below.
+                    let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: next.url)
+                    md.artworkData = nil
+                    return (next.id, next.modified, md, art.flatMap { artCache.key(for: $0, in: artworkDir) })
                 }
             }
-            for _ in 0..<8 { addNext() }
+            for _ in 0..<width { addNext() }
             while let result = await group.next() {
                 running -= 1
                 if let result { collected.append(result) }
@@ -151,7 +177,7 @@ final class LibraryStore {
         guard !Task.isCancelled, !results.isEmpty else { return }
 
         var byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
-        for (id, modified, md) in results {
+        for (id, modified, md, artworkKey) in results {
             guard var t = byID[id] else { continue }
             t.title = md.title ?? t.title
             t.artist = md.artist
@@ -174,9 +200,7 @@ final class LibraryStore {
             t.bpm = md.bpm
             t.hasLyrics = md.hasLyrics
             t.dateModified = modified
-            if let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: t.url), let key = Self.storeArtwork(art, in: artworkDir) {
-                t.artworkKey = key
-            }
+            if let artworkKey { t.artworkKey = artworkKey }
             byID[id] = t
         }
         for i in tracks.indices {
@@ -347,71 +371,100 @@ final class LibraryStore {
 
         var added = 0
         let artworkDir = self.artworkDir
-        // Development aid: `-importDelay 2` sleeps between files to mimic slow cloud storage.
+        let artCache = ArtworkKeyCache()
+        // Development aid: `-importDelay 2` sleeps before each file to mimic slow cloud storage.
         let importDelay = UserDefaults.standard.double(forKey: "importDelay")
-        for (i, url) in toImport.enumerated() {
-            importStatus = "Importing \(url.lastPathComponent)"
-            importProgress = Double(i) / Double(toImport.count)
-            if importDelay > 0 { try? await Task.sleep(for: .seconds(importDelay)) }
-            let result: (LibraryTrack, String?)? = await Task.detached(priority: .userInitiated) {
-                let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                if VideoTranscoder.isVideoFile(url) {
-                    guard let info = try? await VideoTranscoder.info(for: url) else { return nil }
-                    let md = try? await MetadataExtractor.extract(from: url)
-                    var t = LibraryTrack(path: url.path, title: md?.title ?? url.deletingPathExtension().lastPathComponent, fileExtension: url.pathExtension.lowercased())
-                    t.kind = .video
-                    t.videoWidth = info.width
-                    t.videoHeight = info.height
-                    t.durationMs = info.durationMs
-                    t.artist = md?.artist
-                    t.album = md?.album
-                    t.genre = md?.genre
-                    t.year = md?.year ?? 0
-                    t.fileSize = Int64(attrs?.fileSize ?? 0)
-                    t.bitrate = info.durationMs > 0 ? Int(Double(t.fileSize) * 8 / Double(info.durationMs)) : 0
-                    t.dateModified = attrs?.contentModificationDate
-                    var art = md?.artworkData
-                    if art == nil { art = await VideoTranscoder.posterFrame(for: url) }
-                    let key = art.flatMap { Self.storeArtwork($0, in: artworkDir) }
-                    return (t, key)
+        // Reading tags is mostly AVFoundation parsing plus artwork re-encoding: CPU-bound, so one file
+        // per core keeps the machine busy without oversubscribing it. Results are appended to `tracks`
+        // in batches — every append re-renders (and regroups) the Music view, which, done per file,
+        // cost more than the import itself.
+        let width = max(2, ProcessInfo.processInfo.activeProcessorCount)
+        var pending: [LibraryTrack] = []
+        var done = 0
+        var lastFlush = ContinuousClock.now
+        importStatus = "Importing \(toImport.count) file\(toImport.count == 1 ? "" : "s")…"
+        importProgress = 0
+        await withTaskGroup(of: LibraryTrack?.self) { group in
+            var iterator = toImport.makeIterator()
+            func addNext() {
+                guard let url = iterator.next() else { return }
+                group.addTask(priority: .userInitiated) {
+                    if importDelay > 0 { try? await Task.sleep(for: .seconds(importDelay)) }
+                    return await Self.makeTrack(from: url, artworkDir: artworkDir, artCache: artCache)
                 }
-                guard let md = try? await MetadataExtractor.extract(from: url) else { return nil }
-                var t = LibraryTrack(path: url.path, title: md.title ?? url.deletingPathExtension().lastPathComponent, fileExtension: url.pathExtension.lowercased())
-                t.artist = md.artist
-                t.album = md.album
-                t.albumArtist = md.albumArtist
-                t.genre = md.genre
-                t.composer = md.composer
-                t.comment = md.comment
-                t.grouping = md.grouping
-                t.year = md.year
-                t.trackNumber = md.trackNumber
-                t.trackCount = md.trackCount
-                t.discNumber = md.discNumber
-                t.discCount = md.discCount
-                t.durationMs = md.durationMs
-                t.bitrate = md.bitrate
-                t.sampleRate = md.sampleRate
-                t.fileSize = Int64(attrs?.fileSize ?? 0)
-                t.isLossless = md.isLossless
-                t.compilation = md.compilation
-                t.bpm = md.bpm
-                t.hasLyrics = md.hasLyrics
-                t.dateModified = attrs?.contentModificationDate
-                let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: url)
-                let key = art.flatMap { Self.storeArtwork($0, in: artworkDir) }
-                return (t, key)
-            }.value
-            if let (track0, key) = result {
-                var track = track0
-                track.artworkKey = key
-                tracks.append(track)
-                added += 1
             }
-            if i % 25 == 0 { scheduleSave() }
+            for _ in 0..<width { addNext() }
+            while let result = await group.next() {
+                done += 1
+                if let result { pending.append(result) }
+                if !Task.isCancelled { addNext() }
+                let now = ContinuousClock.now
+                if now - lastFlush > .milliseconds(500) {
+                    lastFlush = now
+                    added += pending.count
+                    tracks.append(contentsOf: pending)
+                    pending.removeAll(keepingCapacity: true)
+                    importStatus = "Importing \(done) of \(toImport.count)…"
+                    importProgress = Double(done) / Double(toImport.count)
+                    scheduleSave()
+                }
+            }
         }
+        added += pending.count
+        tracks.append(contentsOf: pending)
         scheduleSave()
         return added
+    }
+
+    /// Reads one media file into a library track, off the main actor. Nil when it can't be read.
+    nonisolated private static func makeTrack(from url: URL, artworkDir: URL, artCache: ArtworkKeyCache) async -> LibraryTrack? {
+        let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        if VideoTranscoder.isVideoFile(url) {
+            guard let info = try? await VideoTranscoder.info(for: url) else { return nil }
+            let md = try? await MetadataExtractor.extract(from: url)
+            var t = LibraryTrack(path: url.path, title: md?.title ?? url.deletingPathExtension().lastPathComponent, fileExtension: url.pathExtension.lowercased())
+            t.kind = .video
+            t.videoWidth = info.width
+            t.videoHeight = info.height
+            t.durationMs = info.durationMs
+            t.artist = md?.artist
+            t.album = md?.album
+            t.genre = md?.genre
+            t.year = md?.year ?? 0
+            t.fileSize = Int64(attrs?.fileSize ?? 0)
+            t.bitrate = info.durationMs > 0 ? Int(Double(t.fileSize) * 8 / Double(info.durationMs)) : 0
+            t.dateModified = attrs?.contentModificationDate
+            var art = md?.artworkData
+            if art == nil { art = await VideoTranscoder.posterFrame(for: url) }
+            t.artworkKey = art.flatMap { artCache.key(for: $0, in: artworkDir) }
+            return t
+        }
+        guard let md = try? await MetadataExtractor.extract(from: url) else { return nil }
+        var t = LibraryTrack(path: url.path, title: md.title ?? url.deletingPathExtension().lastPathComponent, fileExtension: url.pathExtension.lowercased())
+        t.artist = md.artist
+        t.album = md.album
+        t.albumArtist = md.albumArtist
+        t.genre = md.genre
+        t.composer = md.composer
+        t.comment = md.comment
+        t.grouping = md.grouping
+        t.year = md.year
+        t.trackNumber = md.trackNumber
+        t.trackCount = md.trackCount
+        t.discNumber = md.discNumber
+        t.discCount = md.discCount
+        t.durationMs = md.durationMs
+        t.bitrate = md.bitrate
+        t.sampleRate = md.sampleRate
+        t.fileSize = Int64(attrs?.fileSize ?? 0)
+        t.isLossless = md.isLossless
+        t.compilation = md.compilation
+        t.bpm = md.bpm
+        t.hasLyrics = md.hasLyrics
+        t.dateModified = attrs?.contentModificationDate
+        let art = md.artworkData ?? MetadataExtractor.sidecarArtwork(for: url)
+        t.artworkKey = art.flatMap { artCache.key(for: $0, in: artworkDir) }
+        return t
     }
 
     nonisolated static func collectAudioFiles(_ urls: [URL]) -> [URL] {
