@@ -43,6 +43,52 @@ extension LibraryTrack {
     }
 }
 
+/// Decoded, display-sized thumbnails kept in memory, so revisiting an artist or scrolling back shows
+/// artwork instantly instead of re-reading and re-decoding it from disk every time. NSCache evicts on
+/// its own under memory pressure; the cost limit keeps it to a few tens of MB.
+@MainActor
+final class ThumbnailCache {
+    static let shared = ThumbnailCache()
+    private let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.totalCostLimit = 64 * 1024 * 1024
+        return c
+    }()
+
+    private func key(_ url: URL, _ pixels: Int) -> NSString { "\(pixels)|\(url.path)" as NSString }
+
+    func image(for url: URL, pixels: Int) -> NSImage? { cache.object(forKey: key(url, pixels)) }
+
+    func insert(_ image: NSImage, for url: URL, pixels: Int) {
+        cache.setObject(image, forKey: key(url, pixels), cost: pixels * pixels * 4)
+    }
+
+    func remove(_ url: URL) {
+        // Sizes vary per call site; a replaced file (e.g. a new artist photo) just needs its common sizes gone.
+        for px in [16, 48, 56, 68, 80, 192, 300] { cache.removeObject(forKey: key(url, px)) }
+    }
+
+    /// Loads `url` downsampled so its longest side is `pixels`, from the cache or off the main thread.
+    /// ImageIO's thumbnail path decodes at the reduced size directly, far cheaper than a full decode.
+    func load(_ url: URL, pixels: Int) async -> NSImage? {
+        if let hit = image(for: url, pixels: pixels) { return hit }
+        let cg: CGImage? = await Task.detached(priority: .userInitiated) {
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+            let opts: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: pixels,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+        }.value
+        guard let cg else { return nil }
+        let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        insert(image, for: url, pixels: pixels)
+        return image
+    }
+}
+
 /// Small artwork thumbnail loaded off the main thread. Takes the file URL directly so it never depends on
 /// environment objects — table cells on macOS can be hosted outside the main view tree.
 struct ArtworkThumb: View {
@@ -51,6 +97,21 @@ struct ArtworkThumb: View {
     var cornerRadius: CGFloat = 4
     var placeholder: String = "music.note"
     @State private var image: NSImage?
+
+    init(url: URL?, size: CGFloat = 40, cornerRadius: CGFloat = 4, placeholder: String = "music.note") {
+        self.url = url
+        self.size = size
+        self.cornerRadius = cornerRadius
+        self.placeholder = placeholder
+        // A cached image is shown on the very first frame — no placeholder flash, no async hop.
+        _image = State(initialValue: url.flatMap { ThumbnailCache.shared.image(for: $0, pixels: Self.pixels(for: size)) })
+    }
+
+    /// Pixel size to decode at for a point size (Retina 2×), bucketed so nearby sizes share cache entries.
+    static func pixels(for size: CGFloat) -> Int {
+        let px = Int(size * 2)
+        return [16, 48, 56, 68, 80, 192, 300].first { $0 >= px } ?? px
+    }
 
     var body: some View {
         ZStack {
@@ -71,23 +132,39 @@ struct ArtworkThumb: View {
         .frame(width: size, height: size)
         .task(id: url) {
             guard let url else { image = nil; return }
-            let target = size * 2
-            // CGImage (unlike NSImage) is Sendable, so the resize work can cross back from the
-            // detached task cleanly; NSImage is only ever touched here on the main actor.
-            let resized: CGImage? = await Task.detached(priority: .utility) {
-                guard let cg = ImageLoading.cgImage(from: url) else { return nil }
-                let longest = max(cg.width, cg.height)
-                let scale = min(1, target / CGFloat(longest))
-                let w = max(Int(CGFloat(cg.width) * scale), 1), h = max(Int(CGFloat(cg.height) * scale), 1)
-                guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
-                ctx.interpolationQuality = .medium
-                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-                return ctx.makeImage()
-            }.value
-            if !Task.isCancelled {
-                image = resized.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+            let loaded = await ThumbnailCache.shared.load(url, pixels: Self.pixels(for: size))
+            if !Task.isCancelled { image = loaded }
+        }
+    }
+}
+
+/// A soft, blurred wash of an image for header backgrounds. Decodes a 16-px version and lets the GPU
+/// upscale it with smooth interpolation — it looks like a heavy blur, without paying for one over a
+/// large layer.
+struct BlurredArtwork: View {
+    let url: URL?
+    @State private var image: NSImage?
+
+    init(url: URL?) {
+        self.url = url
+        _image = State(initialValue: url.flatMap { ThumbnailCache.shared.image(for: $0, pixels: 16) })
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .blur(radius: 12)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: url) {
+            guard let url else { image = nil; return }
+            let loaded = await ThumbnailCache.shared.load(url, pixels: 16)
+            if !Task.isCancelled { image = loaded }
         }
     }
 }

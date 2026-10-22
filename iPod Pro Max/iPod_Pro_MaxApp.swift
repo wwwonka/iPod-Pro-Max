@@ -90,9 +90,11 @@ final class AppServices {
     let devices: DeviceMonitor
     let sync: SyncCoordinator
     let appState: AppState
+    let artistPhotos: ArtistPhotoStore
 
     private init() {
         library = LibraryStore()
+        artistPhotos = ArtistPhotoStore(baseDir: library.baseDir)
         devices = DeviceMonitor()
         sync = SyncCoordinator(library: library, devices: devices)
         appState = AppState()

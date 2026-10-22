@@ -61,6 +61,19 @@ struct DBTest {
             print("imported \(added) files in \(elapsed.formatted(.units(allowed: [.seconds, .milliseconds]))) using up to \(ProcessInfo.processInfo.activeProcessorCount) cores")
             return
         }
+        // `dbtest <artists.txt> <scratch dir> --artist-photos`: fetches photos for one artist per line
+        // into a throwaway "Artist Photos" folder and reports how many matched.
+        if args.contains("--artist-photos") {
+            try? fm.removeItem(at: ipod)
+            let names = (try String(contentsOf: samples, encoding: .utf8)).split(separator: "\n").map(String.init)
+            let start = ContinuousClock.now
+            let found = await MainActor.run { () -> ArtistPhotoStore in ArtistPhotoStore(baseDir: ipod) }
+            await found.fetchMissing(names)
+            let hits = await MainActor.run { names.filter { found.photoURL(for: $0) != nil } }
+            print("photos for \(hits.count) of \(names.count) artists in \(ContinuousClock.now - start)")
+            print("missing:", names.filter { !hits.contains($0) }.prefix(40).joined(separator: " | "))
+            return
+        }
         if args.contains("--migration") {
             let libDir = samples.appendingPathComponent("lib")
             try? FileManager.default.removeItem(at: libDir)

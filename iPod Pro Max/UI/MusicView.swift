@@ -19,7 +19,6 @@ private struct ArtistGroup: Identifiable {
 
     var trackCount: Int { albums.reduce(0) { $0 + $1.tracks.count } }
     var allSynced: Bool { albums.allSatisfy(\.allSynced) }
-    var noneSynced: Bool { albums.allSatisfy { $0.tracks.allSatisfy { !$0.syncEnabled } } }
     var allTrackIDs: [UUID] { albums.flatMap { $0.tracks.map(\.id) } }
     var totalDurationMs: Int { albums.reduce(0) { $0 + $1.totalDurationMs } }
 }
@@ -63,7 +62,8 @@ struct MusicView: View {
     @State private var confirmRemoveMissing = false
     @FocusState private var searchFieldFocused: Bool
     @State private var mode: MusicViewMode = MusicViewMode(rawValue: UserDefaults.standard.string(forKey: "musicViewMode") ?? "") ?? .byArtist
-    @State private var selectedArtistID: String?
+    @State private var selectedArtistIDs: Set<String> = []
+    private var artistPhotos: ArtistPhotoStore { AppServices.shared.artistPhotos }
 
     // Grouping and sorting a few thousand tracks isn't free; cache it and only redo the work when the
     // underlying data actually changes; a toggle on one track re-renders this view but shouldn't repeat it.
@@ -245,30 +245,48 @@ struct MusicView: View {
 
     // MARK: - By Artist (master-detail, like the iPod's own Artists list)
 
+    private var selectedGroups: [ArtistGroup] {
+        cachedArtistGroups.filter { selectedArtistIDs.contains($0.id) }
+    }
+
     private var artistsSplitView: some View {
         HSplitView {
             artistSidebar
                 .frame(minWidth: 200, idealWidth: 250, maxWidth: 340)
-            if let id = selectedArtistID, let group = cachedArtistGroups.first(where: { $0.id == id }) {
-                ArtistDetailView(group: group, library: library, selection: $selection,
-                                 onNewPlaylist: { showNewPlaylistFromSelection = true })
-                    .id(group.id)
-                    .frame(minWidth: 460)
-            } else {
-                ContentUnavailableView("Select an Artist", systemImage: "music.mic")
+            let groups = selectedGroups
+            if groups.isEmpty {
+                ContentUnavailableView("Select an Artist", systemImage: "music.mic",
+                                       description: Text("⌘-click or ⇧-click to see several artists at once."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ArtistDetailView(groups: groups, library: library, photos: artistPhotos, selection: $selection,
+                                 onNewPlaylist: { showNewPlaylistFromSelection = true })
+                    .id(groups.map(\.id))
+                    .frame(minWidth: 460)
             }
         }
-        .onAppear { if selectedArtistID == nil { selectedArtistID = cachedArtistGroups.first?.id } }
-        .onChange(of: cachedArtistGroups.map(\.id)) { _, ids in
-            if let id = selectedArtistID, !ids.contains(id) { selectedArtistID = ids.first }
-            else if selectedArtistID == nil { selectedArtistID = ids.first }
+        .onAppear {
+            if selectedArtistIDs.isEmpty, let first = cachedArtistGroups.first?.id { selectedArtistIDs = [first] }
+            fetchArtistPhotos()
         }
-        .onChange(of: selectedArtistID) { selection.removeAll() }
+        .onChange(of: groupsVersion) {
+            let ids = Set(cachedArtistGroups.map(\.id))
+            selectedArtistIDs.formIntersection(ids)
+            if selectedArtistIDs.isEmpty, let first = cachedArtistGroups.first?.id { selectedArtistIDs = [first] }
+            fetchArtistPhotos()
+        }
+        .onChange(of: selectedArtistIDs) { selection.removeAll() }
+    }
+
+    /// Fills in photos for artists that don't have one yet; a no-op once every artist has been looked up.
+    private func fetchArtistPhotos() {
+        guard search.isEmpty else { return }
+        artistPhotos.fetchMissingInBackground(cachedArtistGroups.map(\.name))
     }
 
     private var artistSidebar: some View {
-        ArtistListView(groups: cachedArtistGroups, version: groupsVersion, selectedArtistID: $selectedArtistID, library: library)
+        ArtistListView(groups: cachedArtistGroups, version: groupsVersion, photosRevision: artistPhotos.revision,
+                       selectedArtistIDs: $selectedArtistIDs, library: library, photos: artistPhotos)
             .equatable()
     }
 }
@@ -276,42 +294,77 @@ struct MusicView: View {
 /// The artist column. Equatable on purpose: hundreds of rows with drag and context-menu modifiers are
 /// expensive to rebuild, and without this every change in the Music view (selecting a song, the
 /// selection bar appearing) rebuilt the whole list.
+///
+/// ⌘-click / ⇧-click select several artists; dragging any selected artist onto an iPod carries all of them.
 private struct ArtistListView: View, Equatable {
     let groups: [ArtistGroup]
     let version: Int
-    @Binding var selectedArtistID: String?
+    let photosRevision: Int
+    @Binding var selectedArtistIDs: Set<String>
     let library: LibraryStore
+    let photos: ArtistPhotoStore
 
     static func == (a: Self, b: Self) -> Bool {
-        a.version == b.version && a.selectedArtistID == b.selectedArtistID
+        a.version == b.version && a.photosRevision == b.photosRevision && a.selectedArtistIDs == b.selectedArtistIDs
     }
 
     var body: some View {
-        List(selection: $selectedArtistID) {
+        List(selection: $selectedArtistIDs) {
             ForEach(groups) { group in
                 HStack(spacing: 10) {
-                    ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 34, cornerRadius: 17, placeholder: "music.mic")
-                        .shadow(color: .black.opacity(0.15), radius: 1, y: 1)
+                    ArtworkThumb(url: photos.photoURL(for: group.name) ?? library.artworkURL(group.artworkKey),
+                                 size: 34, cornerRadius: 17, placeholder: "music.mic")
                     VStack(alignment: .leading, spacing: 1) {
                         Text(group.name).lineLimit(1)
                         Text("\(group.albums.count) album\(group.albums.count == 1 ? "" : "s") · \(group.trackCount) song\(group.trackCount == 1 ? "" : "s")")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Spacer(minLength: 4)
-                    SyncStateBadge(allSynced: group.allSynced, noneSynced: group.noneSynced)
                 }
                 .padding(.vertical, 2)
                 .tag(group.id)
-                .draggable(TrackIDsTransfer(ids: group.allTrackIDs)) {
-                    DragPreview(count: group.trackCount, artworkURL: library.artworkURL(group.artworkKey), title: group.name)
+                .draggable(dragPayload(for: group)) {
+                    dragPreview(for: group)
                 }
                 .contextMenu {
-                    Button("Sync to iPod") { library.setSync(true, forTracks: Set(group.allTrackIDs)) }
-                    Button("Don't Sync") { library.setSync(false, forTracks: Set(group.allTrackIDs)) }
+                    let ids = Set(targetGroups(for: group).flatMap(\.allTrackIDs))
+                    Button("Sync to iPod") { library.setSync(true, forTracks: ids) }
+                    Button("Don't Sync") { library.setSync(false, forTracks: ids) }
+                    if !selectedArtistIDs.contains(group.id) || selectedArtistIDs.count == 1 {
+                        Divider()
+                        Button("Choose Artist Photo…") { Task { await choosePhoto(for: group.name) } }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// The artists a drag or context menu on `group` acts on: the whole selection if it's part of it.
+    private func targetGroups(for group: ArtistGroup) -> [ArtistGroup] {
+        guard selectedArtistIDs.contains(group.id), selectedArtistIDs.count > 1 else { return [group] }
+        return groups.filter { selectedArtistIDs.contains($0.id) }
+    }
+
+    private func dragPayload(for group: ArtistGroup) -> TrackIDsTransfer {
+        TrackIDsTransfer(ids: targetGroups(for: group).flatMap(\.allTrackIDs))
+    }
+
+    private func dragPreview(for group: ArtistGroup) -> some View {
+        let targets = targetGroups(for: group)
+        return DragPreview(count: targets.reduce(0) { $0 + $1.trackCount },
+                           artworkURL: photos.photoURL(for: group.name) ?? library.artworkURL(group.artworkKey),
+                           title: targets.count > 1 ? "\(targets.count) artists" : group.name)
+    }
+
+    @MainActor
+    private func choosePhoto(for artist: String) async {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Photo of \(artist)"
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        guard await panel.begin() == .OK, let url = panel.url,
+              let stored = await photos.setCustomPhoto(url, for: artist) else { return }
+        ThumbnailCache.shared.remove(stored)
     }
 }
 
@@ -452,20 +505,6 @@ private struct SelectionBar: View {
     }
 }
 
-/// Small sync-state indicator for an artist row: filled when everything syncs, half when some does.
-private struct SyncStateBadge: View {
-    let allSynced: Bool
-    let noneSynced: Bool
-
-    var body: some View {
-        if allSynced {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor).help("All songs sync to iPod")
-        } else if !noneSynced {
-            Image(systemName: "circle.lefthalf.filled").foregroundStyle(.secondary).help("Some songs sync to iPod")
-        }
-    }
-}
-
 /// What follows the pointer while dragging songs toward an iPod.
 private struct DragPreview: View {
     let count: Int
@@ -505,25 +544,45 @@ private final class RowFrames {
 /// click-and-drag starting on an unselected song sweeps a range. Dragging a selected song instead
 /// picks up the whole selection, which can be dropped onto an iPod in the sidebar.
 private struct ArtistDetailView: View {
-    let group: ArtistGroup
+    /// One artist, or several when they're ⌘/⇧-selected together — then their albums follow each other,
+    /// each artist under its own small heading.
+    let groups: [ArtistGroup]
     let library: LibraryStore
+    let photos: ArtistPhotoStore
     @Binding var selection: Set<UUID>
     let onNewPlaylist: () -> Void
 
     @State private var rowFrames = RowFrames()
     @State private var anchorID: UUID?
     @State private var sweepBase: Set<UUID>?
+    private let orderedIDs: [UUID]
+
+    init(groups: [ArtistGroup], library: LibraryStore, photos: ArtistPhotoStore, selection: Binding<Set<UUID>>, onNewPlaylist: @escaping () -> Void) {
+        self.groups = groups
+        self.library = library
+        self.photos = photos
+        _selection = selection
+        self.onNewPlaylist = onNewPlaylist
+        orderedIDs = groups.flatMap(\.allTrackIDs)
+    }
 
     private static let space = "artistTracks"
 
-    private var orderedIDs: [UUID] { group.allTrackIDs }
+    private var allSynced: Bool { groups.allSatisfy(\.allSynced) }
+
+    private func photoURL(_ g: ArtistGroup) -> URL? {
+        photos.photoURL(for: g.name) ?? library.artworkURL(g.artworkKey)
+    }
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
                 header
-                ForEach(group.albums) { album in
-                    albumSection(album)
+                ForEach(groups) { group in
+                    if groups.count > 1 { artistHeading(group) }
+                    ForEach(group.albums) { album in
+                        albumSection(album)
+                    }
                 }
             }
             .padding(.horizontal, 24)
@@ -540,38 +599,66 @@ private struct ArtistDetailView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 18) {
-            ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 96, cornerRadius: 48, placeholder: "music.mic")
-                .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+        let albumCount = groups.reduce(0) { $0 + $1.albums.count }
+        let trackCount = groups.reduce(0) { $0 + $1.trackCount }
+        let duration = groups.reduce(0) { $0 + $1.totalDurationMs }
+        return HStack(alignment: .center, spacing: 18) {
+            if groups.count == 1, let g = groups.first {
+                ArtworkThumb(url: photoURL(g), size: 96, cornerRadius: 48, placeholder: "music.mic")
+                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+            } else {
+                // A small fan of the first few artists' photos.
+                ZStack {
+                    ForEach(Array(groups.prefix(3).enumerated().reversed()), id: \.element.id) { i, g in
+                        ArtworkThumb(url: photoURL(g), size: 72, cornerRadius: 36, placeholder: "music.mic")
+                            .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                            .offset(x: CGFloat(i) * 26)
+                    }
+                }
+                .frame(width: 72 + CGFloat(min(groups.count, 3) - 1) * 26, height: 96, alignment: .leading)
+                .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+            }
             VStack(alignment: .leading, spacing: 4) {
-                Text(group.name).font(.largeTitle.bold()).lineLimit(2)
-                Text("\(group.albums.count) album\(group.albums.count == 1 ? "" : "s") · \(songsSummary(count: group.trackCount, durationMs: group.totalDurationMs))")
+                Text(groups.count == 1 ? groups[0].name : "\(groups.count) Artists").font(.largeTitle.bold()).lineLimit(2)
+                Text("\(albumCount) album\(albumCount == 1 ? "" : "s") · \(songsSummary(count: trackCount, durationMs: duration))")
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Toggle(isOn: Binding(
-                get: { group.allSynced },
-                set: { v in library.setSync(v, forTracks: Set(group.allTrackIDs)) }
+                get: { allSynced },
+                set: { v in library.setSync(v, forTracks: Set(orderedIDs)) }
             )) {
-                Label(group.allSynced ? "Syncing All" : "Sync All", systemImage: group.allSynced ? "checkmark" : "arrow.triangle.2.circlepath")
+                Label(allSynced ? "Syncing All" : "Sync All", systemImage: allSynced ? "checkmark" : "arrow.triangle.2.circlepath")
             }
             .toggleStyle(.button)
             .controlSize(.large)
-            .help("Put every song by this artist on your iPod")
+            .help(groups.count == 1 ? "Put every song by this artist on your iPod" : "Put every song by these artists on your iPod")
         }
         .padding(18)
         .background {
             ZStack {
-                ArtworkThumb(url: library.artworkURL(group.artworkKey), size: 120, cornerRadius: 0)
-                    .scaleEffect(6)
-                    .blur(radius: 50)
-                    .opacity(0.35)
+                BlurredArtwork(url: groups.first.flatMap(photoURL)).opacity(0.4)
                 LinearGradient(colors: [.clear, Color(nsColor: .windowBackgroundColor).opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .allowsHitTesting(false)
         }
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
+    }
+
+    /// Divides artists when several are shown together; draggable like the artist list rows.
+    private func artistHeading(_ g: ArtistGroup) -> some View {
+        HStack(spacing: 10) {
+            ArtworkThumb(url: photoURL(g), size: 28, cornerRadius: 14, placeholder: "music.mic")
+            Text(g.name).font(.title3.bold())
+            Text(songsSummary(count: g.trackCount, durationMs: g.totalDurationMs)).font(.callout).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.top, 6)
+        .overlay(alignment: .bottom) { Divider().offset(y: 8) }
+        .draggable(TrackIDsTransfer(ids: g.allTrackIDs)) {
+            DragPreview(count: g.trackCount, artworkURL: photoURL(g), title: g.name)
+        }
     }
 
     // MARK: Albums
