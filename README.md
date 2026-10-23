@@ -2,6 +2,8 @@
 
 A Mac app that syncs music, videos, podcasts, audiobooks and photos to classic click-wheel iPods (iPod Video, nano 1st/2nd gen, photo, mini, classic, and the original iPods). No iTunes, no Finder sync, no libgpod dependency: the iPod database format is implemented in Swift.
 
+Roadmap for the portable, cross-platform (macOS / Windows / Linux) version: see [`docs/`](docs/README.md) (an Obsidian vault, in French).
+
 ## How it works
 
 - **Device** (`iPod Pro Max/Device/`): detects mounted iPods (`iPod_Control` folder on a local removable volume), identifies the model from `SysInfo`, `SysInfoExtended`, or the USB product id when those are empty, and knows each generation's artwork sizes and database-signature requirements.

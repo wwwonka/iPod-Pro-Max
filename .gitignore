@@ -13,3 +13,7 @@ build/
 Site/node_modules/
 Site/.wrangler/
 Site/public/downloads/*.dmg
+
+# Obsidian vault (docs/): keep only shared settings
+docs/.obsidian/*
+!docs/.obsidian/app.json
