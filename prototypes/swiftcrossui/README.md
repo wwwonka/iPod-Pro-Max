@@ -26,40 +26,39 @@ Le `library.json` est cherché dans cet ordre :
 
 Dans les VM, le point 3 suffit si le partage du dossier personnel est activé dans Parallels (Configuration › Options › Partage).
 
-## macOS (testé)
+## Construire les trois apps depuis le Mac : `build.sh`
+Un seul script, lancé sur le Mac. Il compile l'app Mac en local, puis pilote les VM Parallels avec `prlctl exec`. Il démarre une VM si elle est éteinte, et compile Fedora et Windows en parallèle.
+
 ```sh
-./run-mac.sh          # AppKit, rendu natif
-./run-mac.sh gtk      # GTK 4 sur le Mac : aperçu rapide du rendu Linux (brew install pkg-config gtk4)
+./build.sh --setup          # première fois : installe aussi Swift, GTK et WinUI dans les VM
+./build.sh                  # ensuite : mac + linux + windows
+./build.sh mac linux        # seulement certaines cibles
+./build.sh --run mac        # ouvre l'app Mac une fois construite
 ```
-Mesuré le 2026-10-23 en debug, avec 5 328 pistes : AppKit prêt en 62 ms (155 Mo) ; GTK prêt en 263 ms (135 Mo).
 
-## Fedora (VM Parallels, aarch64)
-1. Installe les Parallels Tools, pour avoir `/media/psf/Home`.
-2. Installe Swift avec swiftly (voir swift.org/install/linux) :
-   ```sh
-   curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz
-   tar zxf swiftly-$(uname -m).tar.gz && ./swiftly init
-   ```
-3. Installe GTK : `sudo dnf install gtk4-devel clang`
-4. Copie le dossier en local, parce que compiler sur le partage est lent :
-   ```sh
-   rsync -a --exclude '.build*' "/media/psf/Home/<chemin>/prototypes/swiftcrossui/" ~/swiftcrossui/
-   cd ~/swiftcrossui && ./run-linux.sh
-   ```
+Résultats :
 
-## Windows 11 (VM Parallels, ARM64)
-1. Installe Swift avec WinGet, en suivant **swift.org/install/windows**. Il faut d'abord Visual Studio 2022 avec les composants indiqués, en choisissant les outils **ARM64**. Ouvre ensuite un nouveau terminal et vérifie avec `swift --version`.
-2. Installe les dépendances de WinUI :
-   ```powershell
-   winget install --id Microsoft.WindowsSDK.10.0.17763
-   ```
-   Installe aussi le Windows App Runtime 1.5.240205001-preview1 **arm64** : https://aka.ms/windowsappsdk/1.5/1.5.240205001-preview1/windowsappruntimeinstall-arm64.exe
-3. Copie le dossier dans un chemin local **sans espaces**, puis lance :
-   ```powershell
-   robocopy "\\Mac\Home\<chemin>\prototypes\swiftcrossui" C:\dev\swiftcrossui /E /XD .build .build-gtk
-   cd C:\dev\swiftcrossui
-   .\run-windows.ps1
-   ```
+| Cible | Sortie |
+|---|---|
+| Mac | `dist/mac/iPod Pro Max Proto.app` (arm64, signée ad hoc) |
+| Fedora | `dist/linux/iPodProMaxProto` (runtime Swift statique, seul GTK 4 vient du système) |
+| Windows | `dist/windows/` (exe + DLL Swift et WinUI) |
+
+Les journaux des VM vont dans `dist/linux.log` et `dist/windows.log`.
+
+Comment ça marche :
+- Les VM lisent les sources et écrivent `dist/` par le dossier personnel du Mac partagé par Parallels. Le script l'active dans Fedora s'il est désactivé.
+- Chaque VM compile dans une copie locale (`~/dev/swiftcrossui`, `C:\dev\swiftcrossui`), parce que compiler sur le partage est lent. Les builds suivants sont donc incrémentaux.
+- Dans les VM, il faut une **session utilisateur ouverte**, parce que `prlctl exec --current-user` s'en sert.
+- Les noms des VM sont « Fedora Linux » et « Windows 11 ». Tu peux les changer avec `LINUX_VM=… WINDOWS_VM=… ./build.sh`.
+
+Ce que fait `--setup` :
+- **Fedora** (en root) : installe `gtk4-devel`, `clang` et les dépendances du toolchain, puis Swift avec swiftly dans ton compte.
+- **Windows** : installe, avec WinGet, Visual Studio 2022 (outils C++ ARM64 + SDK), Swift, le Windows SDK 17763 et le Windows App Runtime 1.5. Windows demande des validations administrateur dans la VM, et l'installation de Visual Studio prend un moment.
+
+Mesuré sur le Mac le 2026-10-23, en debug, avec 5 328 pistes : AppKit prêt en 62 ms (155 Mo) ; GTK prêt en 263 ms (135 Mo). `./run-mac.sh gtk` montre le rendu GTK sur le Mac, sans VM (`brew install pkg-config gtk4`).
+
+Les scripts appelés dans les VM (`scripts/build-linux.sh`, `scripts/build-windows.ps1`) peuvent aussi se lancer à la main dans la VM en cas de souci.
 
 ## Quoi noter sur chaque OS
 - Le temps `ready` affiché dans la console.
