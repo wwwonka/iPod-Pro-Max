@@ -98,8 +98,7 @@ struct ContentView: View {
         return DetailHeader(title: title, subtitle: subtitle,
                             leadingInset: sidebarVisible ? 0 : collapsedHeaderInset) {
             if selection == .music {
-                Picker(of: MusicMode.allCases, selection: $mode)
-                    .pickerStyle(.segmented)
+                SegmentedControl(options: MusicMode.allCases, selection: $mode)
                 ToolbarButton(icon: "plus")
                 ToolbarButton(icon: "square.and.arrow.down")
                 SearchField(prompt: "Search songs", text: $search)
@@ -152,6 +151,34 @@ struct ContentView: View {
                 || $0.artist.localizedCaseInsensitiveContains(query)
                 || $0.album.localizedCaseInsensitiveContains(query)
         }
+    }
+}
+
+/// The native segmented control on macOS. GTK and WinUI have none in SwiftCrossUI, so they get
+/// one drawn here, which also looks the same on both.
+struct SegmentedControl<Value: Equatable & CustomStringConvertible>: View {
+    var options: [Value]
+    @Binding var selection: Value?
+
+    var body: some View {
+        #if canImport(AppKitBackend)
+            Picker(of: options, selection: $selection).pickerStyle(.segmented)
+        #else
+            HStack(spacing: 0) {
+                ForEach(options.indices, id: \.self) { i in
+                    Text(options[i].description)
+                        .font(.system(size: 13))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 3)
+                        .background(selection == options[i] ? sidebarSelection : Color(white: 0.5, opacity: 0.001))
+                        .cornerRadius(5)
+                        .onTapGesture { selection = options[i] }
+                }
+            }
+            .padding(2)
+            .background(Color(white: 0.5, opacity: 0.12))
+            .cornerRadius(7)
+        #endif
     }
 }
 

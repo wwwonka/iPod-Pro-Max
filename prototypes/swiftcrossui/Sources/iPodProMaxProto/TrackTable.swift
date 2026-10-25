@@ -111,6 +111,113 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
 
         func updateNSView(_ box: NSBox, context: Context) {}
     }
+#elseif canImport(GtkBackend)
+    import CGtk
+    import Gtk
+    import GtkBackend
+
+    /// GTK: a GtkColumnView, GTK 4's virtualized table, called through the C API since
+    /// SwiftCrossUI doesn't wrap it (and its GtkBackend has no Table at all). The model only
+    /// holds one empty item per row: cells read the row by position from a Swift array.
+    struct TrackTable: GtkWidgetRepresentable {
+        /// nil keeps the rows already shown.
+        var rows: [TrackRow]?
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        func makeGtkWidget(context: Context) -> Gtk.Widget {
+            let coordinator = context.coordinator
+            let view = gtk_column_view_new(gtk_multi_selection_new(cast(coordinator.model)))!
+            gtk_column_view_set_show_column_separators(cast(view), 0)
+            gtk_widget_add_css_class(view, "data-table")
+            for (index, column) in columns.enumerated() {
+                let factory = gtk_signal_list_item_factory_new()
+                let binding = Unmanaged.passRetained(CellBinding(coordinator: coordinator, column: index))
+                coordinator.bindings.append(binding)
+                g_signal_connect_data(cast(factory), "setup", unsafeBitCast(setupCell, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+                g_signal_connect_data(cast(factory), "bind", unsafeBitCast(bindCell, to: GCallback.self),
+                                      binding.toOpaque(), nil, GConnectFlags(rawValue: 0))
+                let c = gtk_column_view_column_new(column.title, cast(factory))
+                if column.width >= 1 {
+                    gtk_column_view_column_set_fixed_width(c, Int32(column.width))
+                } else {
+                    gtk_column_view_column_set_expand(c, 1)
+                }
+                gtk_column_view_column_set_resizable(c, 1)
+                gtk_column_view_append_column(cast(view), c)
+                g_object_unref(cast(c))
+            }
+            let scroll = gtk_scrolled_window_new()!
+            gtk_scrolled_window_set_child(cast(scroll), view)
+            gtk_widget_set_hexpand(scroll, 1)
+            gtk_widget_set_vexpand(scroll, 1)
+            return Gtk.Widget(scroll)
+        }
+
+        func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
+            guard let rows else { return }
+            context.coordinator.show(rows)
+        }
+
+        final class Coordinator {
+            let model = gtk_string_list_new(nil)!
+            var rows: [TrackRow] = []
+            var bindings: [Unmanaged<CellBinding>] = []
+
+            /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
+            func show(_ newRows: [TrackRow]) {
+                let old = rows.count
+                rows = newRows
+                let empty = strdup("")
+                defer { free(empty) }
+                var items = [UnsafePointer<CChar>?](repeating: UnsafePointer(empty), count: newRows.count)
+                items.append(nil)
+                items.withUnsafeMutableBufferPointer {
+                    gtk_string_list_splice(model, 0, UInt32(old), $0.baseAddress)
+                }
+            }
+
+            deinit {
+                bindings.forEach { $0.release() }
+                g_object_unref(cast(model))
+            }
+        }
+
+        final class CellBinding {
+            weak var coordinator: Coordinator?
+            let column: Int
+
+            init(coordinator: Coordinator, column: Int) {
+                self.coordinator = coordinator
+                self.column = column
+            }
+        }
+    }
+
+    /// GTK's C types reach Swift as a mix of typed and opaque pointers; this converts between them.
+    private func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
+
+    private let setupCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, _ in
+        let label = gtk_label_new(nil)!
+        gtk_label_set_xalign(cast(label), 0)
+        gtk_label_set_ellipsize(cast(label), PANGO_ELLIPSIZE_END)
+        gtk_list_item_set_child(cast(item), label)
+    }
+
+    private let bindCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, data in
+        guard let data, let label = gtk_list_item_get_child(cast(item)) else { return }
+        let binding = Unmanaged<TrackTable.CellBinding>.fromOpaque(data).takeUnretainedValue()
+        guard let rows = binding.coordinator?.rows else { return }
+        let position = Int(gtk_list_item_get_position(cast(item)))
+        guard position < rows.count else { return }
+        gtk_label_set_text(cast(label), rows[position][keyPath: columns[binding.column].value])
+    }
+
+    struct WindowBackground: View {
+        var body: some View {
+            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.14))
+        }
+    }
 #else
     struct WindowBackground: View {
         var body: some View {
