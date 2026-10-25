@@ -70,11 +70,13 @@ if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
 # Only WinUI: left to its platform conditions, SwiftPM also builds the GTK backend here.
 $env:SCUI_DEFAULT_BACKEND = "WinUIBackend"
 Push-Location $Work
+# Swift writes warnings to stderr, which "Stop" would turn into a failure: judge by exit code.
+$ErrorActionPreference = "Continue"
 try {
     swift build -c release --build-system native
     if ($LASTEXITCODE -ne 0) { throw "swift build failed" }
     $bin = (swift build -c release --build-system native --show-bin-path).Trim()
-} finally { Pop-Location }
+} finally { Pop-Location; $ErrorActionPreference = "Stop" }
 
 # Self-contained folder: the exe, the DLLs built next to it, and the Swift runtime DLLs.
 $dist = Join-Path $Source "dist\windows"
