@@ -5,7 +5,8 @@
 param(
     [string]$Source = (Split-Path $PSScriptRoot -Parent),
     [string]$Work = "C:\dev\swiftcrossui",
-    [switch]$Setup
+    [switch]$Setup,
+    [switch]$Run
 )
 $ErrorActionPreference = "Stop"
 
@@ -63,3 +64,11 @@ $swiftCore = where.exe swiftCore.dll 2>$null | Select-Object -First 1
 if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $dist }
 else { Write-Warning "swiftCore.dll not found on PATH: the exe will only run where Swift is installed." }
 Write-Output "OK: $dist\iPodProMaxProto.exe"
+
+if ($Run) {
+    # Started from the local build folder: running WinUI from the \\Mac share is slow and fragile.
+    Get-Process iPodProMaxProto -ErrorAction SilentlyContinue | Stop-Process -Force
+    if ($swiftCore) { $env:Path = (Split-Path $swiftCore) + ";" + $env:Path }
+    Start-Process (Join-Path $bin "iPodProMaxProto.exe") -WorkingDirectory $Work
+    Write-Output "Launched"
+}

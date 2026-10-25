@@ -2,6 +2,7 @@
 # Runs inside the Fedora VM, called by ../build.sh through prlctl exec.
 #   build-linux.sh deps                 (as root)  installs GTK 4 and the Swift toolchain's dependencies
 #   build-linux.sh build <source dir>   (as user)  installs Swift with swiftly if missing, builds, fills dist/linux
+#   build-linux.sh run                  (as user)  opens the last build in the desktop session
 set -euo pipefail
 
 case ${1:-} in
@@ -40,8 +41,18 @@ build)
     for r in "$BIN"/*.resources; do [ -e "$r" ] && cp -R "$r" "$DIST/"; done
     echo "OK: $DIST/iPodProMaxProto"
     ;;
+run)
+    # prlctl exec does not inherit the desktop session's environment: point GTK at it.
+    export XDG_RUNTIME_DIR=/run/user/$(id -u)
+    export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+    pkill -x iPodProMaxProto || true
+    cd "$HOME/dev/swiftcrossui"
+    setsid nohup .build/release/iPodProMaxProto >/tmp/iPodProMaxProto.log 2>&1 </dev/null &
+    echo "Launched (log: /tmp/iPodProMaxProto.log)"
+    ;;
 *)
-    echo "usage: $0 deps | build <source dir>" >&2
+    echo "usage: $0 deps | build <source dir> | run" >&2
     exit 2
     ;;
 esac

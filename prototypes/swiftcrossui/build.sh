@@ -3,8 +3,8 @@
 #
 #   ./build.sh                 # mac + linux + windows
 #   ./build.sh mac linux       # only some targets
-#   ./build.sh --setup windows # first run: also install the toolchains in the VM(s)
-#   ./build.sh --run mac       # open the Mac app once built
+#   ./build.sh --setup windows # force a toolchain install in the VM(s) (done automatically if missing)
+#   ./build.sh --run linux     # open the app once built (on the Mac, or in the VM's session)
 #
 # Output: dist/mac/iPod Pro Max Proto.app, dist/linux/iPodProMaxProto, dist/windows/iPodProMaxProto.exe
 # The VMs read the sources and write dist/ through the Mac home folder shared by Parallels, and
@@ -84,18 +84,39 @@ build_linux() {
         prlctl set "$LINUX_VM" --shf-host on --shf-host-defined home >/dev/null
     fi
     ensure_vm "$LINUX_VM" true
-    if [ $SETUP -eq 1 ]; then
+    local setup=$SETUP
+    if [ $setup -eq 0 ] && ! prlctl exec "$LINUX_VM" --current-user bash -c \
+        'test -f ~/.local/share/swiftly/env.sh && rpm -q gtk4-devel' >/dev/null 2>&1; then
+        echo "First build in $LINUX_VM: installing GTK 4 and Swift (a few minutes)…"
+        setup=1
+    fi
+    if [ $setup -eq 1 ]; then
         prlctl exec "$LINUX_VM" bash "$LINUX_SRC/scripts/build-linux.sh" deps
     fi
     prlctl exec "$LINUX_VM" --current-user bash "$LINUX_SRC/scripts/build-linux.sh" build "$LINUX_SRC"
+    if [ $RUN -eq 1 ]; then
+        prlctl exec "$LINUX_VM" --current-user bash "$LINUX_SRC/scripts/build-linux.sh" run
+        show_vm
+    fi
 }
 
 build_windows() {
     ensure_vm "$WINDOWS_VM" "cmd /c exit 0"
-    local setup=()
-    [ $SETUP -eq 1 ] && setup=(-Setup)
+    local flags=()
+    if [ $SETUP -eq 1 ] || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c "where swift" >/dev/null 2>&1; then
+        echo "First build in $WINDOWS_VM: installing Visual Studio, Swift and WinUI (long; approve the admin prompts in the VM)…"
+        flags+=(-Setup)
+    fi
+    [ $RUN -eq 1 ] && flags+=(-Run)
     prlctl exec "$WINDOWS_VM" --current-user powershell.exe -NoProfile -ExecutionPolicy Bypass \
-        -File "$WINDOWS_SRC\\scripts\\build-windows.ps1" -Source "$WINDOWS_SRC" ${setup[@]+"${setup[@]}"}
+        -File "$WINDOWS_SRC\\scripts\\build-windows.ps1" -Source "$WINDOWS_SRC" ${flags[@]+"${flags[@]}"}
+    [ $RUN -eq 1 ] && show_vm
+    return 0
+}
+
+# Brings Parallels to the front so the VM window with the app just launched is visible.
+show_vm() {
+    open -a "Parallels Desktop" || true
 }
 
 # The Mac builds first (it is the quickest feedback), then both VMs build at the same time.
