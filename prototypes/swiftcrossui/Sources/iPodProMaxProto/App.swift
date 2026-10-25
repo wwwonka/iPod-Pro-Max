@@ -1,6 +1,9 @@
 import DefaultBackend
 import Foundation
 import SwiftCrossUI
+#if os(Windows)
+    import WinSDK
+#endif
 
 struct ContentView: View {
     @State var library: Library?
@@ -13,7 +16,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             NavigationSplitView {
-                Sidebar(devices: devices, playlists: library?.playlists ?? [], selection: $selection)
+                Sidebar(devices: $devices, library: $library, selection: $selection)
             } detail: {
                 detail
             }
@@ -345,9 +348,29 @@ func songCount(_ n: Int) -> String {
     n == 1 ? "1 song" : "\(n) songs"
 }
 
-/// stderr is unbuffered, so timings show up even when stdout is piped.
+/// Windows apps started from Explorer have no console: they always log to %TEMP%\\ippm.log.
+private let logFile: String? = {
+    if let path = ProcessInfo.processInfo.environment["IPPM_LOG"] { return path }
+    #if os(Windows)
+        return (ProcessInfo.processInfo.environment["TEMP"] ?? "C:\\Windows\\Temp") + "\\ippm.log"
+    #else
+        return nil
+    #endif
+}()
+
+/// stderr is unbuffered, so timings show up even when stdout is piped. `IPPM_LOG=<file>` also
+/// appends to a file, for apps started from a desktop shell (no console to read).
 func log(_ message: String) {
-    FileHandle.standardError.write(Data((message + "\n").utf8))
+    if let path = logFile, let file = fopen(path, "a") {
+        fputs(message + "\n", file)
+        fclose(file)
+    }
+    // A Windows app started from Explorer has no console: writing to the missing handle traps in
+    // Foundation (the launch crash) or stalls in the C runtime, so only write when there is one.
+    #if os(Windows)
+        guard GetFileType(GetStdHandle(STD_ERROR_HANDLE)) != DWORD(FILE_TYPE_UNKNOWN) else { return }
+    #endif
+    fputs(message + "\n", stderr)
 }
 
 @main

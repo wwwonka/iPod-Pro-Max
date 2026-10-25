@@ -8,9 +8,13 @@
     /// use: native rows, selection and keyboard handling, and none of its labels go through
     /// SwiftCrossUI's layout, which measured every one of them on each click.
     struct Sidebar: GtkWidgetRepresentable {
-        var devices: [String]
-        var playlists: [Playlist]
+        // Bindings, not values: SwiftCrossUI hands a native view's updates the values it was
+        // created with, so the playlists loaded later never showed.
+        @Binding var devices: [String]
+        @Binding var library: Library?
         @Binding var selection: SidebarItem
+
+        private var playlists: [Playlist] { library?.playlists ?? [] }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -21,6 +25,8 @@
             gtk_widget_add_css_class(list, "navigation-sidebar")
             // Room for the traffic lights and the toggle drawn over the window's corner.
             gtk_widget_set_margin_top(list, 52)
+            gtk_widget_set_margin_start(list, 6)
+            gtk_widget_set_margin_end(list, 6)
             g_signal_connect_data(cast(list), "row-selected", unsafeBitCast(rowSelected, to: GCallback.self),
                                   Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
             let scroll = gtk_scrolled_window_new()!

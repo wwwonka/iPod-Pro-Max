@@ -8,7 +8,10 @@ func connectedIPods() -> [String] {
     #if os(macOS)
     roots = (try? fm.contentsOfDirectory(atPath: "/Volumes"))?.map { "/Volumes/" + $0 } ?? []
     #elseif os(Windows)
-    roots = "DEFGHIJKLMNOPQRSTUVWXYZ".map { "\($0):\\" }
+    // Plain strings: Foundation's URL traps on some drive roots (e.g. Parallels' Z: share).
+    return "DEFGHIJKLMNOPQRSTUVWXYZ".compactMap { letter in
+        fm.fileExists(atPath: "\(letter):\\iPod_Control") ? "\(letter):" : nil
+    }
     #else
     let user = ProcessInfo.processInfo.environment["USER"] ?? ""
     for base in ["/run/media/\(user)", "/media/\(user)"] {

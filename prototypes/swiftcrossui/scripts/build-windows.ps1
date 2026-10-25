@@ -63,6 +63,9 @@ git config --global core.symlinks true
 git config --global http.version HTTP/1.1
 git config --global http.postBuffer 524288000
 
+# A running copy locks the exe and the link step fails.
+Get-Process iPodProMaxProto -ErrorAction SilentlyContinue | Stop-Process -Force
+
 # Local copy: building on the network share is slow, and some tools dislike UNC paths.
 robocopy $Source $Work /MIR /XD .build .build-gtk dist .swiftpm /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }

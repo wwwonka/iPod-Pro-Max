@@ -14,7 +14,7 @@ struct Track: Decodable {
     var durationMs: Int?
 }
 
-struct Playlist: Decodable, Identifiable {
+struct Playlist: Decodable, Identifiable, Equatable {
     var id: String
     var name: String
     var trackIDs: [String]

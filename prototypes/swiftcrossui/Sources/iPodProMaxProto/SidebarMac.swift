@@ -8,9 +8,13 @@
     /// setting, icons take the accent color, and selection looks native. Clicks don't go through
     /// SwiftCrossUI's layout, which keeps them cheap.
     struct Sidebar: NSViewRepresentable {
-        var devices: [String]
-        var playlists: [Playlist]
+        // Bindings, not values: SwiftCrossUI hands a native view's updates the values it was
+        // created with, so the playlists loaded later never showed.
+        @Binding var devices: [String]
+        @Binding var library: Library?
         @Binding var selection: SidebarItem
+
+        private var playlists: [Playlist] { library?.playlists ?? [] }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 

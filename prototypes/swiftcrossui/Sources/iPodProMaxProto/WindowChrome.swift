@@ -250,6 +250,8 @@ import SwiftCrossUI
             gtk_widget_set_visible(titlebar, 0)
             gtk_window_set_titlebar(pointer, titlebar)
 
+            roundCorners(pointer)
+
             let click = gtk_gesture_click_new()!
             gtk_gesture_single_set_button(cast(click), 1)
             g_signal_connect_data(cast(click), "pressed", unsafeBitCast(titleBarPressed, to: GCallback.self),
@@ -257,19 +259,42 @@ import SwiftCrossUI
             gtk_widget_add_controller(cast(pointer), cast(click))
 
             followColorScheme()
-            // Once the first frame is up, so the first toggle doesn't pay for it (~350 ms in the VM).
+            // Once the first frame is up: SwiftCrossUI may set the window's child after this runs.
             g_idle_add_full(300, { _ in
-                MainActor.assumeIsolated { GtkChrome.shared.prepareForCollapse(nil) }
+                MainActor.assumeIsolated { GtkChrome.shared.styleContent() }
                 return 0
             }, nil, nil)
         }
 
-        /// Lets the divider go below the sidebar's minimum width. Changing it relays out the whole
-        /// window once, so it's done ahead of the first toggle.
-        fileprivate func prepareForCollapse(_ paned: OpaquePointer?) {
-            guard let paned = paned ?? window.flatMap({ Self.findPaned(gtk_window_get_child($0)) }),
-                  gtk_paned_get_shrink_start_child(paned) == 0 else { return }
-            gtk_paned_set_shrink_start_child(paned, 1)
+        /// Lets the divider go below the sidebar's minimum width, only while sliding: left on, GTK
+        /// gives the open sidebar less than its minimum and clips it from the left.
+        fileprivate func prepareForCollapse(_ paned: OpaquePointer) {
+            if gtk_paned_get_shrink_start_child(paned) == 0 { gtk_paned_set_shrink_start_child(paned, 1) }
+        }
+
+        // MARK: Corners
+
+        /// GTK only rounds a window's top corners (its title bar's); without one, the content's
+        /// square bottom corners show. Round and clip the content like a Mac window, except when
+        /// maximized or tiled.
+        private func roundCorners(_ window: UnsafeMutablePointer<GtkWindow>) {
+            let provider = gtk_css_provider_new()!
+            gtk_css_provider_load_from_string(provider, """
+                window.csd { border-radius: 12px; }
+                window.csd > .ippm-content { border-radius: 12px; }
+                window.maximized > .ippm-content, window.tiled > .ippm-content,
+                window.fullscreen > .ippm-content { border-radius: 0; }
+                """)
+            gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
+            styleContent()
+        }
+
+        /// Also called after the first frame: SwiftCrossUI may set the window's child after this runs.
+        fileprivate func styleContent() {
+            guard let window, let content = gtk_window_get_child(window),
+                  gtk_widget_has_css_class(content, "ippm-content") == 0 else { return }
+            gtk_widget_add_css_class(content, "ippm-content")
+            gtk_widget_set_overflow(content, GTK_OVERFLOW_HIDDEN)
         }
 
         // MARK: Dark mode
@@ -357,10 +382,12 @@ import SwiftCrossUI
             frames += 1
             let t = min(1, Double(g_get_monotonic_time() - a.start) / 250_000)
             let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-            gtk_paned_set_position(a.paned, a.from + Int32(Double(a.to - a.from) * eased))
+            let position = a.from + Int32(Double(a.to - a.from) * eased)
+            gtk_paned_set_position(a.paned, position)
             guard t >= 1 else { return true }
             animation = nil
             setPositionHandlersBlocked(a.paned, false)
+            if !a.collapsing { gtk_paned_set_shrink_start_child(a.paned, 0) }
             g_object_notify(cast(a.paned), "position")
             log("[bench] sidebar \(a.collapsing ? "close" : "open"): \(frames) frames in \((g_get_monotonic_time() - a.start) / 1000) ms")
             frames = 0
@@ -422,14 +449,15 @@ import SwiftCrossUI
 #endif
 
 extension View {
-    /// Applies the scheme the chrome read from the system where SwiftCrossUI can't (GTK). On macOS
-    /// AppKit already follows the system, and forcing a value would pin it.
+    /// Applies the scheme the chrome read from the system where SwiftCrossUI can't (GTK). Elsewhere
+    /// the backend already follows the system, and forcing a value would pin it.
     @ViewBuilder
     func followingSystemColorScheme(_ scheme: ColorScheme) -> some View {
-        #if canImport(AppKitBackend)
-            self
-        #else
+        #if canImport(GtkBackend)
             colorScheme(scheme)
+        #else
+            // AppKit and WinUI report the system scheme to SwiftCrossUI themselves.
+            self
         #endif
     }
 }

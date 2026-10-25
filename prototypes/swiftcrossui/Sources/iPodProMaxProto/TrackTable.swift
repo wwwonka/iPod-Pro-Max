@@ -218,6 +218,107 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
             Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.14))
         }
     }
+#elseif canImport(WinUIBackend)
+    import WindowsFoundation
+    import WinUI
+    import WinUIBackend
+
+    /// WinUI: a virtualized ListView. WinUI only realizes and recycles the visible rows' containers;
+    /// ContainerContentChanging fills each one from the Swift array (no DataTemplate: the bindings
+    /// have no XamlReader). The header is a Grid with the same columns, above the list.
+    struct TrackTable: WinUIElementRepresentable {
+        /// nil keeps the rows already shown.
+        var rows: [TrackRow]?
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        func makeWinUIElement(context: Context) -> WinUI.Grid {
+            let coordinator = context.coordinator
+            let root = WinUI.Grid()
+            for height in [GridLength(value: 0, gridUnitType: .auto), GridLength(value: 1, gridUnitType: .star)] {
+                let row = RowDefinition()
+                row.height = height
+                root.rowDefinitions.append(row)
+            }
+            let header = Self.rowGrid()
+            for (i, column) in columns.enumerated() {
+                (header.children.getAt(UInt32(i)) as? TextBlock)?.text = column.title
+            }
+            header.padding = Thickness(left: 12, top: 6, right: 12, bottom: 6)
+            WinUI.Grid.setRow(header, 0)
+
+            let list = WinUI.ListView()
+            list.selectionMode = .extended
+            // Interim: rows use WinUI's default item rendering (a string per row, virtualized).
+            // Filling our own column grid into the containers left the rows blank (see the
+            // project card); until that's solved, one readable line per song.
+            WinUI.Grid.setRow(list, 1)
+            coordinator.list = list
+            root.children.append(header)
+            root.children.append(list)
+            return root
+        }
+
+        func updateWinUIElement(_ root: WinUI.Grid, context: Context) {
+            let coordinator = context.coordinator
+            guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
+            coordinator.rows = rows
+            // One cheap item per row; the containers read the row by index. (itemsSource rejects
+            // the Swift-backed vector: XAML wants a bindable collection.)
+            guard let items = coordinator.list?.items else { return }
+            items.clear()
+            for row in rows { items.append("\(row.title)   —   \(row.artist)   —   \(row.album)") }
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: WinUI.Grid, context: Context) -> ViewSize {
+            ViewSize(proposal.width ?? 600, proposal.height ?? 400)
+        }
+
+        static func fill(_ container: WinUI.ListViewItem, with rows: [TrackRow], at index: Int) {
+            guard index < rows.count, let grid = container.content as? WinUI.Grid else { return }
+            for (i, column) in columns.enumerated() {
+                (grid.children.getAt(UInt32(i)) as? TextBlock)?.text = rows[index][keyPath: column.value]
+            }
+        }
+
+        /// A row: one TextBlock per column, fixed or star widths like the other platforms.
+        static func rowGrid() -> WinUI.Grid {
+            let grid = WinUI.Grid()
+            grid.columnSpacing = 8
+            for (i, column) in columns.enumerated() {
+                let definition = ColumnDefinition()
+                definition.width =
+                    column.width >= 1
+                    ? GridLength(value: column.width, gridUnitType: .pixel)
+                    : GridLength(value: column.width, gridUnitType: .star)
+                grid.columnDefinitions.append(definition)
+                let text = TextBlock()
+                text.textTrimming = .characterEllipsis
+                WinUI.Grid.setColumn(text, Int32(i))
+                grid.children.append(text)
+            }
+            return grid
+        }
+
+        final class Coordinator {
+            var rows: [TrackRow] = []
+            var list: WinUI.ListView?
+        }
+    }
+
+    extension Array {
+        /// O(1) identity check: true when both arrays share one buffer (copies, not equal values).
+        fileprivate func sameStorage(as other: [Element]) -> Bool {
+            count == other.count
+                && withUnsafeBufferPointer { a in other.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
+        }
+    }
+
+    struct WindowBackground: View {
+        var body: some View {
+            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.13))
+        }
+    }
 #else
     struct WindowBackground: View {
         var body: some View {

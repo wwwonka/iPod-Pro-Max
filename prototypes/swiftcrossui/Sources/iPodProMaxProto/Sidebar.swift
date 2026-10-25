@@ -39,9 +39,11 @@ enum SidebarItem: Hashable {
 /// Off macOS (see SidebarMac.swift for the native one). Drawn by hand rather than with `List`: SwiftCrossUI's list has no sections, and a hand-drawn
 /// sidebar looks the same on every backend.
 struct Sidebar: View {
-    var devices: [String]
-    var playlists: [Playlist]
+    @Binding var devices: [String]
+    @Binding var library: Library?
     @Binding var selection: SidebarItem
+
+    private var playlists: [Playlist] { library?.playlists ?? [] }
 
     var body: some View {
         ScrollView {
