@@ -27,15 +27,19 @@ struct ContentView: View {
                 Text(status).font(.caption).foregroundColor(.gray)
             }
             .padding(10)
+            .padding(.top, titleBarInset)
             .frame(minWidth: 180)
         } content: {
             groupList
                 .padding(10)
+                .padding(.top, titleBarInset)
                 .frame(minWidth: 220)
         } detail: {
             detail
                 .padding(10)
+                .padding(.top, titleBarInset)
         }
+        .hiddenTitleBar()
         .task {
             let start = Date()
             let loaded = await Library.load(arguments: CommandLine.arguments)
