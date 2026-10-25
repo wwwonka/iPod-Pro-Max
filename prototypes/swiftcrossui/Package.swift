@@ -13,6 +13,8 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         .package(url: "https://github.com/moreSwift/swift-cross-ui", exact: "0.10.0"),
+        // Same version as swift-cross-ui's; needed to hand `Image` the sidebar icons as pixels.
+        .package(url: "https://github.com/stackotter/swift-image-formats", exact: "0.5.0"),
     ],
     targets: [
         .executableTarget(
@@ -20,6 +22,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
+                .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
         ),
     ]

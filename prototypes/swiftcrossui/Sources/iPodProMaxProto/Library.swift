@@ -14,8 +14,15 @@ struct Track: Decodable {
     var durationMs: Int?
 }
 
+struct Playlist: Decodable, Identifiable {
+    var id: String
+    var name: String
+    var trackIDs: [String]
+}
+
 private struct LibraryDocument: Decodable {
     var tracks: [Track]
+    var playlists: [Playlist]?
 }
 
 /// Preformatted row for `Table`, whose columns only take `String` key paths.
@@ -41,31 +48,35 @@ struct Library {
     var albums: [NamedGroup]
     var rowsByArtist: [String: [TrackRow]]
     var rowsByAlbum: [String: [TrackRow]]
+    var playlists: [Playlist]
+    var rowsByPlaylist: [String: [TrackRow]]
     var loadMs: Int
     var indexMs: Int
 
     static func load(arguments: [String]) async -> Library {
         await Task.detached(priority: .userInitiated) {
             let start = Date()
-            let (tracks, source) = readTracks(arguments: arguments)
+            let (document, source) = readDocument(arguments: arguments)
             let loaded = Date()
-            var library = index(tracks, source: source)
+            var library = index(document, source: source)
             library.loadMs = ms(start, loaded)
             library.indexMs = ms(loaded, Date())
             return library
         }.value
     }
 
-    private static func readTracks(arguments: [String]) -> ([Track], String) {
+    private static func readDocument(arguments: [String]) -> (LibraryDocument, String) {
         for url in candidateURLs(arguments: arguments) {
             guard let data = try? Data(contentsOf: url) else { continue }
             do {
-                return (try JSONDecoder().decode(LibraryDocument.self, from: data).tracks, url.path)
+                let document = try JSONDecoder().decode(LibraryDocument.self, from: data)
+                // An empty library would leave nothing to scroll: fall through to the synthetic one.
+                if !document.tracks.isEmpty { return (document, url.path) }
             } catch {
                 print("Could not decode \(url.path): \(error)")
             }
         }
-        return (synthetic(count: 5000), "5 000 pistes synthétiques (aucun library.json trouvé)")
+        return (synthetic(count: 5000), "5 000 pistes synthétiques (aucune bibliothèque trouvée)")
     }
 
     /// `--library <path>` or `IPPM_LIBRARY` first, then the real app's library on this Mac, then
@@ -90,7 +101,8 @@ struct Library {
         return paths.map { URL(fileURLWithPath: $0) }
     }
 
-    private static func index(_ tracks: [Track], source: String) -> Library {
+    private static func index(_ document: LibraryDocument, source: String) -> Library {
+        let tracks = document.tracks
         func key(_ t: Track) -> (String, String, Int, Int) {
             let artist: String = t.albumArtist ?? t.artist ?? ""
             return (artist, t.album ?? "", t.discNumber ?? 0, t.trackNumber ?? 0)
@@ -100,6 +112,8 @@ struct Library {
         all.reserveCapacity(sorted.count)
         var byArtist: [String: [TrackRow]] = [:]
         var byAlbum: [String: [TrackRow]] = [:]
+        var byID: [String: TrackRow] = [:]
+        byID.reserveCapacity(sorted.count)
         for t in sorted {
             let row = TrackRow(
                 title: t.title,
@@ -112,6 +126,12 @@ struct Library {
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
             byAlbum[row.album, default: []].append(row)
+            byID[t.id] = row
+        }
+        let playlists = document.playlists ?? []
+        var byPlaylist: [String: [TrackRow]] = [:]
+        for p in playlists {
+            byPlaylist[p.id] = p.trackIDs.compactMap { byID[$0] }
         }
         func groups(_ d: [String: [TrackRow]]) -> [NamedGroup] {
             d.map { NamedGroup(id: $0.key, count: $0.value.count) }
@@ -120,15 +140,21 @@ struct Library {
         return Library(source: source, allRows: all,
                        artists: groups(byArtist), albums: groups(byAlbum),
                        rowsByArtist: byArtist, rowsByAlbum: byAlbum,
+                       playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
     }
 
-    private static func synthetic(count: Int) -> [Track] {
-        (0..<count).map { i in
+    private static func synthetic(count: Int) -> LibraryDocument {
+        let tracks = (0..<count).map { i in
             Track(id: "\(i)", title: "Morceau \(i % 12 + 1)", artist: "Artiste \(i / 120)",
                   album: "Album \(i / 12)", year: 1970 + i % 50, trackNumber: i % 12 + 1,
                   discNumber: 1, durationMs: 180_000 + (i * 7_919) % 240_000)
         }
+        let playlists = [
+            Playlist(id: "p1", name: "Favoris", trackIDs: stride(from: 0, to: count, by: 37).map { "\($0)" }),
+            Playlist(id: "p2", name: "Pour courir", trackIDs: stride(from: 5, to: count, by: 53).map { "\($0)" }),
+        ]
+        return LibraryDocument(tracks: tracks, playlists: playlists)
     }
 }
 
