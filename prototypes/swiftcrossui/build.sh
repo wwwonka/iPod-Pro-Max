@@ -67,7 +67,7 @@ EOF
 ensure_vm() {
     local vm=$1 probe=$2
     if ! prlctl status "$vm" | grep -q running; then
-        echo "Starting VM $vm…"
+        echo "Starting VM ${vm}…"
         prlctl start "$vm" >/dev/null
     fi
     for _ in $(seq 1 60); do
