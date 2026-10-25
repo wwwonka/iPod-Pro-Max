@@ -63,6 +63,19 @@ let symbolCodepoints: [String: UInt32] = [
     import Gtk
     import GtkBackend
 
+    /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
+    func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint, dark: Bool) -> String {
+        guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else { return "" }
+        let color: String? =
+            switch tint {
+            case .accent: dark ? "#0A84FF" : "#007AFF"
+            case .primary: nil
+            case .secondary: dark ? "#98989D" : "#8A8A8E"
+            }
+        let foreground = color.map { " foreground='\($0)'" } ?? ""
+        return "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>"
+    }
+
     struct Symbol: GtkWidgetRepresentable {
         var name: String
         var size: Double = 16
@@ -75,21 +88,8 @@ let symbolCodepoints: [String: UInt32] = [
 
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
             let label: OpaquePointer = unsafeBitCast(widget.widgetPointer, to: OpaquePointer.self)
-            guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else {
-                gtk_label_set_text(label, "")
-                return
-            }
-            let dark = context.environment.colorScheme == .dark
-            let color: String? =
-                switch tint {
-                case .accent: dark ? "#0A84FF" : "#007AFF"
-                case .primary: nil
-                case .secondary: dark ? "#98989D" : "#8A8A8E"
-                }
-            let foreground = color.map { " foreground='\($0)'" } ?? ""
-            gtk_label_set_markup(
-                label,
-                "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>")
+            gtk_label_set_markup(label, symbolMarkup(name, pointSize: pointSize, tint: tint,
+                                                     dark: context.environment.colorScheme == .dark))
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {

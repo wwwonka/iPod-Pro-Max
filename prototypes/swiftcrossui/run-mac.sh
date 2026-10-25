@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 if [ "$1" = "gtk" ]; then
     export SCUI_DEFAULT_BACKEND=GtkBackend
     export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
+    swift package resolve --scratch-path .build-gtk
+    scripts/patch-dependencies.sh .build-gtk
     swift run --scratch-path .build-gtk iPodProMaxProto
 else
     swift run iPodProMaxProto

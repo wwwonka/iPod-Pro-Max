@@ -29,6 +29,8 @@ build)
         echo "This Swift has no static runtime: the binary will need Swift installed to run." >&2
         FLAGS=(-c release)
     fi
+    swift package resolve
+    bash "$SRC/scripts/patch-dependencies.sh" .build
     swift build "${FLAGS[@]}"
     BIN=$(swift build "${FLAGS[@]}" --show-bin-path)
 
@@ -41,10 +43,9 @@ build)
     fi
 
     DIST=$SRC/dist/linux
-    rm -rf "$DIST"
+    # rsync rather than rm -rf + cp: deleting a folder on the Parallels share fails now and then.
     mkdir -p "$DIST"
-    cp "$BIN/iPodProMaxProto" "$DIST/"
-    for r in "$BIN"/*.resources; do [ -e "$r" ] && cp -R "$r" "$DIST/"; done
+    rsync -a --delete --include 'iPodProMaxProto' --include '*.resources/***' --exclude '*' "$BIN/" "$DIST/"
     echo "OK: $DIST/iPodProMaxProto"
     ;;
 check)

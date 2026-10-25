@@ -98,14 +98,17 @@ import SwiftCrossUI
 
             let start = CACurrentMediaTime()
             let duration = 0.25
+            var frames = 0
             animation = Timer.scheduledTimer(withTimeInterval: 1 / 120, repeats: true) { [weak self] timer in
                 MainActor.assumeIsolated {
+                    frames += 1
                     let t = min(1, (CACurrentMediaTime() - start) / duration)
                     let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
                     split.setPosition(from + (to - from) * eased, ofDividerAt: 0)
                     guard t >= 1 else { return }
                     timer.invalidate()
                     self?.animation = nil
+                    log("[bench] sidebar \(collapsing ? "close" : "open"): \(frames) frames in \(Int((CACurrentMediaTime() - start) * 1000)) ms")
                     delegate.allowsCollapse = collapsing
                     if collapsing { self?.onVisibilityChange(false) }
                 }
@@ -254,6 +257,19 @@ import SwiftCrossUI
             gtk_widget_add_controller(cast(pointer), cast(click))
 
             followColorScheme()
+            // Once the first frame is up, so the first toggle doesn't pay for it (~350 ms in the VM).
+            g_idle_add_full(300, { _ in
+                MainActor.assumeIsolated { GtkChrome.shared.prepareForCollapse(nil) }
+                return 0
+            }, nil, nil)
+        }
+
+        /// Lets the divider go below the sidebar's minimum width. Changing it relays out the whole
+        /// window once, so it's done ahead of the first toggle.
+        fileprivate func prepareForCollapse(_ paned: OpaquePointer?) {
+            guard let paned = paned ?? window.flatMap({ Self.findPaned(gtk_window_get_child($0)) }),
+                  gtk_paned_get_shrink_start_child(paned) == 0 else { return }
+            gtk_paned_set_shrink_start_child(paned, 1)
         }
 
         // MARK: Dark mode
@@ -318,21 +334,49 @@ import SwiftCrossUI
             let from = gtk_paned_get_position(paned)
             let collapsing = from > 1
             if collapsing { expandedWidth = from } else { onVisibilityChange(true) }
-            // Lets the divider go below the sidebar's minimum width.
-            gtk_paned_set_shrink_start_child(paned, 1)
-            animation = (paned, from, collapsing ? 0 : expandedWidth, g_get_monotonic_time(), collapsing)
+            prepareForCollapse(paned)
+            // SwiftCrossUI lays the whole window out on every position change (~50 ms in the VM):
+            // mute it while GTK slides the divider, then lay out once at the end.
+            setPositionHandlersBlocked(paned, true)
+            // The clock starts on the first frame: if that frame comes late, the slide still plays.
+            animation = (paned, from, collapsing ? 0 : expandedWidth, 0, collapsing)
+            toggleRequested = g_get_monotonic_time()
             gtk_widget_add_tick_callback(cast(paned), sidebarTick, nil, nil)
         }
 
+        private var frames = 0
+        private var toggleRequested: gint64 = 0
+
         fileprivate func tick() -> Bool {
-            guard let a = animation else { return false }
+            guard var a = animation else { return false }
+            if a.start == 0 {
+                a.start = g_get_monotonic_time()
+                animation = a
+                log("[bench] sidebar first frame after \((a.start - toggleRequested) / 1000) ms")
+            }
+            frames += 1
             let t = min(1, Double(g_get_monotonic_time() - a.start) / 250_000)
             let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
             gtk_paned_set_position(a.paned, a.from + Int32(Double(a.to - a.from) * eased))
             guard t >= 1 else { return true }
             animation = nil
+            setPositionHandlersBlocked(a.paned, false)
+            g_object_notify(cast(a.paned), "position")
+            log("[bench] sidebar \(a.collapsing ? "close" : "open"): \(frames) frames in \((g_get_monotonic_time() - a.start) / 1000) ms")
+            frames = 0
             if a.collapsing { onVisibilityChange(false) }
             return false
+        }
+
+        private func setPositionHandlersBlocked(_ paned: OpaquePointer, _ blocked: Bool) {
+            let notify = g_signal_lookup("notify", GType(20 << 2))  // G_TYPE_OBJECT
+            let detail = g_quark_from_static_string("position")
+            let mask = GSignalMatchType(rawValue: 1 | 2)  // G_SIGNAL_MATCH_ID | G_SIGNAL_MATCH_DETAIL
+            if blocked {
+                g_signal_handlers_block_matched(cast(paned), mask, notify, detail, nil, nil, nil)
+            } else {
+                g_signal_handlers_unblock_matched(cast(paned), mask, notify, detail, nil, nil, nil)
+            }
         }
 
         private static func findPaned(_ widget: UnsafeMutablePointer<GtkWidget>?) -> OpaquePointer? {

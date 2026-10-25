@@ -47,6 +47,11 @@ struct ContentView: View {
             await mainThreadIdle()
             log("[bench] \(item.title): \(Int(Date().timeIntervalSince(start) * 1000)) ms")
         }
+        // The chrome logs how many frames each slide drew ([bench] sidebar ...).
+        for _ in 0..<4 {
+            toggleSidebar()
+            try? await Task.sleep(for: .seconds(0.8))
+        }
         exit(0)
     }
 
@@ -307,13 +312,34 @@ struct EmptyState: View {
     }
 }
 
-/// Resumes once the main queue has drained the work queued before it (the view update).
+/// Resumes once the main thread has drained the work queued before it (the view update). On GTK
+/// it waits for GLib's loop itself to go idle: dispatch's main queue is only drained by GLib now
+/// and then, which would add a fixed delay unrelated to the app.
 @MainActor
 func mainThreadIdle() async {
-    for _ in 0..<3 {
-        await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
-    }
+    #if canImport(GtkBackend)
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let box = Unmanaged.passRetained(ContinuationBox(c)).toOpaque()
+            g_idle_add_full(300, { data in  // G_PRIORITY_DEFAULT_IDLE + 100: after layout and drawing
+                Unmanaged<ContinuationBox>.fromOpaque(data!).takeRetainedValue().continuation.resume()
+                return 0
+            }, box, nil)
+        }
+    #else
+        for _ in 0..<3 {
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+        }
+    #endif
 }
+
+#if canImport(GtkBackend)
+    import CGtk
+
+    private final class ContinuationBox {
+        let continuation: CheckedContinuation<Void, Never>
+        init(_ c: CheckedContinuation<Void, Never>) { continuation = c }
+    }
+#endif
 
 func songCount(_ n: Int) -> String {
     n == 1 ? "1 song" : "\(n) songs"

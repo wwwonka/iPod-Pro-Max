@@ -35,7 +35,7 @@ enum SidebarItem: Hashable {
     }
 }
 
-#if !canImport(AppKitBackend)
+#if !canImport(AppKitBackend) && !canImport(GtkBackend)
 /// Off macOS (see SidebarMac.swift for the native one). Drawn by hand rather than with `List`: SwiftCrossUI's list has no sections, and a hand-drawn
 /// sidebar looks the same on every backend.
 struct Sidebar: View {
