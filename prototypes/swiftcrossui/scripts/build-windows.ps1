@@ -50,15 +50,30 @@ foreach ($tool in "swift", "git") {
 }
 swift --version
 
+# Large clones (swift-cross-ui, swift-syntax) drop mid-transfer in the VM with "unexpected
+# disconnect while reading sideband packet"; HTTP/1.1 and a bigger buffer avoid it.
+# Some packages contain symlinks: Windows only lets a normal user create them in Developer Mode
+# (which the Swift on Windows setup asks for), and git must be told to make real links.
+$devMode = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+if ((Get-ItemProperty $devMode -ErrorAction SilentlyContinue).AllowDevelopmentWithoutDevLicense -ne 1) {
+    Write-Output "Turning on Developer Mode (approve the admin prompt in the VM)..."
+    Start-Process reg.exe -Verb RunAs -Wait -ArgumentList 'add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1'
+}
+git config --global core.symlinks true
+git config --global http.version HTTP/1.1
+git config --global http.postBuffer 524288000
+
 # Local copy: building on the network share is slow, and some tools dislike UNC paths.
 robocopy $Source $Work /MIR /XD .build .build-gtk dist .swiftpm /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
 
+# Only WinUI: left to its platform conditions, SwiftPM also builds the GTK backend here.
+$env:SCUI_DEFAULT_BACKEND = "WinUIBackend"
 Push-Location $Work
 try {
-    swift build -c release
+    swift build -c release --build-system native
     if ($LASTEXITCODE -ne 0) { throw "swift build failed" }
-    $bin = (swift build -c release --show-bin-path).Trim()
+    $bin = (swift build -c release --build-system native --show-bin-path).Trim()
 } finally { Pop-Location }
 
 # Self-contained folder: the exe, the DLLs built next to it, and the Swift runtime DLLs.

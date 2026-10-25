@@ -25,12 +25,20 @@ build)
     # Only GTK: left to its platform conditions, SwiftPM also builds the WinUI backend here.
     export SCUI_DEFAULT_BACKEND=GtkBackend
     FLAGS=(-c release --static-swift-stdlib)
-    if ! swift build "${FLAGS[@]}"; then
-        echo "Static build failed: building against the shared Swift runtime instead." >&2
+    if [ ! -d "$(dirname "$(readlink -f "$(command -v swiftc)")")/../lib/swift_static" ]; then
+        echo "This Swift has no static runtime: the binary will need Swift installed to run." >&2
         FLAGS=(-c release)
-        swift build "${FLAGS[@]}"
     fi
+    swift build "${FLAGS[@]}"
     BIN=$(swift build "${FLAGS[@]}" --show-bin-path)
+
+    # SF Symbols font for the icons, if downloaded into local/ (never committed: see Symbols.swift).
+    if [ -f "$SRC/local/SF-SYMBOLS4.TTF" ]; then
+        mkdir -p "$HOME/.local/share/fonts"
+        if ! cmp -s "$SRC/local/SF-SYMBOLS4.TTF" "$HOME/.local/share/fonts/SF-SYMBOLS4.TTF"; then
+            cp "$SRC/local/SF-SYMBOLS4.TTF" "$HOME/.local/share/fonts/" && fc-cache -f "$HOME/.local/share/fonts"
+        fi
+    fi
 
     DIST=$SRC/dist/linux
     rm -rf "$DIST"

@@ -13,14 +13,22 @@ import SwiftCrossUI
     /// Room the detail header leaves for the traffic lights and the toggle once the sidebar is hidden.
     let collapsedHeaderInset = 120
 
+    /// macOS draws its own traffic lights and toggle (in the toolbar).
+    let drawsWindowControls = false
+
     extension View {
-        /// - Parameter sidebarVisible: set when the toggle hides or shows the sidebar.
-        func macWindowChrome(sidebarVisible: Binding<Bool>) -> some View {
+        /// - Parameters:
+        ///   - sidebarVisible: set when the toggle hides or shows the sidebar.
+        ///   - colorScheme: unused on macOS, where AppKit follows the system appearance itself.
+        func windowChrome(sidebarVisible: Binding<Bool>, colorScheme: Binding<ColorScheme>) -> some View {
             inspectWindow { window in
                 MacChrome.shared.install(on: window) { sidebarVisible.wrappedValue = $0 }
             }
         }
     }
+
+    @MainActor func toggleSidebar() { MacChrome.shared.toggleSidebar() }
+    @MainActor func performWindowAction(_ action: WindowAction) {}
 
     @MainActor
     final class MacChrome: NSObject, NSToolbarDelegate {
@@ -183,11 +191,205 @@ import SwiftCrossUI
             NSApp.terminate(nil)
         }
     }
-#else
-    // GTK and WinUI keep their system title bar for now.
-    let collapsedHeaderInset = 0
+#elseif canImport(GtkBackend)
+    import CGtk
+    import Gtk
+    import GtkBackend
+    import Foundation
+
+    let collapsedHeaderInset = 120
+    /// GTK has no Mac-style title bar, so the app draws the traffic lights and the toggle.
+    let drawsWindowControls = true
 
     extension View {
-        func macWindowChrome(sidebarVisible: Binding<Bool>) -> some View { self }
+        func windowChrome(sidebarVisible: Binding<Bool>, colorScheme: Binding<ColorScheme>) -> some View {
+            inspectWindow { window in
+                GtkChrome.shared.install(
+                    on: window,
+                    onVisibilityChange: { sidebarVisible.wrappedValue = $0 },
+                    onColorScheme: { colorScheme.wrappedValue = $0 })
+            }
+        }
     }
+
+    @MainActor func toggleSidebar() { GtkChrome.shared.toggleSidebar() }
+    @MainActor func performWindowAction(_ action: WindowAction) { GtkChrome.shared.perform(action) }
+
+    /// The GTK side of the window chrome, through the C API:
+    /// - no system title bar (an empty CSD title bar keeps the shadow and resize edges),
+    /// - dragging the top 52 pt moves the window, double-clicking it maximizes,
+    /// - dark mode follows GNOME's color-scheme setting, and changes live (signal, no polling),
+    /// - the sidebar slides closed and open on the frame clock.
+    @MainActor
+    final class GtkChrome {
+        static let shared = GtkChrome()
+
+        private var window: UnsafeMutablePointer<GtkWindow>?
+        private var onVisibilityChange: (Bool) -> Void = { _ in }
+        private var onColorScheme: (ColorScheme) -> Void = { _ in }
+        private var interfaceSettings: UnsafeMutablePointer<GSettings>?
+        fileprivate var animation: (paned: OpaquePointer, from: Int32, to: Int32, start: gint64, collapsing: Bool)?
+        private var expandedWidth: Int32 = 230
+
+        func install(on window: Gtk.ApplicationWindow,
+                     onVisibilityChange: @escaping (Bool) -> Void,
+                     onColorScheme: @escaping (ColorScheme) -> Void)
+        {
+            self.onVisibilityChange = onVisibilityChange
+            self.onColorScheme = onColorScheme
+            let pointer: UnsafeMutablePointer<GtkWindow> = cast(window.widgetPointer)
+            guard self.window != pointer else { return }
+            self.window = pointer
+
+            // A hidden title bar widget: GTK keeps client-side decorations (shadow, resize edges)
+            // but gives no height to it; a visible empty one still takes the theme's 46 px.
+            let titlebar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
+            gtk_widget_set_visible(titlebar, 0)
+            gtk_window_set_titlebar(pointer, titlebar)
+
+            let click = gtk_gesture_click_new()!
+            gtk_gesture_single_set_button(cast(click), 1)
+            g_signal_connect_data(cast(click), "pressed", unsafeBitCast(titleBarPressed, to: GCallback.self),
+                                  nil, nil, GConnectFlags(rawValue: 0))
+            gtk_widget_add_controller(cast(pointer), cast(click))
+
+            followColorScheme()
+        }
+
+        // MARK: Dark mode
+
+        private func followColorScheme() {
+            // Only GNOME-like desktops have this key; elsewhere stay light rather than abort.
+            guard let source = g_settings_schema_source_get_default(),
+                  let schema = g_settings_schema_source_lookup(source, "org.gnome.desktop.interface", 1)
+            else { return }
+            defer { g_settings_schema_unref(schema) }
+            guard g_settings_schema_has_key(schema, "color-scheme") != 0 else { return }
+            interfaceSettings = g_settings_new("org.gnome.desktop.interface")
+            g_signal_connect_data(cast(interfaceSettings), "changed::color-scheme",
+                                  unsafeBitCast(colorSchemeChanged, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            applyColorScheme()
+        }
+
+        fileprivate func applyColorScheme() {
+            guard let interfaceSettings, let value = g_settings_get_string(interfaceSettings, "color-scheme") else { return }
+            let dark = String(cString: value).contains("dark")
+            g_free(value)
+            // GTK's own widgets (table, scroll bars, text fields) switch with this setting.
+            var gvalue = GValue()
+            g_value_init(&gvalue, GType(5 << 2))  // G_TYPE_BOOLEAN
+            g_value_set_boolean(&gvalue, dark ? 1 : 0)
+            g_object_set_property(cast(gtk_settings_get_default()), "gtk-application-prefer-dark-theme", &gvalue)
+            g_value_unset(&gvalue)
+            onColorScheme(dark ? .dark : .light)
+        }
+
+        // MARK: Window buttons
+
+        func perform(_ action: WindowAction) {
+            guard let window else { return }
+            switch action {
+            case .close: gtk_window_close(window)
+            case .minimize: gtk_window_minimize(window)
+            case .zoom: toggleMaximized()
+            }
+        }
+
+        fileprivate func toggleMaximized() {
+            guard let window else { return }
+            if gtk_window_is_maximized(window) != 0 { gtk_window_unmaximize(window) } else { gtk_window_maximize(window) }
+        }
+
+        fileprivate func beginMove(gesture: OpaquePointer?, x: Double, y: Double) {
+            guard let window, y < 52,
+                  let surface = gtk_native_get_surface(cast(window)) else { return }
+            var dx: Double = 0, dy: Double = 0
+            gtk_native_get_surface_transform(cast(window), &dx, &dy)
+            gdk_toplevel_begin_move(cast(surface), gtk_gesture_get_device(cast(gesture)),
+                                    Int32(gtk_gesture_single_get_current_button(cast(gesture))),
+                                    x + dx, y + dy, gtk_event_controller_get_current_event_time(cast(gesture)))
+        }
+
+        // MARK: Sidebar
+
+        func toggleSidebar() {
+            guard animation == nil, let window,
+                  let paned = Self.findPaned(gtk_window_get_child(window)) else { return }
+            let from = gtk_paned_get_position(paned)
+            let collapsing = from > 1
+            if collapsing { expandedWidth = from } else { onVisibilityChange(true) }
+            // Lets the divider go below the sidebar's minimum width.
+            gtk_paned_set_shrink_start_child(paned, 1)
+            animation = (paned, from, collapsing ? 0 : expandedWidth, g_get_monotonic_time(), collapsing)
+            gtk_widget_add_tick_callback(cast(paned), sidebarTick, nil, nil)
+        }
+
+        fileprivate func tick() -> Bool {
+            guard let a = animation else { return false }
+            let t = min(1, Double(g_get_monotonic_time() - a.start) / 250_000)
+            let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+            gtk_paned_set_position(a.paned, a.from + Int32(Double(a.to - a.from) * eased))
+            guard t >= 1 else { return true }
+            animation = nil
+            if a.collapsing { onVisibilityChange(false) }
+            return false
+        }
+
+        private static func findPaned(_ widget: UnsafeMutablePointer<GtkWidget>?) -> OpaquePointer? {
+            guard let widget else { return nil }
+            if g_type_check_instance_is_a(cast(widget), gtk_paned_get_type()) != 0 { return cast(widget) }
+            var child = gtk_widget_get_first_child(widget)
+            while let c = child {
+                if let found = findPaned(c) { return found }
+                child = gtk_widget_get_next_sibling(c)
+            }
+            return nil
+        }
+    }
+
+    private func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
+
+    private let titleBarPressed: @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = {
+        gesture, presses, x, y, _ in
+        MainActor.assumeIsolated {
+            guard y < 52 else { return }
+            if presses == 2 { GtkChrome.shared.toggleMaximized() } else { GtkChrome.shared.beginMove(gesture: gesture, x: x, y: y) }
+        }
+    }
+
+    private let colorSchemeChanged: @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, gpointer?) -> Void = { _, _, _ in
+        MainActor.assumeIsolated { GtkChrome.shared.applyColorScheme() }
+    }
+
+    private let sidebarTick: @convention(c) (UnsafeMutablePointer<GtkWidget>?, OpaquePointer?, gpointer?) -> gboolean = { _, _, _ in
+        MainActor.assumeIsolated { GtkChrome.shared.tick() ? 1 : 0 }
+    }
+#else
+    // WinUI keeps its system title bar for now.
+    let collapsedHeaderInset = 0
+    let drawsWindowControls = false
+
+    extension View {
+        func windowChrome(sidebarVisible: Binding<Bool>, colorScheme: Binding<ColorScheme>) -> some View { self }
+    }
+
+    @MainActor func toggleSidebar() {}
+    @MainActor func performWindowAction(_ action: WindowAction) {}
 #endif
+
+extension View {
+    /// Applies the scheme the chrome read from the system where SwiftCrossUI can't (GTK). On macOS
+    /// AppKit already follows the system, and forcing a value would pin it.
+    @ViewBuilder
+    func followingSystemColorScheme(_ scheme: ColorScheme) -> some View {
+        #if canImport(AppKitBackend)
+            self
+        #else
+            colorScheme(scheme)
+        #endif
+    }
+}
+
+enum WindowAction {
+    case close, minimize, zoom
+}

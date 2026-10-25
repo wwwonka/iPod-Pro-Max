@@ -1,94 +1,99 @@
 import SwiftCrossUI
 
-// SF Symbols, drawn by AppKit into pixels that SwiftCrossUI's `Image` can show. SF Symbols may
-// only be used on Apple platforms, so other backends get an empty box of the same size for now
-// (a look-alike open icon set is the plan there).
+// SF Symbols on every platform. macOS draws the real, vector symbols. GTK and WinUI draw glyphs
+// from the "SF-Symbols" font (github.com/DrunkSonic/SF-Symbols-for-Windows), which is Apple's
+// artwork without a license to use it off Apple platforms: it is only ever installed locally from
+// prototypes/swiftcrossui/local/ (git-ignored), never committed or shipped. Without it, symbols
+// are empty boxes of the right size.
 
 enum SymbolTint: Hashable {
     case accent, primary, secondary
 }
 
-#if canImport(AppKit)
-    import AppKit
-    import ImageFormats
+/// The font numbers its glyphs from U+E900 without names. These were matched by shape against
+/// the real symbols (Tools: a Swift script comparing renders); nil means the font lacks it.
+let symbolCodepoints: [String: UInt32] = [
+    "music.note": 0xF134,
+    "music.note.list": 0xF133,
+    "music.mic": 0xF12D,
+    "ipod": 0xEE8E,
+    "book": 0xF286,
+    "antenna.radiowaves.left.and.right": 0xEE31,
+    "photo.on.rectangle.angled": 0xED80,
+    "plus": 0xEC22,
+    "square.and.arrow.down": 0xF2FC,
+    "magnifyingglass": 0xF12C,
+    // Not in the font: the closest glyph stands in.
+    "sidebar.left": 0xF088,
+]
 
-    struct Symbol: View {
+#if canImport(AppKitBackend)
+    import AppKit
+    import AppKitBackend
+
+    struct Symbol: NSViewRepresentable {
         var name: String
         var size: Double = 16
         var pointSize: Double = 13
         var tint: SymbolTint = .accent
 
-        var body: some View {
-            if let image = SymbolCache.image(name, size: size, pointSize: pointSize, tint: tint) {
-                Image(image).resizable().frame(width: size, height: size)
-            } else {
-                Spacer().frame(width: size, height: size)
-            }
-        }
-    }
-
-    /// Each symbol is rendered once per size and tint; sidebar and toolbar redraws reuse it.
-    @MainActor
-    enum SymbolCache {
-        private struct Key: Hashable {
-            var name: String
-            var size: Double
-            var pointSize: Double
-            var tint: SymbolTint
+        func makeNSView(context: Context) -> NSImageView {
+            let view = NSImageView()
+            view.imageScaling = .scaleNone
+            return view
         }
 
-        private static var images: [Key: ImageFormats.Image<RGBA>] = [:]
-
-        static func image(_ name: String, size: Double, pointSize: Double, tint: SymbolTint)
-            -> ImageFormats.Image<RGBA>?
-        {
-            let key = Key(name: name, size: size, pointSize: pointSize, tint: tint)
-            if let cached = images[key] { return cached }
-            let image = render(key)
-            images[key] = image
-            return image
-        }
-
-        private static func render(_ key: Key) -> ImageFormats.Image<RGBA>? {
-            let color: NSColor =
-                switch key.tint {
+        func updateNSView(_ view: NSImageView, context: Context) {
+            view.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+            view.contentTintColor =
+                switch tint {
                 case .accent: .controlAccentColor
                 case .primary: .labelColor
                 case .secondary: .secondaryLabelColor
                 }
-            let config = NSImage.SymbolConfiguration(pointSize: key.pointSize, weight: .regular)
-                .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-            guard let symbol = NSImage(systemSymbolName: key.name, accessibilityDescription: nil)?
-                .withSymbolConfiguration(config)
-            else { return nil }
+        }
 
-            let scale = NSScreen.main?.backingScaleFactor ?? 2
-            let pixels = Int((key.size * scale).rounded())
-            var bytes = [UInt8](repeating: 0, count: pixels * pixels * 4)
-            bytes.withUnsafeMutableBytes { buffer in
-                guard let context = CGContext(
-                    data: buffer.baseAddress, width: pixels, height: pixels, bitsPerComponent: 8,
-                    bytesPerRow: pixels * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-                else { return }
-                context.scaleBy(x: scale, y: scale)
-                // Dynamic colors (label, accent) resolve against the app's light or dark appearance.
-                NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
-                    NSGraphicsContext.saveGraphicsState()
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-                    let s = symbol.size
-                    symbol.draw(in: NSRect(x: (key.size - s.width) / 2, y: (key.size - s.height) / 2,
-                                           width: s.width, height: s.height))
-                    NSGraphicsContext.restoreGraphicsState()
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSImageView, context: Context) -> ViewSize {
+            ViewSize(size, size)
+        }
+    }
+#elseif canImport(GtkBackend)
+    import CGtk
+    import Gtk
+    import GtkBackend
+
+    struct Symbol: GtkWidgetRepresentable {
+        var name: String
+        var size: Double = 16
+        var pointSize: Double = 13
+        var tint: SymbolTint = .accent
+
+        func makeGtkWidget(context: Context) -> Gtk.Widget {
+            Gtk.Widget(gtk_label_new(nil))
+        }
+
+        func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
+            let label: OpaquePointer = unsafeBitCast(widget.widgetPointer, to: OpaquePointer.self)
+            guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else {
+                gtk_label_set_text(label, "")
+                return
+            }
+            let dark = context.environment.colorScheme == .dark
+            let color: String? =
+                switch tint {
+                case .accent: dark ? "#0A84FF" : "#007AFF"
+                case .primary: nil
+                case .secondary: dark ? "#98989D" : "#8A8A8E"
                 }
-            }
-            // ImageFormats expects straight alpha; CoreGraphics wrote premultiplied.
-            for i in stride(from: 0, to: bytes.count, by: 4) {
-                let a = Int(bytes[i + 3])
-                guard a > 0, a < 255 else { continue }
-                for c in 0..<3 { bytes[i + c] = UInt8(min(255, Int(bytes[i + c]) * 255 / a)) }
-            }
-            return ImageFormats.Image(width: pixels, height: pixels, bytes: bytes)
+            let foreground = color.map { " foreground='\($0)'" } ?? ""
+            gtk_label_set_markup(
+                label,
+                "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>")
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
+            ViewSize(size, size)
         }
     }
 #else

@@ -65,7 +65,7 @@ struct Sidebar: View {
                 SidebarRow(title: "New Playlist…", icon: "plus", tint: .secondary, dimmed: true)
             }
             .padding(.horizontal, 10)
-            .padding(.top, 10)
+            .padding(.top, drawsWindowControls ? 52 : 10)
             .padding(.bottom, 10)
         }
         .frame(minWidth: 200)

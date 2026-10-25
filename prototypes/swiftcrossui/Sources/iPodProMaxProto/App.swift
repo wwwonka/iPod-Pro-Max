@@ -7,14 +7,22 @@ struct ContentView: View {
     @State var devices: [String] = []
     @State var selection: SidebarItem = .music
     @State var sidebarVisible = true
+    /// Followed from the system on Linux (GTK doesn't tell SwiftCrossUI); AppKit handles macOS.
+    @State var colorScheme: ColorScheme = .light
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar(devices: devices, playlists: library?.playlists ?? [], selection: $selection)
-        } detail: {
-            detail
+        ZStack(alignment: .topLeading) {
+            NavigationSplitView {
+                Sidebar(devices: devices, playlists: library?.playlists ?? [], selection: $selection)
+            } detail: {
+                detail
+            }
+            if drawsWindowControls {
+                WindowControls()
+            }
         }
-        .macWindowChrome(sidebarVisible: $sidebarVisible)
+        .windowChrome(sidebarVisible: $sidebarVisible, colorScheme: $colorScheme)
+        .followingSystemColorScheme(colorScheme)
         .task {
             let start = Date()
             async let found = Task.detached(priority: .utility) { connectedIPods() }.value
@@ -187,6 +195,28 @@ enum MusicMode: String, CaseIterable, CustomStringConvertible {
     case allSongs = "All Songs"
 
     var description: String { rawValue }
+}
+
+/// Mac-style traffic lights and the sidebar toggle, for platforms without a Mac title bar. They sit
+/// over the window's top-left corner, where macOS puts them.
+struct WindowControls: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            light(Color(red: 1, green: 0.37, blue: 0.34), .close)
+            light(Color(red: 1, green: 0.74, blue: 0.18), .minimize)
+            light(Color(red: 0.16, green: 0.79, blue: 0.25), .zoom)
+            Symbol(name: "sidebar.left", size: 28, pointSize: 16, tint: .secondary)
+                .padding(.leading, 18)
+                .onTapGesture { toggleSidebar() }
+        }
+        .padding(.leading, 20)
+        .frame(height: 52)
+    }
+
+    private func light(_ color: Color, _ action: WindowAction) -> some View {
+        color.frame(width: 12, height: 12).cornerRadius(6)
+            .onTapGesture { performWindowAction(action) }
+    }
 }
 
 /// The toolbar row at the top of the detail column, in the transparent title bar on macOS.

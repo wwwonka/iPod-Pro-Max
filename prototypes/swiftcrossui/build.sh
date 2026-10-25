@@ -110,8 +110,27 @@ build_windows() {
         flags+=(-Setup)
     fi
     [ $RUN -eq 1 ] && flags+=(-Run)
-    prlctl exec "$WINDOWS_VM" --current-user powershell.exe -NoProfile -ExecutionPolicy Bypass \
-        -File "$WINDOWS_SRC\\scripts\\build-windows.ps1" -Source "$WINDOWS_SRC" ${flags[@]+"${flags[@]}"}
+    # prlctl exec drops sessions that last as long as a first Windows build (it once reported
+    # failure while swift-frontend kept compiling), so the build runs detached in the VM and
+    # writes its log and exit code to dist/; this waits for the exit code, two hours at most.
+    local out="$ROOT/dist/windows-vm.log" status="$ROOT/dist/windows-vm.exit"
+    rm -f "$out" "$status"
+    local args="'-NoProfile','-ExecutionPolicy','Bypass','-File','$WINDOWS_SRC\\scripts\\build-windows-detached.ps1','-Source','$WINDOWS_SRC'"
+    for f in ${flags[@]+"${flags[@]}"}; do args+=",'$f'"; done
+    prlctl exec "$WINDOWS_VM" --current-user powershell.exe -NoProfile -Command \
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "$args"
+    local shown=0
+    for _ in $(seq 1 1440); do
+        if [ -f "$out" ]; then
+            local lines
+            lines=$(wc -l < "$out")
+            [ "$lines" -gt "$shown" ] && tail -n +"$((shown + 1))" "$out" | LC_ALL=C tr -cd '\11\12\15\40-\176' && shown=$lines
+        fi
+        [ -f "$status" ] && break
+        sleep 5
+    done
+    [ -f "$status" ] || { echo "Timed out waiting for the Windows build." >&2; return 1; }
+    [ "$(tr -cd '0-9' < "$status")" = "0" ] || return 1
     [ $RUN -eq 1 ] && show_vm
     return 0
 }
