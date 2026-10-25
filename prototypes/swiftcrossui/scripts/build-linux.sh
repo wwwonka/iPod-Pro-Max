@@ -1,38 +1,36 @@
 #!/bin/bash
 # Runs inside the Fedora VM, called by ../build.sh through prlctl exec.
-#   build-linux.sh deps                 (as root)  installs GTK 4 and the Swift toolchain's dependencies
-#   build-linux.sh build <source dir>   (as user)  installs Swift with swiftly if missing, builds, fills dist/linux
+#   build-linux.sh deps                 (as root)  installs GTK 4 and Swift (Fedora's swift-lang package)
+#   build-linux.sh build <source dir>   (as user)  builds, fills dist/linux
 #   build-linux.sh run                  (as user)  opens the last build in the desktop session
+#   build-linux.sh check                           exits 0 when Swift and GTK 4 are installed
 set -euo pipefail
 
 case ${1:-} in
 deps)
-    dnf install -y gtk4-devel clang rsync curl tar gzip \
-        binutils gcc git unzip libcurl-devel libedit-devel libicu-devel \
-        sqlite-devel libuuid-devel libxml2-devel python3-devel
+    # Fedora packages Swift itself; swiftly refuses Fedora releases newer than its support list.
+    dnf install -y swift-lang gtk4-devel clang rsync
     ;;
 build)
     SRC=$2
     WORK=$HOME/dev/swiftcrossui
-    SWIFTLY_ENV=${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh
-    [ -f "$SWIFTLY_ENV" ] && . "$SWIFTLY_ENV"
-    if ! command -v swift >/dev/null; then
-        echo "Installing Swift with swiftly…"
-        tmp=$(mktemp -d)
-        curl -fsSL "https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz" | tar xz -C "$tmp"
-        "$tmp/swiftly" init --assume-yes --quiet-shell-followup --skip-install
-        . "$SWIFTLY_ENV"
-        swiftly install latest --assume-yes --use
-        hash -r
-    fi
+    command -v swift >/dev/null || { echo "Swift is missing: run build.sh --setup linux" >&2; exit 1; }
     swift --version
 
     mkdir -p "$WORK"
     rsync -a --delete --exclude .build --exclude .build-gtk --exclude dist --exclude .swiftpm "$SRC/" "$WORK/"
     cd "$WORK"
-    # Static Swift runtime: the binary only needs GTK 4 from the system.
-    swift build -c release --static-swift-stdlib
-    BIN=$(swift build -c release --static-swift-stdlib --show-bin-path)
+    # Static Swift runtime, so the binary only needs GTK 4 from the system. If this toolchain
+    # lacks the static libraries, fall back to a build that needs Swift installed to run.
+    # Only GTK: left to its platform conditions, SwiftPM also builds the WinUI backend here.
+    export SCUI_DEFAULT_BACKEND=GtkBackend
+    FLAGS=(-c release --static-swift-stdlib)
+    if ! swift build "${FLAGS[@]}"; then
+        echo "Static build failed: building against the shared Swift runtime instead." >&2
+        FLAGS=(-c release)
+        swift build "${FLAGS[@]}"
+    fi
+    BIN=$(swift build "${FLAGS[@]}" --show-bin-path)
 
     DIST=$SRC/dist/linux
     rm -rf "$DIST"
@@ -40,6 +38,9 @@ build)
     cp "$BIN/iPodProMaxProto" "$DIST/"
     for r in "$BIN"/*.resources; do [ -e "$r" ] && cp -R "$r" "$DIST/"; done
     echo "OK: $DIST/iPodProMaxProto"
+    ;;
+check)
+    command -v swift >/dev/null && rpm -q gtk4-devel >/dev/null
     ;;
 run)
     # prlctl exec does not inherit the desktop session's environment: point GTK at it.
@@ -52,7 +53,7 @@ run)
     echo "Launched (log: /tmp/iPodProMaxProto.log)"
     ;;
 *)
-    echo "usage: $0 deps | build <source dir> | run" >&2
+    echo "usage: $0 deps | build <source dir> | run | check" >&2
     exit 2
     ;;
 esac

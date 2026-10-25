@@ -35,7 +35,8 @@ enum SidebarItem: Hashable {
     }
 }
 
-/// Drawn by hand rather than with `List`: SwiftCrossUI's list has no sections, and a hand-drawn
+#if !canImport(AppKitBackend)
+/// Off macOS (see SidebarMac.swift for the native one). Drawn by hand rather than with `List`: SwiftCrossUI's list has no sections, and a hand-drawn
 /// sidebar looks the same on every backend.
 struct Sidebar: View {
     var devices: [String]
@@ -64,7 +65,7 @@ struct Sidebar: View {
                 SidebarRow(title: "New Playlist…", icon: "plus", tint: .secondary, dimmed: true)
             }
             .padding(.horizontal, 10)
-            .padding(.top, sidebarTopInset)
+            .padding(.top, 10)
             .padding(.bottom, 10)
         }
         .frame(minWidth: 200)
@@ -109,6 +110,8 @@ struct SidebarRow: View {
         .cornerRadius(6)
     }
 }
+
+#endif
 
 /// The SwiftUI sidebar's selection when the list isn't focused: a neutral gray, not the accent color.
 let sidebarSelection = Color.adaptive(

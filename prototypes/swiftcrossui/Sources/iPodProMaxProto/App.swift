@@ -6,6 +6,7 @@ struct ContentView: View {
     @State var library: Library?
     @State var devices: [String] = []
     @State var selection: SidebarItem = .music
+    @State var sidebarVisible = true
 
     var body: some View {
         NavigationSplitView {
@@ -13,7 +14,7 @@ struct ContentView: View {
         } detail: {
             detail
         }
-        .hiddenTitleBar()
+        .macWindowChrome(sidebarVisible: $sidebarVisible)
         .task {
             let start = Date()
             async let found = Task.detached(priority: .utility) { connectedIPods() }.value
@@ -23,89 +24,121 @@ struct ContentView: View {
             log("[proto] \(loaded.allRows.count) tracks from \(loaded.source)")
             log("[proto] decode \(loaded.loadMs) ms, index \(loaded.indexMs) ms, "
                 + "ready \(Int(Date().timeIntervalSince(start) * 1000)) ms after first render")
+            if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil { await benchSidebar() }
         }
     }
 
+    /// `IPPM_BENCH=1`: switches sections like sidebar clicks and logs how long each update takes
+    /// until the main thread is free again, then quits.
+    private func benchSidebar() async {
+        let rounds = Int(ProcessInfo.processInfo.environment["IPPM_BENCH"] ?? "") ?? 1
+        let steps: [SidebarItem] = Array(repeating: [.podcasts, .music, .videos, .music, .audiobooks, .music], count: rounds).flatMap { $0 }
+        for item in steps {
+            let start = Date()
+            selection = item
+            await mainThreadIdle()
+            log("[bench] \(item.title): \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+        }
+        exit(0)
+    }
+
+    @State var mode: MusicMode? = .allSongs
+    @State var search = ""
+    @State var selectedArtist: String?
+
+    /// One layout for every section, so switching never tears the track table down: detaching
+    /// an NSTableView from the window is what made each sidebar click cost ~60 ms. Sections
+    /// without a table draw over it instead.
     @ViewBuilder
     private var detail: some View {
         if let library {
-            switch selection {
-            case .music:
-                MusicView(library: library)
-            case .playlist(let id):
-                let rows = library.rowsByPlaylist[id] ?? []
-                VStack(spacing: 0) {
-                    DetailHeader(title: library.playlists.first { $0.id == id }?.name ?? "Playlist",
-                                 subtitle: songCount(rows.count))
-                    TrackTable(rows: rows)
+            VStack(spacing: 0) {
+                header(library)
+                ZStack {
+                    HStack(spacing: 0) {
+                        if selection == .music && mode == .byArtist {
+                            List(library.artists, selection: $selectedArtist) { group in
+                                HStack {
+                                    Text(group.id)
+                                    Spacer()
+                                    Text("\(group.count)").foregroundColor(.gray)
+                                }
+                            }
+                            .frame(width: 250)
+                            Divider()
+                        }
+                        TrackTable(rows: tableRows(library))
+                    }
+                    if let cover = cover(library) {
+                        cover.background(WindowBackground())
+                    }
                 }
-            case .device(let name):
-                placeholder(title: name, icon: "ipod", message: "The iPod tab isn't in the prototype yet.")
-            default:
-                placeholder(title: selection.title, icon: selection.icon,
-                            message: "\(selection.title) isn't in the prototype yet.")
             }
         } else {
             Text("Loading…").foregroundColor(.gray)
         }
     }
 
-    private func placeholder(title: String, icon: String, message: String) -> some View {
-        VStack(spacing: 0) {
-            DetailHeader(title: title, subtitle: "")
-            EmptyState(icon: icon, title: "Not in the Prototype", message: message)
+    /// Always the same view type, with only its strings and controls changing: swapping the
+    /// whole header made SwiftCrossUI re-add every sibling, the table included.
+    private func header(_ library: Library) -> some View {
+        let title: String
+        let subtitle: String
+        switch selection {
+        case .music:
+            title = "Music"
+            subtitle = songCount(library.allRows.count)
+        case .playlist(let id):
+            title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
+            subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+        default:
+            title = selection.title
+            subtitle = ""
         }
-    }
-}
-
-/// The SwiftUI app's Music view: a toolbar with title, subtitle, view picker, buttons and search,
-/// above either the artists split view or the table of all songs.
-struct MusicView: View {
-    enum Mode: String, CaseIterable, CustomStringConvertible {
-        case byArtist = "By Artist"
-        case allSongs = "All Songs"
-
-        var description: String { rawValue }
-    }
-
-    var library: Library
-    @State var mode: Mode? = .allSongs
-    @State var search = ""
-    @State var selectedArtist: String?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            DetailHeader(title: "Music", subtitle: songCount(library.allRows.count)) {
-                Picker(of: Mode.allCases, selection: $mode)
+        return DetailHeader(title: title, subtitle: subtitle,
+                            leadingInset: sidebarVisible ? 0 : collapsedHeaderInset) {
+            if selection == .music {
+                Picker(of: MusicMode.allCases, selection: $mode)
                     .pickerStyle(.segmented)
                 ToolbarButton(icon: "plus")
                 ToolbarButton(icon: "square.and.arrow.down")
                 SearchField(prompt: "Search songs", text: $search)
             }
-            if library.allRows.isEmpty {
-                EmptyState(icon: "music.note", title: "No Music Yet",
-                           message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.")
-            } else if mode == .byArtist {
-                HStack(spacing: 0) {
-                    List(library.artists, selection: $selectedArtist) { group in
-                        HStack {
-                            Text(group.id)
-                            Spacer()
-                            Text("\(group.count)").foregroundColor(.gray)
-                        }
-                    }
-                    .frame(width: 250)
-                    Divider()
-                    if let artist = selectedArtist, let rows = library.rowsByArtist[artist] {
-                        TrackTable(rows: filtered(rows))
-                    } else {
-                        EmptyState(icon: "music.mic", title: "Select an Artist",
-                                   message: "⌘-click or ⇧-click to see several artists at once.")
-                    }
-                }
-            } else {
-                TrackTable(rows: filtered(library.allRows))
-            }
+        }
+    }
+
+    /// The rows the table shows; nil for sections without a table, which keeps the last rows so
+    /// the table underneath doesn't reload for nothing.
+    private func tableRows(_ library: Library) -> [TrackRow]? {
+        switch selection {
+        case .music where mode == .byArtist:
+            return filtered(selectedArtist.flatMap { library.rowsByArtist[$0] } ?? [])
+        case .music:
+            return filtered(library.allRows)
+        case .playlist(let id):
+            return library.rowsByPlaylist[id] ?? []
+        default:
+            return nil
+        }
+    }
+
+    /// What hides the table: empty states and the sections the prototype doesn't have yet.
+    private func cover(_ library: Library) -> EmptyState? {
+        switch selection {
+        case .music where library.allRows.isEmpty:
+            return EmptyState(icon: "music.note", title: "No Music Yet",
+                              message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.")
+        case .music where mode == .byArtist && selectedArtist == nil:
+            return EmptyState(icon: "music.mic", title: "Select an Artist",
+                              message: "⌘-click or ⇧-click to see several artists at once.")
+        case .music, .playlist:
+            return nil
+        case .device:
+            return EmptyState(icon: "ipod", title: "Not in the Prototype",
+                              message: "The iPod tab isn't in the prototype yet.")
+        default:
+            return EmptyState(icon: selection.icon, title: "Not in the Prototype",
+                              message: "\(selection.title) isn't in the prototype yet.")
         }
     }
 
@@ -122,15 +155,25 @@ struct MusicView: View {
     }
 }
 
+enum MusicMode: String, CaseIterable, CustomStringConvertible {
+    case byArtist = "By Artist"
+    case allSongs = "All Songs"
+
+    var description: String { rawValue }
+}
+
 /// The toolbar row at the top of the detail column, in the transparent title bar on macOS.
 struct DetailHeader<Controls: View>: View {
     var title: String
     var subtitle: String
+    /// Room for the traffic lights when the sidebar is hidden.
+    var leadingInset = 0
     var controls: Controls
 
-    init(title: String, subtitle: String, @ViewBuilder controls: () -> Controls) {
+    init(title: String, subtitle: String, leadingInset: Int = 0, @ViewBuilder controls: () -> Controls) {
         self.title = title
         self.subtitle = subtitle
+        self.leadingInset = leadingInset
         self.controls = controls()
     }
 
@@ -147,6 +190,7 @@ struct DetailHeader<Controls: View>: View {
                 controls
             }
             .padding(.horizontal, 10)
+            .padding(.leading, leadingInset)
             .frame(height: 52)
             Divider()
         }
@@ -206,18 +250,11 @@ struct EmptyState: View {
     }
 }
 
-struct TrackTable: View {
-    var rows: [TrackRow]
-
-    var body: some View {
-        Table(rows) {
-            TableColumn("#", value: \TrackRow.number)
-            TableColumn("Title", value: \TrackRow.title)
-            TableColumn("Artist", value: \TrackRow.artist)
-            TableColumn("Album", value: \TrackRow.album)
-            TableColumn("Year", value: \TrackRow.year)
-            TableColumn("Time", value: \TrackRow.duration)
-        }
+/// Resumes once the main queue has drained the work queued before it (the view update).
+@MainActor
+func mainThreadIdle() async {
+    for _ in 0..<3 {
+        await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
     }
 }
 

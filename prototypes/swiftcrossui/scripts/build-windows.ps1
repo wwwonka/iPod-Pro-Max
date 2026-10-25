@@ -16,6 +16,9 @@ function Refresh-Path {
 }
 
 function Winget-Install([string]$id, [string[]]$extra = @()) {
+    # Skip what's there: a re-run (e.g. to add a missing tool) must not reinstall Visual Studio.
+    winget list --id $id --exact --accept-source-agreements | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Output "$id already installed"; return }
     winget install --id $id --exact --accept-package-agreements --accept-source-agreements @extra
     # -1978335189: already installed, nothing to upgrade.
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) { throw "winget $id failed ($LASTEXITCODE)" }
@@ -28,17 +31,22 @@ if ($Setup) {
     Winget-Install "Microsoft.VisualStudio.2022.Community" @("--force", "--custom",
         "--add Microsoft.VisualStudio.Component.Windows11SDK.22621 --add $vcTools")
     Winget-Install "Swift.Toolchain"
+    # SwiftPM clones the dependencies with git.
+    Winget-Install "Git.Git"
     # WinUIBackend: SDK at build time, Windows App Runtime at run time (SwiftCrossUI docs).
-    Winget-Install "Microsoft.WindowsSDK.10.0.17763"
+    # Its installer fails on ARM64 VMs (exit 2008); Visual Studio's 22621 SDK may be enough.
+    try { Winget-Install "Microsoft.WindowsSDK.10.0.17763" } catch { Write-Warning $_ }
     $installer = Join-Path $env:TEMP "windowsappruntimeinstall-$arch.exe"
     Invoke-WebRequest "https://aka.ms/windowsappsdk/1.5/1.5.240205001-preview1/windowsappruntimeinstall-$arch.exe" -OutFile $installer
     & $installer --quiet
     Refresh-Path
 }
 
-if (-not (Get-Command swift -ErrorAction SilentlyContinue)) {
-    Refresh-Path
-    if (-not (Get-Command swift -ErrorAction SilentlyContinue)) { throw "Swift is not installed: run again with -Setup (./build.sh --setup windows)." }
+foreach ($tool in "swift", "git") {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+        Refresh-Path
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "$tool is not installed: run again with -Setup (./build.sh --setup windows)." }
+    }
 }
 swift --version
 

@@ -85,8 +85,9 @@ build_linux() {
     fi
     ensure_vm "$LINUX_VM" true
     local setup=$SETUP
-    if [ $setup -eq 0 ] && ! prlctl exec "$LINUX_VM" --current-user bash -c \
-        'test -f ~/.local/share/swiftly/env.sh && rpm -q gtk4-devel' >/dev/null 2>&1; then
+    # The test lives in the script: prlctl exec splits quoted arguments on spaces.
+    if [ $setup -eq 0 ] && ! prlctl exec "$LINUX_VM" --current-user \
+        bash "$LINUX_SRC/scripts/build-linux.sh" check >/dev/null 2>&1; then
         echo "First build in $LINUX_VM: installing GTK 4 and Swift (a few minutes)…"
         setup=1
     fi
@@ -103,7 +104,8 @@ build_linux() {
 build_windows() {
     ensure_vm "$WINDOWS_VM" "cmd /c exit 0"
     local flags=()
-    if [ $SETUP -eq 1 ] || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c "where swift" >/dev/null 2>&1; then
+    if [ $SETUP -eq 1 ] || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c where swift >/dev/null 2>&1 \
+        || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c where git >/dev/null 2>&1; then
         echo "First build in $WINDOWS_VM: installing Visual Studio, Swift and WinUI (long; approve the admin prompts in the VM)…"
         flags+=(-Setup)
     fi
