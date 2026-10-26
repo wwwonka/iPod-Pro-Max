@@ -220,7 +220,7 @@ import SwiftCrossUI
 
     /// The GTK side of the window chrome, through the C API:
     /// - no system title bar (an empty CSD title bar keeps the shadow and resize edges),
-    /// - dragging the top 52 pt moves the window, double-clicking it maximizes,
+    /// - dragging the top 52 pt moves the window, double-clicking it maximizes (not over controls),
     /// - dark mode follows GNOME's color-scheme setting, and changes live (signal, no polling),
     /// - the sidebar slides closed and open on the frame clock.
     @MainActor
@@ -257,6 +257,13 @@ import SwiftCrossUI
             g_signal_connect_data(cast(click), "pressed", unsafeBitCast(titleBarPressed, to: GCallback.self),
                                   nil, nil, GConnectFlags(rawValue: 0))
             gtk_widget_add_controller(cast(pointer), cast(click))
+            // Moving starts once the pointer has travelled a few pixels, as GtkWindowHandle does,
+            // so a tap on a control in the title area never grabs the window.
+            let drag = gtk_gesture_drag_new()!
+            gtk_gesture_single_set_button(cast(drag), 1)
+            g_signal_connect_data(cast(drag), "drag-update", unsafeBitCast(titleBarDragged, to: GCallback.self),
+                                  nil, nil, GConnectFlags(rawValue: 0))
+            gtk_widget_add_controller(cast(pointer), cast(drag))
 
             followColorScheme()
             // Once the first frame is up: SwiftCrossUI may set the window's child after this runs.
@@ -341,8 +348,27 @@ import SwiftCrossUI
             if gtk_window_is_maximized(window) != 0 { gtk_window_unmaximize(window) } else { gtk_window_maximize(window) }
         }
 
+        /// True over something clickable (a button, a field, a SwiftCrossUI tap target): those all
+        /// carry a click gesture between the widget under the pointer and the window.
+        fileprivate func isOverControl(x: Double, y: Double) -> Bool {
+            guard let window else { return false }
+            var widget = gtk_widget_pick(cast(window), x, y, GTK_PICK_DEFAULT)
+            while let w = widget, w != cast(window) {
+                if let controllers = gtk_widget_observe_controllers(w) {
+                    defer { g_object_unref(cast(controllers)) }
+                    for i in 0..<g_list_model_get_n_items(controllers) {
+                        guard let item = g_list_model_get_item(controllers, i) else { continue }
+                        defer { g_object_unref(item) }
+                        if g_type_check_instance_is_a(cast(item), gtk_gesture_click_get_type()) != 0 { return true }
+                    }
+                }
+                widget = gtk_widget_get_parent(w)
+            }
+            return false
+        }
+
         fileprivate func beginMove(gesture: OpaquePointer?, x: Double, y: Double) {
-            guard let window, y < 52,
+            guard let window, y < 52, !isOverControl(x: x, y: y),
                   let surface = gtk_native_get_surface(cast(window)) else { return }
             var dx: Double = 0, dy: Double = 0
             gtk_native_get_surface_transform(cast(window), &dx, &dy)
@@ -418,13 +444,23 @@ import SwiftCrossUI
         }
     }
 
-    private func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
 
     private let titleBarPressed: @convention(c) (OpaquePointer?, Int32, Double, Double, gpointer?) -> Void = {
         gesture, presses, x, y, _ in
         MainActor.assumeIsolated {
-            guard y < 52 else { return }
-            if presses == 2 { GtkChrome.shared.toggleMaximized() } else { GtkChrome.shared.beginMove(gesture: gesture, x: x, y: y) }
+            guard presses == 2, y < 52, !GtkChrome.shared.isOverControl(x: x, y: y) else { return }
+            GtkChrome.shared.toggleMaximized()
+        }
+    }
+
+    private let titleBarDragged: @convention(c) (OpaquePointer?, Double, Double, gpointer?) -> Void = {
+        gesture, dx, dy, _ in
+        MainActor.assumeIsolated {
+            guard dx * dx + dy * dy > 16 else { return }
+            var x: Double = 0, y: Double = 0
+            gtk_gesture_drag_get_start_point(cast(gesture), &x, &y)
+            GtkChrome.shared.beginMove(gesture: gesture, x: x, y: y)
+            gtk_event_controller_reset(cast(gesture))
         }
     }
 

@@ -82,15 +82,20 @@ try {
 } finally { Pop-Location; $ErrorActionPreference = "Stop" }
 
 # Self-contained folder: the exe, the DLLs built next to it, and the Swift runtime DLLs.
-$dist = Join-Path $Source "dist\windows"
-if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-New-Item -ItemType Directory $dist | Out-Null
-Copy-Item "$bin\iPodProMaxProto.exe" $dist
-foreach ($pattern in "*.dll", "*.pri", "*.winmd") { Copy-Item "$bin\$pattern" $dist -ErrorAction SilentlyContinue }
-Get-ChildItem $bin -Directory -Filter *.resources | Copy-Item -Destination $dist -Recurse
+# Assembled locally, then mirrored to the share: deleting a folder on the Parallels share fails
+# now and then (Linux uses rsync for the same reason).
+$stage = Join-Path $Work "dist-windows"
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+New-Item -ItemType Directory $stage | Out-Null
+Copy-Item "$bin\iPodProMaxProto.exe" $stage
+foreach ($pattern in "*.dll", "*.pri", "*.winmd") { Copy-Item "$bin\$pattern" $stage -ErrorAction SilentlyContinue }
+Get-ChildItem $bin -Directory -Filter *.resources | Copy-Item -Destination $stage -Recurse
 $swiftCore = where.exe swiftCore.dll 2>$null | Select-Object -First 1
-if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $dist }
+if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $stage }
 else { Write-Warning "swiftCore.dll not found on PATH: the exe will only run where Swift is installed." }
+$dist = Join-Path $Source "dist\windows"
+robocopy $stage $dist /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy to $dist failed ($LASTEXITCODE)" }
 Write-Output "OK: $dist\iPodProMaxProto.exe"
 
 if ($Run) {

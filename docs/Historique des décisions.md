@@ -35,7 +35,16 @@ Comment on est arrivé au plan actuel, et pourquoi certaines options ont été �
 5. « swift-winrt et adwaita-swift seraient mieux ? » *Version intermédiaire : un toolkit natif par OS.*
 6. Finalement : **« la bibliothèque est liée à l'hôte »** (confirmé) et **« un feel surtout Mac sur toutes les plateformes, et que le code sache se compiler pour les autres plateformes »**. Version finale : SwiftCrossUI comme code unique, AppKit sur Mac, GTK4 avec [[Thème GTK Mac]] ailleurs (voir [[ADR-002 SwiftCrossUI comme code d'interface unique]]).
 
-## 4. Options écartées
+## 4. Pendant le prototype P1 (2026-10-23 → 25)
+1. Le prototype passe dans `main`, sous `prototypes/swiftcrossui/`.
+2. **Suivi** : un seul GitHub Project privé (« iPod Pro Max »), cartes en brouillon avec un champ « Phase » ; `docs/` garde les décisions, pas l'état. Les issues restent désactivées (repo public).
+3. **Les trois apps sont une seule et même app** : toute demande s'applique à macOS, Windows et Linux.
+4. **Natif le plus possible** et **hyper réactif** : tableaux et sidebars natifs par plateforme ([[Composants natifs par plateforme]]), mesures avant et après chaque changement.
+5. **Fenêtre comme sur Mac partout** : sans barre, boutons façon Mac, bouton de sidebar animé. Une option pour des boutons natifs pourra venir dans les réglages.
+6. **SF Symbols partout** : vrais symboles sur Mac ; sur Linux et Windows, police SF Symbols en local seulement, en connaissance de cause (voir [[Risques]]).
+7. **Sidebar translucide floutée** : Mica sous Windows ; sous GNOME il n'existe pas d'API de flou pour les apps (seulement sous KDE).
+
+## 5. Options écartées
 - **Bibliothèque sur l'iPod** : écrites sur un disque dur lent et en veille, avec des chemins sources qui n'existent que sur un ordi.
 - **ffmpeg partout** : trop lent pour lire les tags, et on perdrait VideoToolbox et ImageIO sur Mac.
 - **SwiftUI sur Mac + SwiftCrossUI ailleurs** : deux codes d'interface.

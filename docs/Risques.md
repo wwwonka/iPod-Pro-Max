@@ -13,4 +13,6 @@
 | **yt-dlp qui vieillit** sur l'iPod ; YouTube qui exige un runtime JS | Moyenne | `-U` automatique ; suivre les exigences de yt-dlp. Voir [[CI et packaging]]. |
 | **Licence ffmpeg** (GPL avec x264) | Moyenne | Build LGPL ou conformité GPL. Voir [[CI et packaging]]. |
 | **Tests matériels** sans PC Windows ni Linux physiques | Moyenne | VM avec passage USB ; un vieux PC de test pour la phase 4. |
+| **Licence des SF Symbols** hors des plateformes Apple : la police utilisée sous Linux et Windows est l'œuvre d'Apple, sans licence pour cet usage | Haute si distribuée | Choix de l'utilisateur (2026-10-25) : usage local seulement. Police dans `prototypes/swiftcrossui/local/` (ignoré par Git), jamais commitée ni livrée. Avant toute distribution : jeu d'icônes libre (Phosphor, Lucide). |
+| **Mesures faussées par les VM** (2 vCPU sous Fedora) | Faible | Comparer avec le même code GTK sur le Mac ; tester sur un vrai PC avant de conclure. |
 | **Ampleur** : 21–24 semaines | — | Phases livrables séparément ; les phases 1 et 2 ont de la valeur seules. Voir [[Phases]]. |

@@ -10,4 +10,8 @@ try {
 } catch {
     $_ | Out-String | Add-Content $log
 }
-Set-Content (Join-Path $dist "windows-vm.exit") $code
+# Written under a temporary name, then renamed: the Mac waits for this file and must never see
+# it empty.
+$exit = Join-Path $dist "windows-vm.exit"
+Set-Content "$exit.tmp" $code
+Move-Item "$exit.tmp" $exit -Force

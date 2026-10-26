@@ -131,7 +131,6 @@
         }
     }
 
-    private func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
 
     private let rowSelected: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, row, data in
         guard let row, let data else { return }

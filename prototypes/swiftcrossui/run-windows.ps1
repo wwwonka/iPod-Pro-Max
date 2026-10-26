@@ -1,4 +1,7 @@
-# Builds and runs with WinUI 3 (DefaultBackend on Windows). Pass --library <path> to pick a library.json.
+# Builds and runs in the Windows VM by hand (build.sh does this for you). Pass --library <path>
+# to pick a library.json.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
-swift run iPodProMaxProto @args
+# Only WinUI: otherwise SwiftPM also builds the GTK backend and fails.
+$env:SCUI_DEFAULT_BACKEND = "WinUIBackend"
+swift run --build-system native iPodProMaxProto @args

@@ -70,23 +70,25 @@ struct ContentView: View {
         if let library {
             VStack(spacing: 0) {
                 header(library)
-                ZStack {
-                    HStack(spacing: 0) {
-                        if selection == .music && mode == .byArtist {
-                            List(library.artists, selection: $selectedArtist) { group in
-                                HStack {
-                                    Text(group.id)
-                                    Spacer()
-                                    Text("\(group.count)").foregroundColor(.gray)
-                                }
+                HStack(spacing: 0) {
+                    if selection == .music && mode == .byArtist {
+                        List(library.artists, selection: $selectedArtist) { group in
+                            HStack {
+                                Text(group.id)
+                                Spacer()
+                                Text("\(group.count)").foregroundColor(.gray)
                             }
-                            .frame(width: 250)
-                            Divider()
                         }
-                        TrackTable(rows: tableRows(library))
+                        .frame(width: 250)
+                        Divider()
                     }
-                    if let cover = cover(library) {
-                        cover.background(WindowBackground())
+                    // The cover only hides the table: over the artist list, it would swallow the
+                    // clicks that pick an artist.
+                    ZStack {
+                        TrackTable(rows: tableRows(library))
+                        if let cover = cover(library) {
+                            cover.background(WindowBackground())
+                        }
                     }
                 }
             }
@@ -157,16 +159,33 @@ struct ContentView: View {
         }
     }
 
-    /// Plain substring search over title, artist and album; a full pass over 5,000 rows takes
-    /// about a millisecond, so it runs per keystroke.
+    @State private var searchCache = SearchCache()
+
     private func filtered(_ rows: [TrackRow]) -> [TrackRow] {
-        let query = search.trimmingCharacters(in: .whitespaces)
+        searchCache.filter(rows, query: search.trimmingCharacters(in: .whitespaces))
+    }
+}
+
+/// Plain substring search over title, artist and album, recomputed only when the rows or the
+/// query change: the same array comes back otherwise, so the table doesn't reload on unrelated
+/// redraws (sidebar slide, color scheme).
+final class SearchCache {
+    private var source: [TrackRow] = []
+    private var query = ""
+    private var result: [TrackRow] = []
+
+    func filter(_ rows: [TrackRow], query: String) -> [TrackRow] {
         guard !query.isEmpty else { return rows }
-        return rows.filter {
+        let sameRows = rows.withUnsafeBufferPointer { a in source.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
+        if sameRows && rows.count == source.count && query == self.query { return result }
+        source = rows
+        self.query = query
+        result = rows.filter {
             $0.title.localizedCaseInsensitiveContains(query)
                 || $0.artist.localizedCaseInsensitiveContains(query)
                 || $0.album.localizedCaseInsensitiveContains(query)
         }
+        return result
     }
 }
 

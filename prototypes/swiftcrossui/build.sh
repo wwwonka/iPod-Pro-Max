@@ -114,7 +114,7 @@ build_windows() {
     # failure while swift-frontend kept compiling), so the build runs detached in the VM and
     # writes its log and exit code to dist/; this waits for the exit code, two hours at most.
     local out="$ROOT/dist/windows-vm.log" status="$ROOT/dist/windows-vm.exit"
-    rm -f "$out" "$status"
+    rm -f "$out" "$status" "$status.tmp"
     local args="'-NoProfile','-ExecutionPolicy','Bypass','-File','$WINDOWS_SRC\\scripts\\build-windows-detached.ps1','-Source','$WINDOWS_SRC'"
     for f in ${flags[@]+"${flags[@]}"}; do args+=",'$f'"; done
     prlctl exec "$WINDOWS_VM" --current-user powershell.exe -NoProfile -Command \
@@ -129,6 +129,8 @@ build_windows() {
         [ -f "$status" ] && break
         sleep 5
     done
+    # Lines written between the last pass and the exit file.
+    [ -f "$out" ] && tail -n +"$((shown + 1))" "$out" | LC_ALL=C tr -cd '\11\12\15\40-\176'
     [ -f "$status" ] || { echo "Timed out waiting for the Windows build." >&2; return 1; }
     [ "$(tr -cd '0-9' < "$status")" = "0" ] || return 1
     [ $RUN -eq 1 ] && show_vm

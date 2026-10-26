@@ -1,70 +1,57 @@
 # Prototype SwiftCrossUI (P1, phase 0)
 
-Prototype jetable de la vue Musique, écrit une seule fois en Swift et lancé sur macOS, Windows 11 et Fedora. Voir `docs/Feuille de route/Prototypes phase 0.md`.
+Prototype jetable de la vue Musique, écrit une fois en Swift et lancé sur macOS, Fedora et Windows 11. Il sert à valider SwiftCrossUI avant de s'engager. Résultats et leçons : `docs/Feuille de route/Prototypes phase 0.md`. Méthode : `docs/Interface/Composants natifs par plateforme.md`.
 
-**Objectif de rendu : natif sur chaque OS.** Le prototype utilise le `DefaultBackend` de SwiftCrossUI :
+## Lancer
+Depuis le Finder, double-cliquer à la racine du repo :
 
-| OS | Backend | Rendu |
-|---|---|---|
-| macOS | AppKit | contrôles Mac |
-| Windows 11 | WinUI 3 | contrôles Fluent |
-| Fedora | GTK 4 | Adwaita (GNOME) |
+| Lanceur | Effet |
+|---|---|
+| `build-mac.command` | construit l'app Mac et l'ouvre |
+| `build-linux.command` | construit dans la VM « Fedora Linux » et ouvre l'app dans sa session |
+| `build-windows.command` | construit dans la VM « Windows 11 » et ouvre l'app |
 
-> Ça s'écarte de l'ADR-003 (GTK + thème Mac sur Windows et Linux). À trancher après les tests, puis à reporter dans les ADR.
+Ils appellent `build.sh <os> --run`. La première fois, `build.sh` installe ce qui manque dans la VM :
+- **Fedora** : `swift-lang` (le Swift de Fedora : swiftly ne gère pas Fedora 44), `gtk4-devel`, `clang`, `rsync`.
+- **Windows** : Visual Studio 2022 (outils C++ ARM64), Swift, Git, le Windows App Runtime, et le mode développeur (liens symboliques). Windows demande des validations administrateur dans la VM.
 
-## Ce que fait le prototype
-- Il charge le vrai `library.json`, hors du thread principal, puis l'indexe par artiste et par album.
-- Il affiche une sidebar (Artistes, Albums, Morceaux), une liste, puis une `Table` des pistes. « Morceaux » montre les 5 000+ lignes : c'est le test de défilement.
-- Il écrit les temps dans la console : `decode … ms, index … ms, ready … ms`.
-
-Le `library.json` est cherché dans cet ordre :
-1. `--library <chemin>` ou la variable `IPPM_LIBRARY`.
-2. Celui de l'app sur le Mac : `~/Library/Application Support/iPod Pro Max/library.json`.
-3. Le dossier personnel du Mac partagé par Parallels : `\\Mac\Home\…` sous Windows, `/media/psf/Home/…` sous Linux.
-4. `library.json` dans le dossier courant.
-5. Sinon, 5 000 pistes synthétiques.
-
-Dans les VM, le point 3 suffit si le partage du dossier personnel est activé dans Parallels (Configuration › Options › Partage).
-
-## Construire les trois apps depuis le Mac : `build.sh`
-Un seul script, lancé sur le Mac. Il compile l'app Mac en local, puis pilote les VM Parallels avec `prlctl exec`. Il démarre une VM si elle est éteinte, et compile Fedora et Windows en parallèle.
+Autres usages :
 
 ```sh
-./build.sh --setup          # première fois : installe aussi Swift, GTK et WinUI dans les VM
-./build.sh                  # ensuite : mac + linux + windows
+./build.sh                  # mac + linux + windows
 ./build.sh mac linux        # seulement certaines cibles
-./build.sh --run mac        # ouvre l'app Mac une fois construite
+./build.sh --setup windows  # forcer la réinstallation des outils
+./run-mac.sh gtk            # rendu GTK sur le Mac, sans VM (brew install pkg-config gtk4)
 ```
 
-Résultats :
-
-| Cible | Sortie |
-|---|---|
-| Mac | `dist/mac/iPod Pro Max Proto.app` (arm64, signée ad hoc) |
-| Fedora | `dist/linux/iPodProMaxProto` (runtime Swift statique, seul GTK 4 vient du système) |
-| Windows | `dist/windows/` (exe + DLL Swift et WinUI) |
-
-Les journaux des VM vont dans `dist/linux.log` et `dist/windows.log`.
-
 Comment ça marche :
-- Les VM lisent les sources et écrivent `dist/` par le dossier personnel du Mac partagé par Parallels. Le script l'active dans Fedora s'il est désactivé.
-- Chaque VM compile dans une copie locale (`~/dev/swiftcrossui`, `C:\dev\swiftcrossui`), parce que compiler sur le partage est lent. Les builds suivants sont donc incrémentaux.
-- Dans les VM, il faut une **session utilisateur ouverte**, parce que `prlctl exec --current-user` s'en sert.
-- Les noms des VM sont « Fedora Linux » et « Windows 11 ». Tu peux les changer avec `LINUX_VM=… WINDOWS_VM=… ./build.sh`.
+- Les VM lisent les sources et écrivent `dist/` par le dossier personnel du Mac partagé par Parallels, et compilent dans une copie locale (`~/dev/swiftcrossui`, `C:\dev\swiftcrossui`).
+- Il faut une **session ouverte** dans chaque VM (`prlctl exec --current-user`).
+- Sous Windows, le build tourne détaché dans la VM (`prlctl` coupait les longues sessions) et écrit `dist/windows-vm.log` et `dist/windows-vm.exit`.
+- Sous Linux, on force `SCUI_DEFAULT_BACKEND=GtkBackend` ; sous Windows, `WinUIBackend` (sinon SwiftPM compile aussi l'autre backend et échoue).
+- `scripts/patch-dependencies.sh` corrige SwiftCrossUI avant chaque build GTK (réutilisation du contexte Pango), en attendant que ce soit fait en amont.
 
-Ce que fait `--setup` :
-- **Fedora** (en root) : installe `gtk4-devel`, `clang` et les dépendances du toolchain, puis Swift avec swiftly dans ton compte.
-- **Windows** : installe, avec WinGet, Visual Studio 2022 (outils C++ ARM64 + SDK), Swift, le Windows SDK 17763 et le Windows App Runtime 1.5. Windows demande des validations administrateur dans la VM, et l'installation de Visual Studio prend un moment.
+## Données
+`library.json` est cherché dans cet ordre : `--library <chemin>` ou `IPPM_LIBRARY` ; celui de l'app Mac ; le dossier personnel du Mac vu depuis la VM ; `library.json` dans le dossier courant. Si rien n'est trouvé **ou si la bibliothèque est vide**, le prototype génère 5 000 pistes et deux playlists.
 
-Mesuré sur le Mac le 2026-10-23, en debug, avec 5 328 pistes : AppKit prêt en 62 ms (155 Mo) ; GTK prêt en 263 ms (135 Mo). `./run-mac.sh gtk` montre le rendu GTK sur le Mac, sans VM (`brew install pkg-config gtk4`).
+## Icônes (à lire)
+- **Mac** : vrais SF Symbols.
+- **Linux et Windows** : glyphes de la police `SF-SYMBOLS4.TTF` (github.com/DrunkSonic/SF-Symbols-for-Windows), associés aux noms des symboles par comparaison de forme (`symbolCodepoints` dans `Symbols.swift`). C'est l'œuvre d'Apple, sans licence pour cet usage : elle se met **à la main** dans `local/` (ignoré par Git), le script de build la copie seulement dans la VM, et elle n'est **jamais commitée ni distribuée**. Sans elle, les icônes sont des cases vides. Il manque `film` (Videos) dans la police ; `sidebar.left` utilise le glyphe le plus proche.
 
-Les scripts appelés dans les VM (`scripts/build-linux.sh`, `scripts/build-windows.ps1`) peuvent aussi se lancer à la main dans la VM en cas de souci.
+## Variables d'environnement
+| Variable | Effet |
+|---|---|
+| `IPPM_BENCH=<tours>` | change de section comme des clics, journalise le temps de chaque mise à jour, ouvre et ferme la sidebar (nombre d'images), puis quitte |
+| `IPPM_SNAPSHOT=<fichier.png>` | (Mac) enregistre la fenêtre telle que l'app la dessine, puis quitte ; `IPPM_SNAPSHOT_COLLAPSED=1` ferme d'abord la sidebar |
+| `IPPM_LOG=<fichier>` | journal dans un fichier ; sous Windows, `%TEMP%\ippm.log` par défaut (une app lancée depuis l'Explorateur n'a pas de console) |
 
-## Quoi noter sur chaque OS
-- Le temps `ready` affiché dans la console.
-- La mémoire, dans le Moniteur d'activité, le Gestionnaire des tâches ou `top`.
-- La fluidité du défilement de « Morceaux » (5 000 lignes).
-- Le redimensionnement de la fenêtre et des colonnes.
-- L'impression générale : est-ce que ça a l'air natif ?
-
-Les manques connus de SwiftCrossUI 0.10.0 ne sont pas encore couverts : multisélection, tri par colonne et glisser-déposer. Voir `docs/Interface/Manques SwiftCrossUI.md`.
+## Fichiers
+| Fichier | Rôle |
+|---|---|
+| `App.swift` | fenêtre, sections, en-tête, vue Musique, mesure |
+| `Library.swift` | lecture et indexation de `library.json` hors du thread principal |
+| `TrackTable.swift` | tableau virtualisé : `NSTableView`, `GtkColumnView`, `ListView` WinUI |
+| `SidebarMac.swift`, `SidebarGtk.swift`, `Sidebar.swift` | sidebar native Mac, native GTK, dessinée (WinUI) |
+| `Symbols.swift` | SF Symbols par plateforme |
+| `WindowChrome.swift` | fenêtre sans barre, bouton et animation de la sidebar, mode sombre GTK, coins arrondis GTK |
+| `Devices.swift` | iPods montés au lancement |

@@ -14,6 +14,15 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
     ("Time", 56, \.duration),
 ]
 
+extension Array {
+    /// O(1) identity check: true when both arrays share one buffer (copies, not equal values).
+    /// Lets each native table skip reloading on redraws that didn't change its rows.
+    fileprivate func sameStorage(as other: [Element]) -> Bool {
+        count == other.count
+            && withUnsafeBufferPointer { a in other.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
+    }
+}
+
 #if canImport(AppKitBackend)
     import AppKit
     import AppKitBackend
@@ -91,14 +100,6 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
         }
     }
 
-    extension Array {
-        /// O(1) identity check: true when both arrays share one buffer (copies, not equal values).
-        fileprivate func sameStorage(as other: [Element]) -> Bool {
-            count == other.count
-                && withUnsafeBufferPointer { a in other.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
-        }
-    }
-
     /// The window's own background color, following light and dark mode.
     struct WindowBackground: NSViewRepresentable {
         func makeNSView(context: Context) -> NSBox {
@@ -127,16 +128,19 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
 
         func makeGtkWidget(context: Context) -> Gtk.Widget {
             let coordinator = context.coordinator
+            // The selection takes the model's reference (transfer full): give it one of its own,
+            // so the coordinator's unref in deinit stays balanced.
+            g_object_ref(cast(coordinator.model))
             let view = gtk_column_view_new(gtk_multi_selection_new(cast(coordinator.model)))!
             gtk_column_view_set_show_column_separators(cast(view), 0)
             gtk_widget_add_css_class(view, "data-table")
             for (index, column) in columns.enumerated() {
                 let factory = gtk_signal_list_item_factory_new()
+                // The handler owns its binding; GLib releases it when the handler goes away.
                 let binding = Unmanaged.passRetained(CellBinding(coordinator: coordinator, column: index))
-                coordinator.bindings.append(binding)
                 g_signal_connect_data(cast(factory), "setup", unsafeBitCast(setupCell, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
                 g_signal_connect_data(cast(factory), "bind", unsafeBitCast(bindCell, to: GCallback.self),
-                                      binding.toOpaque(), nil, GConnectFlags(rawValue: 0))
+                                      binding.toOpaque(), releaseBinding, GConnectFlags(rawValue: 0))
                 let c = gtk_column_view_column_new(column.title, cast(factory))
                 if column.width >= 1 {
                     gtk_column_view_column_set_fixed_width(c, Int32(column.width))
@@ -155,14 +159,14 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
         }
 
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
-            guard let rows else { return }
+            // Same rows: keep the model, and with it the selection and scroll position.
+            guard let rows, !context.coordinator.rows.sameStorage(as: rows) else { return }
             context.coordinator.show(rows)
         }
 
         final class Coordinator {
             let model = gtk_string_list_new(nil)!
             var rows: [TrackRow] = []
-            var bindings: [Unmanaged<CellBinding>] = []
 
             /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
             func show(_ newRows: [TrackRow]) {
@@ -178,7 +182,6 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
             }
 
             deinit {
-                bindings.forEach { $0.release() }
                 g_object_unref(cast(model))
             }
         }
@@ -194,8 +197,11 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
         }
     }
 
-    /// GTK's C types reach Swift as a mix of typed and opaque pointers; this converts between them.
-    private func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
+
+    private let releaseBinding: @convention(c) (gpointer?, UnsafeMutablePointer<GClosure>?) -> Void = { data, _ in
+        guard let data else { return }
+        Unmanaged<TrackTable.CellBinding>.fromOpaque(data).release()
+    }
 
     private let setupCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, _ in
         let label = gtk_label_new(nil)!
@@ -213,19 +219,13 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
         gtk_label_set_text(cast(label), rows[position][keyPath: columns[binding.column].value])
     }
 
-    struct WindowBackground: View {
-        var body: some View {
-            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.14))
-        }
-    }
 #elseif canImport(WinUIBackend)
     import WindowsFoundation
     import WinUI
     import WinUIBackend
 
-    /// WinUI: a virtualized ListView. WinUI only realizes and recycles the visible rows' containers;
-    /// ContainerContentChanging fills each one from the Swift array (no DataTemplate: the bindings
-    /// have no XamlReader). The header is a Grid with the same columns, above the list.
+    /// WinUI: a virtualized ListView under a header Grid with the table's columns. For now each row
+    /// is one line of text (see the comment in makeWinUIElement).
     struct TrackTable: WinUIElementRepresentable {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
@@ -263,8 +263,8 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
             let coordinator = context.coordinator
             guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
             coordinator.rows = rows
-            // One cheap item per row; the containers read the row by index. (itemsSource rejects
-            // the Swift-backed vector: XAML wants a bindable collection.)
+            // itemsSource rejects the Swift-backed vector (XAML wants a bindable collection), so
+            // the items go in one by one.
             guard let items = coordinator.list?.items else { return }
             items.clear()
             for row in rows { items.append("\(row.title)   —   \(row.artist)   —   \(row.album)") }
@@ -272,13 +272,6 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
 
         func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: WinUI.Grid, context: Context) -> ViewSize {
             ViewSize(proposal.width ?? 600, proposal.height ?? 400)
-        }
-
-        static func fill(_ container: WinUI.ListViewItem, with rows: [TrackRow], at index: Int) {
-            guard index < rows.count, let grid = container.content as? WinUI.Grid else { return }
-            for (i, column) in columns.enumerated() {
-                (grid.children.getAt(UInt32(i)) as? TextBlock)?.text = rows[index][keyPath: column.value]
-            }
         }
 
         /// A row: one TextBlock per column, fixed or star widths like the other platforms.
@@ -306,26 +299,7 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
         }
     }
 
-    extension Array {
-        /// O(1) identity check: true when both arrays share one buffer (copies, not equal values).
-        fileprivate func sameStorage(as other: [Element]) -> Bool {
-            count == other.count
-                && withUnsafeBufferPointer { a in other.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
-        }
-    }
-
-    struct WindowBackground: View {
-        var body: some View {
-            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.13))
-        }
-    }
 #else
-    struct WindowBackground: View {
-        var body: some View {
-            Color.adaptive(light: Color(white: 0.93), dark: Color(white: 0.16))
-        }
-    }
-
     struct TrackTable: View {
         /// Not kept when nil yet: the generic Table rebuilds anyway.
         var rows: [TrackRow]?
@@ -339,6 +313,15 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
                 TableColumn(columns[4].title, value: columns[4].value)
                 TableColumn(columns[5].title, value: columns[5].value)
             }
+        }
+    }
+#endif
+
+#if !canImport(AppKitBackend)
+    /// What sections without a table draw over it; the native one follows the system on macOS.
+    struct WindowBackground: View {
+        var body: some View {
+            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.14))
         }
     }
 #endif

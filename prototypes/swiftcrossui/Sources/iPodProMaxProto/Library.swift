@@ -45,9 +45,7 @@ struct Library {
     var source: String
     var allRows: [TrackRow]
     var artists: [NamedGroup]
-    var albums: [NamedGroup]
     var rowsByArtist: [String: [TrackRow]]
-    var rowsByAlbum: [String: [TrackRow]]
     var playlists: [Playlist]
     var rowsByPlaylist: [String: [TrackRow]]
     var loadMs: Int
@@ -73,7 +71,7 @@ struct Library {
                 // An empty library would leave nothing to scroll: fall through to the synthetic one.
                 if !document.tracks.isEmpty { return (document, url.path) }
             } catch {
-                print("Could not decode \(url.path): \(error)")
+                log("Could not decode \(url.path): \(error)")
             }
         }
         return (synthetic(count: 5000), "5 000 pistes synthétiques (aucune bibliothèque trouvée)")
@@ -111,7 +109,6 @@ struct Library {
         var all: [TrackRow] = []
         all.reserveCapacity(sorted.count)
         var byArtist: [String: [TrackRow]] = [:]
-        var byAlbum: [String: [TrackRow]] = [:]
         var byID: [String: TrackRow] = [:]
         byID.reserveCapacity(sorted.count)
         for t in sorted {
@@ -125,7 +122,6 @@ struct Library {
             )
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
-            byAlbum[row.album, default: []].append(row)
             byID[t.id] = row
         }
         let playlists = document.playlists ?? []
@@ -138,8 +134,7 @@ struct Library {
                 .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
         }
         return Library(source: source, allRows: all,
-                       artists: groups(byArtist), albums: groups(byAlbum),
-                       rowsByArtist: byArtist, rowsByAlbum: byAlbum,
+                       artists: groups(byArtist), rowsByArtist: byArtist,
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
     }

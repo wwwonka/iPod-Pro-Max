@@ -63,6 +63,9 @@ let symbolCodepoints: [String: UInt32] = [
     import Gtk
     import GtkBackend
 
+    /// GTK's C types reach Swift as a mix of typed and opaque pointers; this converts between them.
+    func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
+
     /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
     func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint, dark: Bool) -> String {
         guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else { return "" }
