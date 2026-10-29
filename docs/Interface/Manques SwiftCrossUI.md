@@ -27,6 +27,9 @@ Constat sur la **v0.10.0** (30 septembre 2026), dépôt cloné et code lu le 202
 | **Les vues natives (`NSViewRepresentable`, `GtkWidgetRepresentable`, `WinUIElementRepresentable`) reçoivent pour toujours les valeurs de leur création** | tableau GTK vide après un changement de section ; la recherche ne filtrerait jamais | patch local `scripts/patches/representables.patch` (à proposer en amont) |
 | La projection Swift de WinUI n'a pas `DesktopAcrylicBackdrop`, ni `SetRegionRects` (paramètre tableau) | pas d'acrylique, pas de zone de titre | sous-classe de `SystemBackdrop` sur `DesktopAcrylicController` ; appel par la table C de l'interface |
 | SwiftCrossUI cherche les métadonnées de Swift Bundler octet par octet au lancement | ~8 % du lancement sous Linux, identifiant GTK `com.example.SwiftCrossUIApp` | `static var metadata` déclarée par l'app |
+| GTK : chaque mise à jour d'un texte, champ ou bouton recharge son CSS (deux fois) | mise en page 3 à 4 fois plus lente, restylage permanent | `scripts/patches/gtk-backend.patch` |
+| `List` : une vue par ligne, et la hauteur de toutes les lignes devient la taille minimale de la fenêtre | changer de mode redimensionnait la fenêtre (1 229 pt) et la bloquait | liste native par plateforme (`ArtistList`) |
+| WinUI : quand Windows ne donne pas à la fenêtre la taille demandée (écran plus petit), SwiftCrossUI garde la sienne | contenu trop large et trop court | `winui-backend.patch` : la vraie taille est signalée |
 | GTK : le rendu GL cale les premiers glissements dans la VM (GPU virtio) | 2 images au lieu de 15 | `GSK_RENDERER=vulkan` pour la VM seulement |
 | Pas de police nommée, pas d'API de barre de titre | ni SF Symbols ni fenêtre sans barre | widgets natifs et `inspectWindow` |
 | Retirer une grosse vue native de la fenêtre recalcule l'ordre du clavier | ~60 ms par clic sur Mac | garder la vue en place |

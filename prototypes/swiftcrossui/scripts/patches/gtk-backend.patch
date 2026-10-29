@@ -1,0 +1,211 @@
+SwiftCrossUI's GTK backend, three changes to propose upstream:
+
+1. CSS reloaded on every update: each update of a text, field or button cleared the widget's CSS
+   then set it, two changes of `css`, each reloading its provider and restyling the widget, even
+   with the same rules. That was half the time of every layout during a split view slide. The rules
+   are now replaced in one assignment (Widget.replaceCSS), which skips identical ones. Custom
+   buttons likewise reloaded their CSS and swapped their style class on every update; both now
+   only change when they differ.
+
+2. Text measurement cache: each measurement lays the text out with Pango, and layouts measure the
+   same strings at the same sizes on every frame of a resize. (Labels always ellipsize at the end
+   and text views never: the key says which of the two measured the text.)
+
+diff --git a/Sources/Gtk/Widgets/Widget.swift b/Sources/Gtk/Widgets/Widget.swift
+index 142e3b30..83304083 100644
+--- a/Sources/Gtk/Widgets/Widget.swift
++++ b/Sources/Gtk/Widgets/Widget.swift
+@@ -39,6 +39,16 @@ open class Widget: GObject {
+         }
+     }
+ 
++    /// Replaces the widget's CSS rules in one assignment, so they're only reloaded when they
++    /// changed: each change of `css` reloads its provider and restyles the widget, and clearing
++    /// then setting it directly did that twice on every update, even with the same rules.
++    public func replaceCSS(_ build: (inout CSSBlock) -> Void) {
++        var block = css
++        block.clear()
++        build(&block)
++        css = block
++    }
++
+     /// A unique CSS class for this widget. The class is lazily added to the
+     /// widget when this property is first accessed.
+     private lazy var customCSSClass: String = {
+diff --git a/Sources/GtkBackend/Features/StringLabelButtons.swift b/Sources/GtkBackend/Features/StringLabelButtons.swift
+index eefed156..883068f7 100644
+--- a/Sources/GtkBackend/Features/StringLabelButtons.swift
++++ b/Sources/GtkBackend/Features/StringLabelButtons.swift
+@@ -18,7 +18,6 @@ extension GtkBackend: BackendFeatures.StringLabelButtons {
+         button.sensitive = environment.isEnabled
+         button.label = label
+         button.clicked = { _ in action() }
+-        button.css.clear()
+-        button.css.set(properties: Self.cssProperties(for: environment, isControl: true))
++        button.replaceCSS { $0.set(properties: Self.cssProperties(for: environment, isControl: true)) }
+     }
+ }
+diff --git a/Sources/GtkBackend/Features/TextEditors.swift b/Sources/GtkBackend/Features/TextEditors.swift
+index 5d326f28..dee0ec64 100644
+--- a/Sources/GtkBackend/Features/TextEditors.swift
++++ b/Sources/GtkBackend/Features/TextEditors.swift
+@@ -19,9 +19,10 @@ extension GtkBackend: BackendFeatures.TextEditors {
+             onChange(buffer.text)
+         }
+ 
+-        textEditor.css.clear()
+-        textEditor.css.set(properties: Self.cssProperties(for: environment, isControl: false))
+-        textEditor.css.set(property: CSSProperty(key: "background", value: "none"))
++        textEditor.replaceCSS {
++            $0.set(properties: Self.cssProperties(for: environment, isControl: false))
++            $0.set(property: CSSProperty(key: "background", value: "none"))
++        }
+     }
+ 
+     public func setContent(ofTextEditor textEditor: Widget, to content: String) {
+diff --git a/Sources/GtkBackend/Features/TextFields.swift b/Sources/GtkBackend/Features/TextFields.swift
+index 874cf9e1..7ddbe850 100644
+--- a/Sources/GtkBackend/Features/TextFields.swift
++++ b/Sources/GtkBackend/Features/TextFields.swift
+@@ -24,8 +24,7 @@ extension GtkBackend: BackendFeatures.TextFields {
+             onSubmit()
+         }
+ 
+-        textField.css.clear()
+-        textField.css.set(properties: Self.cssProperties(for: environment, isControl: true))
++        textField.replaceCSS { $0.set(properties: Self.cssProperties(for: environment, isControl: true)) }
+     }
+ 
+     public func setContent(ofTextField textField: Widget, to content: String) {
+diff --git a/Sources/GtkBackend/Features/TextViews.swift b/Sources/GtkBackend/Features/TextViews.swift
+index 4d0447e9..16b1f24b 100644
+--- a/Sources/GtkBackend/Features/TextViews.swift
++++ b/Sources/GtkBackend/Features/TextViews.swift
+@@ -2,6 +2,19 @@ import CGtk
+ import Gtk
+ @_spi(Backends) import SwiftCrossUI
+ 
++/// Text sizes measured so far. Each measurement lays the text out with Pango, and layouts measure
++/// the same strings at the same sizes over and over: on every frame of a window or split view resize.
++@MainActor private var textSizes: [TextSizeKey: SIMD2<Int>] = [:]
++
++private struct TextSizeKey: Hashable {
++    var text: String
++    var font: Font.Resolved
++    var lineLimit: LineLimit?
++    var label: Bool
++    var proposedWidth: Int?
++    var proposedHeight: Int?
++}
++
+ extension GtkBackend: BackendFeatures.TextViews {
+     public func size(
+         of text: String,
+@@ -9,6 +22,38 @@ extension GtkBackend: BackendFeatures.TextViews {
+         proposedWidth: Int?,
+         proposedHeight: Int?,
+         environment: EnvironmentValues
++    ) -> SIMD2<Int> {
++        let key = TextSizeKey(
++            text: text,
++            font: environment.resolvedFont,
++            lineLimit: environment.lineLimitSettings,
++            label: widget is CustomLabel,
++            proposedWidth: proposedWidth,
++            proposedHeight: proposedHeight
++        )
++        if let cached = textSizes[key] {
++            return cached
++        }
++        let size = measure(
++            text,
++            whenDisplayedIn: widget,
++            proposedWidth: proposedWidth,
++            proposedHeight: proposedHeight,
++            environment: environment
++        )
++        if textSizes.count >= 4096 {
++            textSizes.removeAll(keepingCapacity: true)
++        }
++        textSizes[key] = size
++        return size
++    }
++
++    private func measure(
++        _ text: String,
++        whenDisplayedIn widget: Widget,
++        proposedWidth: Int?,
++        proposedHeight: Int?,
++        environment: EnvironmentValues
+     ) -> SIMD2<Int> {
+         let ellipsize: EllipsizeMode
+         if let widget = widget as? CustomLabel {
+@@ -87,7 +132,6 @@ extension GtkBackend: BackendFeatures.TextViews {
+             }
+ 
+         textView.selectable = environment.isTextSelectionEnabled
+-        textView.css.clear()
+-        textView.css.set(properties: Self.cssProperties(for: environment))
++        textView.replaceCSS { $0.set(properties: Self.cssProperties(for: environment)) }
+     }
+ }
+diff --git a/Sources/GtkBackend/Features/ToggleButtons.swift b/Sources/GtkBackend/Features/ToggleButtons.swift
+index c6777d80..f3c77842 100644
+--- a/Sources/GtkBackend/Features/ToggleButtons.swift
++++ b/Sources/GtkBackend/Features/ToggleButtons.swift
+@@ -19,10 +19,9 @@ extension GtkBackend: BackendFeatures.ToggleButtons {
+         toggle.toggled = { widget in
+             onChange(widget.active)
+         }
+-        toggle.css.clear()
+         // This is a control, but we set isControl to false anyway because isControl overrides
+         // the button background and makes the on and off states of the toggle look identical.
+-        toggle.css.set(properties: Self.cssProperties(for: environment, isControl: false))
++        toggle.replaceCSS { $0.set(properties: Self.cssProperties(for: environment, isControl: false)) }
+     }
+ 
+     public func setState(ofToggle toggle: Widget, to state: Bool) {
+diff --git a/Sources/GtkBackend/Helpers/GtkCustomButton.swift b/Sources/GtkBackend/Helpers/GtkCustomButton.swift
+index 8c9af872..871e0908 100644
+--- a/Sources/GtkBackend/Helpers/GtkCustomButton.swift
++++ b/Sources/GtkBackend/Helpers/GtkCustomButton.swift
+@@ -5,13 +5,18 @@ import CGtk
+ final class GtkCustomButton: Gtk.Button {
+     var buttonStyle: ButtonStyle.Kind = .bordered {
+         willSet {
++            guard newValue != buttonStyle else { return }
+             buttonStyle.removeClass(from: self)
+         }
+         didSet {
++            guard oldValue != buttonStyle else { return }
+             buttonStyle.setClass(on: self)
+         }
+     }
+ 
++    /// The last CSS loaded: a reload restyles the button, so identical CSS is skipped.
++    private var loadedCSS: String?
++
+     init() {
+         super.init(gtk_button_new())
+ 
+@@ -21,7 +26,7 @@ final class GtkCustomButton: Gtk.Button {
+     @MainActor
+     func loadCSS(environment: EnvironmentValues) {
+         let backgroundColor = GtkBackend.controlBackgroundColor(for: environment)
+-        cssProvider.loadCss(from: """
++        let css = """
+                 button.customButton {
+                     min-width: 0px;
+                     min-height: 0px;
+@@ -47,7 +52,10 @@ final class GtkCustomButton: Gtk.Button {
+                 button.customButton.flat:disabled {
+                     opacity: 0.5;
+                 }
+-            """)
++            """
++        guard css != loadedCSS else { return }
++        loadedCSS = css
++        cssProvider.loadCss(from: css)
+         // Why 50% disabled opacity was chosen:
+         // https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/css-variables.html#opacity
+         // (switch to the variable when we have adwaita)

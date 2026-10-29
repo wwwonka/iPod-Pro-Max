@@ -32,7 +32,8 @@ Comment ça marche :
 - `scripts/patch-dependencies.sh` corrige SwiftCrossUI avant chaque build (les 3 OS), en attendant que ce soit fait en amont :
   - GTK : réutilisation du contexte Pango ;
   - `scripts/patches/representables.patch` : les vues natives recevaient pour toujours les valeurs de leur création (tableau vide, recherche sans effet) ;
-  - `scripts/patches/winui-backend.patch` : split view que l'app peut dimensionner et faire glisser, cache des mesures de texte.
+  - `scripts/patches/winui-backend.patch` : split view que l'app peut dimensionner et faire glisser, cache des mesures de texte, fond transparent sous l'acrylique, vraie taille de la fenêtre ;
+  - `scripts/patches/gtk-backend.patch` : CSS rechargé à chaque mise à jour (la moitié du temps de chaque mise en page), cache des mesures de texte.
 
   Sous Windows, il tourne avec le bash fourni par Git.
 - Dans la VM Linux, l'app est lancée avec `GSK_RENDERER=vulkan` : le rendu GL de GTK y cale les premiers glissements (GPU virtio).
@@ -60,6 +61,7 @@ Comment ça marche :
 |---|---|
 | `App.swift` | fenêtre, sections, en-tête, vue Musique, mesure |
 | `Library.swift` | lecture et indexation de `library.json` hors du thread principal |
+| `ArtistList.swift` | liste « By Artist » native : `NSTableView`, `GtkListView`, `ListView` WinUI |
 | `TrackTable.swift` | tableau virtualisé : `NSTableView`, `GtkColumnView`, `ListView` WinUI |
 | `Sidebar.swift`, `SidebarMac.swift`, `SidebarGtk.swift`, `SidebarWinUI.swift` | éléments de la sidebar ; sidebar native Mac, GTK et WinUI |
 | `Sidebar.swift` | sections de la sidebar et mesures du Mac (`SidebarMetrics`), partagées par les 3 OS |

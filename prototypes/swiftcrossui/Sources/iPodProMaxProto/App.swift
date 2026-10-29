@@ -76,14 +76,8 @@ struct ContentView: View {
                 header(library)
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
-                        List(library.artists, selection: $selectedArtist) { group in
-                            HStack {
-                                Text(group.id)
-                                Spacer()
-                                Text("\(group.count)").foregroundColor(.gray)
-                            }
-                        }
-                        .frame(width: 250)
+                        ArtistList(artists: library.artists, selection: $selectedArtist)
+                            .frame(width: 250)
                         Divider()
                     }
                     // The cover only hides the table: over the artist list, it would swallow the
@@ -207,6 +201,7 @@ struct SegmentedControl<Value: Equatable & CustomStringConvertible>: View {
                 ForEach(options.indices, id: \.self) { i in
                     Text(options[i].description)
                         .font(.system(size: 13))
+                        .lineLimit(1)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 3)
                         .background(selection == options[i] ? sidebarSelection : Color(white: 0.5, opacity: 0.001))
@@ -249,9 +244,10 @@ struct DetailHeader<Controls: View>: View {
                 TitleClearance()
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.system(size: 13, weight: .bold))
+                        // One line each, truncated when the window is narrow, as in a Mac toolbar.
+                        Text(title).font(.system(size: 13, weight: .bold)).lineLimit(1)
                         if !subtitle.isEmpty {
-                            Text(subtitle).font(.system(size: 11)).foregroundColor(.gray)
+                            Text(subtitle).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                         }
                     }
                     Spacer()

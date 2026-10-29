@@ -17,7 +17,7 @@ private let columns: [(title: String, width: Double, value: KeyPath<TrackRow, St
 extension Array {
     /// O(1) identity check: true when both arrays share one buffer (copies, not equal values).
     /// Lets each native table skip reloading on redraws that didn't change its rows.
-    fileprivate func sameStorage(as other: [Element]) -> Bool {
+    func sameStorage(as other: [Element]) -> Bool {
         count == other.count
             && withUnsafeBufferPointer { a in other.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
     }

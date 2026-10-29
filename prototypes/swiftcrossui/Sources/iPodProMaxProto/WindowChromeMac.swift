@@ -63,7 +63,7 @@
             // Once SwiftCrossUI has put its split view in: open the sidebar at its width
             // (SwiftCrossUI's default is 200).
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { MacChrome.shared.findSplitView()?.setPosition(sidebarWidth, ofDividerAt: 0) }
+                MainActor.assumeIsolated { MacChrome.shared.splitViewReady() }
             }
             snapshotIfRequested(window)
         }
@@ -93,6 +93,14 @@
         }
 
         // MARK: Sidebar
+
+        /// Opens the sidebar at its width (SwiftCrossUI's default is 200) and puts the delegate
+        /// proxy in front now, so dragging the divider keeps to `sidebarWidthRange` from the start.
+        fileprivate func splitViewReady() {
+            guard let split = findSplitView() else { return }
+            _ = collapsibleDelegate(for: split)
+            split.setPosition(sidebarWidth, ofDividerAt: 0)
+        }
 
         /// Width the sidebar's rows keep during a slide; nil: they fill the sidebar.
         private(set) var pinnedSidebarContentWidth: Double?
@@ -183,7 +191,15 @@
                        ofSubviewAt index: Int) -> CGFloat
         {
             if index == 0 && allowsCollapse { return 0 }
-            return inner?.splitView?(splitView, constrainMinCoordinate: proposed, ofSubviewAt: index) ?? proposed
+            let inner = inner?.splitView?(splitView, constrainMinCoordinate: proposed, ofSubviewAt: index) ?? proposed
+            return index == 0 ? max(inner, sidebarWidthRange.lowerBound) : inner
+        }
+
+        func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposed: CGFloat,
+                       ofSubviewAt index: Int) -> CGFloat
+        {
+            let inner = inner?.splitView?(splitView, constrainMaxCoordinate: proposed, ofSubviewAt: index) ?? proposed
+            return index == 0 ? min(inner, sidebarWidthRange.upperBound) : inner
         }
 
         func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {

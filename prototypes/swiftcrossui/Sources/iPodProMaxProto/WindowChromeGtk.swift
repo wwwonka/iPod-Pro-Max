@@ -51,7 +51,7 @@
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {}
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
-            ViewSize(titleBarControlsWidth, titleBarHeight)
+            ViewSize(TitleBarButtons.width, titleBarHeight)
         }
 
         /// - Parameter glyph: nil draws a minus sign.
@@ -92,10 +92,12 @@
             .ippm-light:active { filter: brightness(0.85); }
             window:backdrop .ippm-light { background: #DCDCDC; }
             window.ippm-dark:backdrop .ippm-light { background: #4D4D4D; }
-            .ippm-toggle { min-width: 32px; min-height: 28px; padding: 0; margin: 0 0 0 20px; border: none; border-radius: 6px;
-                background: none; box-shadow: none; color: alpha(currentColor, 0.6); }
-            .ippm-toggle:hover { background: alpha(currentColor, 0.1); }
-            .ippm-toggle:active { background: alpha(currentColor, 0.2); }
+            .ippm-toggle { min-width: \(Int(TitleBarButtons.toggleSize.width))px; min-height: \(Int(TitleBarButtons.toggleSize.height))px;
+                padding: 0; margin: 0 0 0 \(Int(TitleBarButtons.toggleGap))px; border: none; border-radius: 6px;
+                background-color: transparent; background-image: none; box-shadow: none; color: alpha(currentColor, 0.6);
+                transition: background-color \(Int(TitleBarButtons.hoverFade * 1000))ms ease-in-out; }
+            .ippm-toggle:hover { background-color: alpha(currentColor, 0.1); }
+            .ippm-toggle:active { background-color: alpha(currentColor, 0.2); }
             """)
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
     }
@@ -180,6 +182,19 @@
             guard let window, let paned = Self.findPaned(gtk_window_get_child(window)) else { return }
             self.paned = paned
             gtk_paned_set_position(paned, Int32(sidebarWidth))
+            g_signal_connect_data(cast(paned), "notify::position", unsafeBitCast(panedMoved, to: GCallback.self),
+                                  nil, nil, GConnectFlags(rawValue: 0))
+        }
+
+        /// Dragging the divider: keeps an open sidebar within `sidebarWidthRange`, and remembers its
+        /// width for the next time it opens.
+        fileprivate func clampDraggedPosition() {
+            guard slide == nil, let paned else { return }
+            let position = Double(gtk_paned_get_position(paned))
+            guard position > 0 else { return }
+            let clamped = min(max(position, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
+            if clamped != position { gtk_paned_set_position(paned, Int32(clamped)) }
+            expandedWidth = Int32(clamped)
         }
 
         // MARK: Corners
@@ -361,6 +376,10 @@
 
     private let colorSchemeChanged: @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, gpointer?) -> Void = { _, _, _ in
         MainActor.assumeIsolated { GtkChrome.shared.applyColorScheme() }
+    }
+
+    private let panedMoved: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, _ in
+        MainActor.assumeIsolated { GtkChrome.shared.clampDraggedPosition() }
     }
 
     private let sidebarTick: @convention(c) (UnsafeMutablePointer<GtkWidget>?, OpaquePointer?, gpointer?) -> gboolean = { _, _, _ in

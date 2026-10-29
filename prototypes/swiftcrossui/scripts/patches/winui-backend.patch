@@ -1,4 +1,4 @@
-SwiftCrossUI's WinUI backend, three changes to propose upstream:
+SwiftCrossUI's WinUI backend, four changes to propose upstream:
 
 1. Split view: the pane kept being reset to the sidebar's minimum width on every layout, and the
    relayout hook was internal, so an app could neither size the sidebar nor slide it. The width is
@@ -9,8 +9,12 @@ SwiftCrossUI's WinUI backend, three changes to propose upstream:
    system text scaling changes.
 
 3. Windows with a system backdrop (Mica, acrylic) keep a transparent background, so it shows.
+
+4. Real window size: when Windows doesn't give a window the size the view graph asked for (a screen
+   smaller than the default size), or the size changed before it was first shown, the resize
+   handler gets the real size; the content was laid out too wide and too short otherwise.
 diff --git a/Sources/WinUIBackend/WinUIBackend.swift b/Sources/WinUIBackend/WinUIBackend.swift
-index 9d31326f..e9289895 100644
+index 9d31326f..98e5f81a 100644
 --- a/Sources/WinUIBackend/WinUIBackend.swift
 +++ b/Sources/WinUIBackend/WinUIBackend.swift
 @@ -168,8 +168,23 @@ public final class WinUIBackend:
@@ -65,7 +69,49 @@ index 9d31326f..e9289895 100644
          let backgroundColor: SwiftCrossUI.Color = switch environment.colorScheme {
              case .light: .white
              case .dark: .black
-@@ -879,15 +908,30 @@ public final class WinUIBackend:
+@@ -349,6 +378,20 @@ public final class WinUIBackend:
+             height: Int32(height.rounded(.towardZero))
+         )
+         try! window.appWindow.resizeClient(size)
++        // Windows may not give the window that size (a screen smaller than the default size): the
++        // view graph must then lay out at the size the window really has.
++        reportActualSize(of: window, ifNot: newSize)
++    }
++
++    /// Calls the window's resize handler with its real size when it differs from `expected`, once
++    /// the current update is over.
++    private func reportActualSize(of window: Window, ifNot expected: SIMD2<Int>?) {
++        let actual = size(ofWindow: window)
++        // Within a pixel is the same size: the round trip through the scale factor rounds.
++        if let expected, abs(actual.x - expected.x) <= 1, abs(actual.y - expected.y) <= 1 { return }
++        _ = try? window.dispatcherQueue.tryEnqueue(.normal) {
++            MainActor.assumeIsolated { window.resizeHandler?(self.size(ofWindow: window)) }
++        }
+     }
+ 
+     public func setSizeLimits(
+@@ -363,6 +406,7 @@ public final class WinUIBackend:
+         ofWindow window: Window,
+         to action: @escaping (SIMD2<Int>) -> Void
+     ) {
++        window.resizeHandler = action
+         window.sizeChanged.addHandler { _, args in
+             let size = SIMD2(
+                 Int(args!.size.width.rounded(.awayFromZero)),
+@@ -415,6 +459,12 @@ public final class WinUIBackend:
+         } catch {
+             logger.warning("Failed to activate window: \(error)")
+         }
++        // The first time it's shown, the window's size may still differ from what the view graph
++        // laid out for (sizeChanged didn't fire while it was hidden).
++        if !window.hasBeenShown {
++            window.hasBeenShown = true
++            reportActualSize(of: window, ifNot: nil)
++        }
+     }
+ 
+     public func close(window: Window) {
+@@ -879,15 +929,30 @@ public final class WinUIBackend:
          proposedHeight: Int?,
          environment: EnvironmentValues
      ) -> SIMD2<Int> {
@@ -102,7 +148,7 @@ index 9d31326f..e9289895 100644
  
          var usedHeight = size.y
          let lineHeight = environment.resolvedFont.lineHeight
-@@ -1476,7 +1520,12 @@ public final class WinUIBackend:
+@@ -1476,7 +1541,12 @@ public final class WinUIBackend:
          maximum maximumWidth: Int
      ) {
          let splitView = splitView as! CustomSplitView
@@ -116,7 +162,7 @@ index 9d31326f..e9289895 100644
          if newWidth != splitView.openPaneLength {
              splitView.openPaneLength = newWidth
              splitView.sidebarResizeHandler?()
-@@ -2267,8 +2316,9 @@ final class CustomRadioButtons: RadioButtons {
+@@ -2267,8 +2337,9 @@ final class CustomRadioButtons: RadioButtons {
      var onChangeSelection: ((Int?) -> Void)?
  }
  
@@ -128,3 +174,12 @@ index 9d31326f..e9289895 100644
  }
  
  final class TapGestureTarget: WinUI.Canvas {
+@@ -2324,6 +2395,8 @@ public class CustomWindow: WinUI.Window {
+     var grid: WinUI.Grid
+     var cachedAppWindow: WinAppSDK.AppWindow!
+     var isActive = false
++    var resizeHandler: ((SIMD2<Int>) -> Void)?
++    var hasBeenShown = false
+     var currentAlert: WinUIBackend.Alert?
+ 
+     private(set) var menuBarIsVisible = false

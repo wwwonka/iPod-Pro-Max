@@ -20,10 +20,25 @@ import SwiftCrossUI
 /// The app's identifier: bundle identifier on macOS, application id (and icon name) on Linux.
 let appIdentifier = "com.ipodpromax.proto"
 
-/// Width of the open sidebar.
+/// Width of the open sidebar, at first.
 let sidebarWidth = 230.0
+/// How narrow and how wide dragging the sidebar's edge can make it.
+let sidebarWidthRange = 180.0...400.0
+/// The drawn traffic lights and toggle, measured on macOS: lights 12 pt round every 20 pt from
+/// x = 20, then the toggle's 32 × 28 pt highlight from x = 92.
+enum TitleBarButtons {
+    static let lightsX = 20.0
+    static let lightSize = 12.0
+    static let lightSpacing = 8.0
+    static let toggleGap = 20.0
+    static let toggleSize = (width: 32.0, height: 28.0)
+    static let width = lightsX + 3 * lightSize + 2 * lightSpacing + toggleGap + toggleSize.width
+    /// Hover highlight: fades in and out like the Mac toolbar's.
+    static let hoverFade = 0.15
+}
+
 /// Width the traffic lights and the sidebar toggle take at the window's top-left corner.
-let titleBarControlsWidth = 120.0
+let titleBarControlsWidth = TitleBarButtons.width
 /// Height of the title area: dragging it, outside its controls, moves the window.
 let titleBarHeight = 52.0
 

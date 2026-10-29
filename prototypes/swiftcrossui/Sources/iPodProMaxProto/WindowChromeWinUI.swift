@@ -24,7 +24,7 @@
 
     /// The traffic lights and the sidebar toggle as WinUI elements styled like macOS's: the lights
     /// show their glyphs while the pointer is over them and turn gray in an inactive window; the
-    /// toggle is a borderless WinUI button, whose hover highlight is the Mac's rounded gray. None of
+    /// toggle is a WinUI button with the Mac's rounded gray highlight, fading in on hover. None of
     /// it goes through SwiftCrossUI.
     struct WindowControls: WinUIElementRepresentable {
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -38,14 +38,14 @@
 
             let lights = StackPanel()
             lights.orientation = .horizontal
-            lights.spacing = 8
-            lights.margin = Thickness(left: 20, top: 0, right: 0, bottom: 0)
+            lights.spacing = TitleBarButtons.lightSpacing
+            lights.margin = Thickness(left: TitleBarButtons.lightsX, top: 0, right: 0, bottom: 0)
             lights.verticalAlignment = .center
             lights.background = coordinator.brush(0, 0, 0, alpha: 0)
             for (index, light) in Coordinator.lights.enumerated() {
                 let circle = WinUI.Grid()
-                circle.width = 12
-                circle.height = 12
+                circle.width = TitleBarButtons.lightSize
+                circle.height = TitleBarButtons.lightSize
                 circle.cornerRadius = CornerRadius(topLeft: 6, topRight: 6, bottomRight: 6, bottomLeft: 6)
                 let glyph = TextBlock()
                 if let symbol = light.glyph {
@@ -74,22 +74,54 @@
             }
             bar.children.append(lights)
 
+            // A real button (keyboard, accessibility), with its own hover background made clear: the
+            // highlight inside fades in and out like the Mac toolbar's instead of snapping on.
             let toggle = WinUI.Button()
-            toggle.width = 32
-            toggle.height = 28
+            toggle.width = TitleBarButtons.toggleSize.width
+            toggle.height = TitleBarButtons.toggleSize.height
+            toggle.margin = Thickness(left: TitleBarButtons.toggleGap, top: 0, right: 0, bottom: 0)
             toggle.padding = Thickness(left: 0, top: 0, right: 0, bottom: 0)
-            toggle.margin = Thickness(left: 20, top: 0, right: 0, bottom: 0)
             toggle.borderThickness = Thickness(left: 0, top: 0, right: 0, bottom: 0)
             toggle.cornerRadius = CornerRadius(topLeft: 6, topRight: 6, bottomRight: 6, bottomLeft: 6)
-            toggle.background = coordinator.brush(0, 0, 0, alpha: 0)
             toggle.verticalAlignment = .center
+            toggle.horizontalContentAlignment = .stretch
+            toggle.verticalContentAlignment = .stretch
+            let resources = ResourceDictionary()
+            for key in ["ButtonBackground", "ButtonBackgroundPointerOver", "ButtonBorderBrush",
+                        "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed"] {
+                _ = resources.insert(key, coordinator.brush(0, 0, 0, alpha: 0))
+            }
+            // Pressing darkens it at once, as on the Mac.
+            _ = resources.insert("ButtonBackgroundPressed", coordinator.brush(128, 128, 128, alpha: 0.15))
+            toggle.resources = resources
+            let highlight = WinUI.Grid()
+            highlight.cornerRadius = CornerRadius(topLeft: 6, topRight: 6, bottomRight: 6, bottomLeft: 6)
+            highlight.opacity = 0
+            let fade = ScalarTransition()
+            fade.duration = TimeSpan(duration: Int64(TitleBarButtons.hoverFade * 10_000_000))
+            highlight.opacityTransition = fade
+            coordinator.toggleHighlight = highlight
             let icon = TextBlock()
-            toggle.content = icon
+            icon.horizontalAlignment = .center
+            icon.verticalAlignment = .center
             coordinator.toggleIcon = icon
+            let content = WinUI.Grid()
+            content.children.append(highlight)
+            content.children.append(icon)
+            toggle.content = content
+            toggle.pointerEntered.addHandler { [weak coordinator] _, _ in
+                MainActor.assumeIsolated { coordinator?.toggleHovered = true }
+            }
+            for event in [toggle.pointerExited, toggle.pointerCanceled, toggle.pointerCaptureLost] {
+                event.addHandler { [weak coordinator] _, _ in
+                    MainActor.assumeIsolated { coordinator?.toggleHovered = false }
+                }
+            }
             toggle.click.addHandler { _, _ in
                 MainActor.assumeIsolated { toggleSidebar() }
             }
             ToolTipService.setToolTip(toggle, "Hide or show the sidebar")
+            AutomationProperties.setName(toggle, "Sidebar")
             bar.children.append(toggle)
 
             // Clicks there go to these controls, not to moving the window.
@@ -104,7 +136,7 @@
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: StackPanel, context: Context) -> ViewSize {
-            ViewSize(titleBarControlsWidth, titleBarHeight)
+            ViewSize(TitleBarButtons.width, titleBarHeight)
         }
 
         @MainActor
@@ -117,6 +149,8 @@
 
             var circles: [(circle: WinUI.Grid, glyph: TextBlock, index: Int)] = []
             var toggleIcon: TextBlock?
+            var toggleHighlight: WinUI.Grid?
+            var toggleHovered = false { didSet { paintToggle() } }
             var hovered = false { didSet { paint() } }
             var active = true { didSet { paint() } }
             var dark = false {
@@ -138,6 +172,15 @@
                 if let toggleIcon {
                     showSymbol("sidebar.left", in: toggleIcon, pointSize: 16, tint: .secondary, dark: dark)
                 }
+                paintToggle()
+            }
+
+            /// The toggle's highlight fades in on hover and out after.
+            private func paintToggle() {
+                guard let toggleHighlight else { return }
+                let value: UInt8 = dark ? 255 : 0
+                toggleHighlight.background = brush(value, value, value, alpha: 0.1)
+                toggleHighlight.opacity = toggleHovered ? 1 : 0
             }
 
             func brush(_ rgb: (r: UInt8, g: UInt8, b: UInt8)) -> SolidColorBrush {
@@ -261,6 +304,9 @@
         /// The top of the window is its caption; the title area's controls pass clicks through.
         private func updateTitleBarRegions() {
             guard let root, let scale = root.xamlRoot?.rasterizationScale else { return }
+            // The backend also narrows the pane when the window gets too narrow: keep the handle on
+            // its edge (setting the same margin again is free).
+            if slide == nil { resizeHandle?.place(atSidebarWidth: currentSidebarWidth, sliding: false) }
             // Forget controls SwiftCrossUI took off screen for good (another section's header).
             titleBarControls = titleBarControls.compactMap { entry in
                 let loaded = entry.element.isLoaded
@@ -307,6 +353,10 @@
         private var slide: SidebarSlide?
         private var slideStart: Date?
         private var rendering: EventCleanup?
+        /// Where the sidebar reopens: its width before it last closed, or as dragged.
+        private var expandedWidth = sidebarWidth
+        /// WinUI's split view can't be resized: this handle over the pane's edge does it.
+        private var resizeHandle: ResizeHandle?
 
         /// The sidebar's width right now, read by `TitleClearance` while SwiftCrossUI lays out.
         var currentSidebarWidth: Double {
@@ -326,14 +376,30 @@
             clear.color = UWP.Color(a: 0, r: 0, g: 0, b: 0)
             split.paneBackground = clear
             sidebarList = (sidebar as? WinUI.Grid)?.children.getAt(0) as? FrameworkElement
+            if let grid = root as? WinUI.Grid {
+                let handle = ResizeHandle()
+                // The window's content row (the first one holds SwiftCrossUI's menu bar).
+                WinUI.Grid.setRow(handle, 1)
+                grid.children.append(handle)
+                resizeHandle = handle
+            }
             setSidebarWidth(sidebarWidth)
+        }
+
+        /// Dragging the handle: the sidebar follows the pointer, within `sidebarWidthRange`.
+        fileprivate func dragSidebarEdge(to x: Double) {
+            guard slide == nil, currentSidebarWidth > 0 else { return }
+            let width = min(max(x, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound).rounded()
+            expandedWidth = width
+            setSidebarWidth(width)
         }
 
         /// Slides the sidebar closed or open. The frame callback exists only for the slide.
         func toggleSidebar() {
             guard let splitView, slide == nil else { return }
             let from = splitView.openPaneLength
-            slide = SidebarSlide(from: from, to: from > 0 ? 0 : sidebarWidth)
+            if from > 0 { expandedWidth = from }
+            slide = SidebarSlide(from: from, to: from > 0 ? 0 : expandedWidth)
             slideStart = nil
             sidebarList?.width = slide!.openWidth
             sidebarList?.horizontalAlignment = .right
@@ -349,9 +415,11 @@
             slideStart = start
             let elapsed = now.timeIntervalSince(start)
             let (width, done) = slide.width(after: elapsed)
+            // Over before the last frame lays out, so the resize handle comes back with it.
+            self.slide = done ? nil : slide
             setSidebarWidth(width)
             slide.record(layout: Date().timeIntervalSince(now))
-            self.slide = done ? nil : slide
+            if !done { self.slide = slide }
             guard done else { return }
             rendering?.dispose()
             rendering = nil
@@ -366,6 +434,44 @@
             guard let splitView else { return }
             splitView.openPaneLength = width
             splitView.sidebarResizeHandler?()
+            resizeHandle?.place(atSidebarWidth: width, sliding: slide != nil)
+        }
+    }
+
+    /// An invisible strip over the sidebar's edge, with the resize cursor: dragging it sets the
+    /// sidebar's width. A subclass, because the cursor property is protected.
+    final class ResizeHandle: WinUI.Grid {
+        private static let width = 8.0
+        private var dragging = false
+
+        override init() {
+            super.init()
+            width = Self.width
+            horizontalAlignment = .left
+            // Transparent rather than none, so it gets the pointer.
+            let clear = SolidColorBrush()
+            clear.color = UWP.Color(a: 0, r: 0, g: 0, b: 0)
+            background = clear
+            protectedCursor = InputSystemCursor.create(.sizeWestEast)
+            pointerPressed.addHandler { [weak self] _, args in
+                guard let self, let args else { return }
+                self.dragging = (try? self.capturePointer(args.pointer)) ?? false
+                args.handled = true
+            }
+            pointerMoved.addHandler { [weak self] _, args in
+                guard let self, self.dragging, let args, let window = self.parent as? UIElement,
+                      let point = try? args.getCurrentPoint(window) else { return }
+                MainActor.assumeIsolated { WinUIChrome.shared.dragSidebarEdge(to: Double(point.position.x)) }
+            }
+            for event in [pointerReleased, pointerCaptureLost] {
+                event.addHandler { [weak self] _, _ in self?.dragging = false }
+            }
+        }
+
+        /// Straddles the edge; hidden while the sidebar slides or is closed.
+        func place(atSidebarWidth sidebarWidth: Double, sliding: Bool) {
+            margin = Thickness(left: sidebarWidth - Self.width / 2, top: 0, right: 0, bottom: 0)
+            visibility = sliding || sidebarWidth == 0 ? .collapsed : .visible
         }
     }
 #endif
