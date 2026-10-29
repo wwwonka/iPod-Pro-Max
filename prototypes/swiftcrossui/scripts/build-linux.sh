@@ -34,6 +34,24 @@ build)
     swift build "${FLAGS[@]}"
     BIN=$(swift build "${FLAGS[@]}" --show-bin-path)
 
+    # The app's icon and .desktop file, for the user: GNOME finds a window's icon from the .desktop
+    # file named after its application id (WindowChrome.swift's appIdentifier).
+    APP_ID=com.ipodpromax.proto
+    for size in 16 32 128 256 512; do
+        dir="$HOME/.local/share/icons/hicolor/${size}x${size}/apps"
+        mkdir -p "$dir"
+        cp "$SRC/Assets/AppIcon.appiconset/icon_${size}x${size}@1x.png" "$dir/$APP_ID.png"
+    done
+    mkdir -p "$HOME/.local/share/applications"
+    cat > "$HOME/.local/share/applications/$APP_ID.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=iPod Pro Max (prototype)
+Exec=$WORK/.build/release/iPodProMaxProto
+Icon=$APP_ID
+StartupWMClass=$APP_ID
+DESKTOP
+
     # SF Symbols font for the icons, if downloaded into local/ (never committed: see Symbols.swift).
     if [ -f "$SRC/local/SF-SYMBOLS4.TTF" ]; then
         mkdir -p "$HOME/.local/share/fonts"

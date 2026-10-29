@@ -52,6 +52,9 @@ Comment ça marche :
 | `IPPM_SNAPSHOT=<fichier.png>` | (Mac) enregistre la fenêtre telle que l'app la dessine, puis quitte ; `IPPM_SNAPSHOT_COLLAPSED=1` ferme d'abord la sidebar |
 | `IPPM_LOG=<fichier>` | journal dans un fichier ; sous Windows, `%TEMP%\ippm.log` par défaut (une app lancée depuis l'Explorateur n'a pas de console) |
 
+## Icône de l'app
+`Assets/AppIcon.appiconset` est la seule source. `scripts/make-icons.sh` (lancé par `build.sh`) en tire `dist/icons/AppIcon.icns` pour le bundle Mac et `dist/icons/AppIcon.ico` pour Windows (ressource de l'exécutable, compilée avec `rc.exe`, et icône de la fenêtre). Sous Linux, `build-linux.sh` installe les PNG dans le thème d'icônes de l'utilisateur, avec un fichier `.desktop` au nom de l'identifiant de l'app (`com.ipodpromax.proto`).
+
 ## Fichiers
 | Fichier | Rôle |
 |---|---|
@@ -59,6 +62,7 @@ Comment ça marche :
 | `Library.swift` | lecture et indexation de `library.json` hors du thread principal |
 | `TrackTable.swift` | tableau virtualisé : `NSTableView`, `GtkColumnView`, `ListView` WinUI |
 | `Sidebar.swift`, `SidebarMac.swift`, `SidebarGtk.swift`, `SidebarWinUI.swift` | éléments de la sidebar ; sidebar native Mac, GTK et WinUI |
+| `Sidebar.swift` | sections de la sidebar et mesures du Mac (`SidebarMetrics`), partagées par les 3 OS |
 | `Symbols.swift` | SF Symbols par plateforme ; `scripts/match-glyph.swift` retrouve un glyphe de la police par sa forme |
 | `WindowChrome.swift` | modèle commun de la fenêtre sans barre et du glissement de la sidebar |
 | `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |

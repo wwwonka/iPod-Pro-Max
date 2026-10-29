@@ -20,6 +20,99 @@
     @MainActor func toggleSidebar() { GtkChrome.shared.toggleSidebar() }
     @MainActor func performWindowAction(_ action: WindowAction) { GtkChrome.shared.perform(action) }
 
+    /// The traffic lights and the sidebar toggle, as GTK buttons styled like macOS's: the lights
+    /// show their glyphs while the pointer is over them and turn gray in an inactive window, the
+    /// toggle gets a rounded highlight on hover. All of it is GTK CSS, with no SwiftCrossUI update.
+    struct WindowControls: GtkWidgetRepresentable {
+        func makeGtkWidget(context: Context) -> Gtk.Widget {
+            installTitleBarStyle()
+            let bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)!
+            gtk_widget_add_css_class(bar, "ippm-titlebar-buttons")
+            let lights = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)!
+            gtk_widget_add_css_class(lights, "ippm-lights")
+            gtk_widget_set_valign(lights, GTK_ALIGN_CENTER)
+            for (index, (name, glyph)) in [("close", "xmark"), ("minimize", nil),
+                                           ("zoom", "arrow.up.left.and.arrow.down.right")].enumerated()
+            {
+                let light = button(glyph: glyph, pointSize: 7, classes: ["ippm-light", "ippm-\(name)"])
+                g_signal_connect_data(cast(light), "clicked", unsafeBitCast(lightClicked, to: GCallback.self),
+                                      UnsafeMutableRawPointer(bitPattern: index + 1), nil, GConnectFlags(rawValue: 0))
+                gtk_box_append(cast(lights), light)
+            }
+            gtk_box_append(cast(bar), lights)
+            let toggle = button(glyph: "sidebar.left", pointSize: 16, classes: ["ippm-toggle"])
+            gtk_widget_set_tooltip_text(toggle, "Hide or show the sidebar")
+            g_signal_connect_data(cast(toggle), "clicked", unsafeBitCast(toggleClicked, to: GCallback.self),
+                                  nil, nil, GConnectFlags(rawValue: 0))
+            gtk_box_append(cast(bar), toggle)
+            return Gtk.Widget(bar)
+        }
+
+        func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {}
+
+        func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
+            ViewSize(titleBarControlsWidth, titleBarHeight)
+        }
+
+        /// - Parameter glyph: nil draws a minus sign.
+        private func button(glyph: String?, pointSize: Double, classes: [String]) -> UnsafeMutablePointer<GtkWidget> {
+            let button = gtk_button_new()!
+            classes.forEach { gtk_widget_add_css_class(button, $0) }
+            gtk_widget_set_valign(button, GTK_ALIGN_CENTER)
+            let label = gtk_label_new(nil)!
+            gtk_label_set_markup(cast(label), glyph.map { symbolMarkup($0, pointSize: pointSize, tint: nil, dark: false) }
+                ?? "<span size='\(Int(pointSize * 1.4 * 1024))' weight='bold'>\u{2212}</span>")
+            // Over the button rather than in it: an overlay doesn't count in its size, so the
+            // lights stay 12 pt round whatever their glyph.
+            let overlay = gtk_overlay_new()!
+            gtk_overlay_set_child(cast(overlay), gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0))
+            gtk_overlay_add_overlay(cast(overlay), label)
+            gtk_button_set_child(cast(button), overlay)
+            return button
+        }
+    }
+
+    @MainActor private var titleBarStyleInstalled = false
+
+    /// Positions and colors measured on macOS (WindowChrome.swift, SidebarMetrics).
+    @MainActor private func installTitleBarStyle() {
+        guard !titleBarStyleInstalled else { return }
+        titleBarStyleInstalled = true
+        let provider = gtk_css_provider_new()!
+        gtk_css_provider_load_from_string(provider, """
+            .ippm-titlebar-buttons { min-height: \(Int(titleBarHeight))px; }
+            .ippm-lights { margin-left: 20px; }
+            .ippm-light { min-width: 12px; min-height: 12px; padding: 0; margin: 0; border: none; border-radius: 6px;
+                box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12); }
+            .ippm-light label { opacity: 0; }
+            .ippm-lights:hover .ippm-light label { opacity: 1; }
+            .ippm-close, window:backdrop .ippm-lights:hover .ippm-close { background: #FF5F57; color: #4D0000; }
+            .ippm-minimize, window:backdrop .ippm-lights:hover .ippm-minimize { background: #FEBC2E; color: #985712; }
+            .ippm-zoom, window:backdrop .ippm-lights:hover .ippm-zoom { background: #28C840; color: #0A650D; }
+            .ippm-light:active { filter: brightness(0.85); }
+            window:backdrop .ippm-light { background: #DCDCDC; }
+            window.ippm-dark:backdrop .ippm-light { background: #4D4D4D; }
+            .ippm-toggle { min-width: 32px; min-height: 28px; padding: 0; margin: 0 0 0 20px; border: none; border-radius: 6px;
+                background: none; box-shadow: none; color: alpha(currentColor, 0.6); }
+            .ippm-toggle:hover { background: alpha(currentColor, 0.1); }
+            .ippm-toggle:active { background: alpha(currentColor, 0.2); }
+            """)
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
+    }
+
+    private let lightClicked: @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, data in
+        let action: WindowAction = switch Int(bitPattern: data) {
+        case 1: .close
+        case 2: .minimize
+        default: .zoom
+        }
+        MainActor.assumeIsolated { performWindowAction(action) }
+    }
+
+    private let toggleClicked: @convention(c) (OpaquePointer?, gpointer?) -> Void = { _, _ in
+        MainActor.assumeIsolated { toggleSidebar() }
+    }
+
     /// See WindowChrome.swift. Empty and as wide as the title's clearance.
     struct TitleClearance: GtkWidgetRepresentable {
         func makeGtkWidget(context: Context) -> Gtk.Widget { Gtk.Widget(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)) }
@@ -55,6 +148,8 @@
             let titlebar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0)
             gtk_widget_set_visible(titlebar, 0)
             gtk_window_set_titlebar(pointer, titlebar)
+            // From the icon theme: build-linux.sh installs the app's icon and .desktop file under this name.
+            gtk_window_set_icon_name(pointer, appIdentifier)
 
             roundCorners(pointer)
 
@@ -137,6 +232,10 @@
             g_value_set_boolean(&gvalue, dark ? 1 : 0)
             g_object_set_property(cast(gtk_settings_get_default()), "gtk-application-prefer-dark-theme", &gvalue)
             g_value_unset(&gvalue)
+            // For the sidebar's and the title bar's CSS, which use the Mac's colors.
+            if let window {
+                if dark { gtk_widget_add_css_class(cast(window), "ippm-dark") } else { gtk_widget_remove_css_class(cast(window), "ippm-dark") }
+            }
             onColorScheme(dark ? .dark : .light)
         }
 
@@ -190,8 +289,8 @@
         // MARK: Sidebar
 
         private var expandedWidth = Int32(sidebarWidth)
-        /// The sidebar's list: given the open width during a slide (see WindowChrome.swift).
-        var sidebarList: UnsafeMutablePointer<GtkWidget>?
+        /// The sidebar's sections: given the open width during a slide (see WindowChrome.swift).
+        var sidebarContent: UnsafeMutablePointer<GtkWidget>?
         private var slide: SidebarSlide?
         private var slideStart: gint64 = 0
 
@@ -208,8 +307,7 @@
             let closing = from > 0
             if closing { expandedWidth = from }
             slide = SidebarSlide(from: Double(from), to: closing ? 0 : Double(expandedWidth))
-            // Less the list's margins.
-            if let sidebarList { gtk_widget_set_size_request(sidebarList, Int32(slide!.openWidth) - 12, -1) }
+            if let sidebarContent { gtk_widget_set_size_request(sidebarContent, Int32(slide!.openWidth), -1) }
             // The clock starts on the first frame: if that frame comes late, the slide still plays.
             slideStart = 0
             gtk_widget_add_tick_callback(cast(paned), sidebarTick, nil, nil)
@@ -225,7 +323,7 @@
             slide.record(layout: Double(g_get_monotonic_time() - now) / 1_000_000)
             self.slide = done ? nil : slide
             guard done else { return true }
-            if let sidebarList { gtk_widget_set_size_request(sidebarList, -1, -1) }
+            if let sidebarContent { gtk_widget_set_size_request(sidebarContent, -1, -1) }
             slide.logResult(elapsed: elapsed)
             return false
         }

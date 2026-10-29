@@ -17,6 +17,9 @@ import SwiftCrossUI
 // - the header starts with a `TitleClearance`, which reads the sidebar's width as it is laid out:
 //   the title follows the edge and stops clear of the traffic lights, with no state change.
 
+/// The app's identifier: bundle identifier on macOS, application id (and icon name) on Linux.
+let appIdentifier = "com.ipodpromax.proto"
+
 /// Width of the open sidebar.
 let sidebarWidth = 230.0
 /// Width the traffic lights and the sidebar toggle take at the window's top-left corner.

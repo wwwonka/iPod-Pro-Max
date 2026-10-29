@@ -17,6 +17,11 @@
     @MainActor func toggleSidebar() { MacChrome.shared.toggleSidebar() }
     @MainActor func performWindowAction(_ action: WindowAction) {}
 
+    /// macOS draws its traffic lights and toggle itself (the window and its toolbar).
+    struct WindowControls: View {
+        var body: some View { EmptyView() }
+    }
+
     /// See WindowChrome.swift. Empty and as wide as the title's clearance.
     struct TitleClearance: NSViewRepresentable {
         func makeNSView(context: Context) -> NSView { NSView() }

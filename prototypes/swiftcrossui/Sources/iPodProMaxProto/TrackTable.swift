@@ -318,10 +318,11 @@ extension Array {
 #endif
 
 #if !canImport(AppKitBackend)
-    /// What sections without a table draw over it; the native one follows the system on macOS.
+    /// The content background of macOS (`controlBackgroundColor`); the native one follows the
+    /// system on macOS.
     struct WindowBackground: View {
         var body: some View {
-            Color.adaptive(light: Color(white: 0.98), dark: Color(white: 0.14))
+            Color.adaptive(light: Color(white: 1), dark: Color(red: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255))
         }
     }
 #endif

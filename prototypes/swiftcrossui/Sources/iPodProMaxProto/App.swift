@@ -71,6 +71,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let library {
+            // Opaque: on Windows the window itself is translucent, for the sidebar.
             VStack(spacing: 0) {
                 header(library)
                 HStack(spacing: 0) {
@@ -95,6 +96,7 @@ struct ContentView: View {
                     }
                 }
             }
+            .background(WindowBackground())
         } else {
             Text("Loading…").foregroundColor(.gray)
         }
@@ -225,30 +227,6 @@ enum MusicMode: String, CaseIterable, CustomStringConvertible {
     case allSongs = "All Songs"
 
     var description: String { rawValue }
-}
-
-/// Mac-style traffic lights and the sidebar toggle, for platforms without a Mac title bar. They sit
-/// over the window's top-left corner, where macOS puts them.
-struct WindowControls: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            light(Color(red: 1, green: 0.37, blue: 0.34), .close)
-            light(Color(red: 1, green: 0.74, blue: 0.18), .minimize)
-            light(Color(red: 0.16, green: 0.79, blue: 0.25), .zoom)
-            Symbol(name: "sidebar.left", size: 28, pointSize: 16, tint: .secondary)
-                .onTapGesture { toggleSidebar() }
-                .titleBarControl()
-                .padding(.leading, 18)
-        }
-        .padding(.leading, 20)
-        .frame(height: titleBarHeight)
-    }
-
-    private func light(_ color: Color, _ action: WindowAction) -> some View {
-        color.frame(width: 12, height: 12).cornerRadius(6)
-            .onTapGesture { performWindowAction(action) }
-            .titleBarControl()
-    }
 }
 
 /// The toolbar row at the top of the detail column, in the transparent title bar on macOS.
@@ -413,6 +391,12 @@ func log(_ message: String) {
 
 @main
 struct IPodProMaxProtoApp: App {
+    /// Declared rather than looked up: SwiftCrossUI otherwise scans the binary for Swift Bundler's
+    /// metadata at launch (byte by byte), and GTK would run as `com.example.SwiftCrossUIApp`.
+    static var metadata: AppMetadata? {
+        AppMetadata(identifier: appIdentifier, version: "0.1", additionalMetadata: [:])
+    }
+
     var body: some Scene {
         WindowGroup("iPod Pro Max") {
             ContentView()

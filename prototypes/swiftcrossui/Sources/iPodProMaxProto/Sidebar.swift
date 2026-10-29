@@ -35,6 +35,71 @@ enum SidebarItem: Hashable {
     }
 }
 
+/// A section of the sidebar: a header that collapses it, then its rows.
+struct SidebarSection {
+    var title: String
+    var rows: [Row]
+
+    struct Row {
+        var title: String
+        var icon: String
+        /// nil for placeholders ("No iPod connected", "New Playlist…"): dimmed, not selectable.
+        var item: SidebarItem?
+    }
+}
+
+/// The sidebar's sections, the same on every platform.
+func sidebarSections(devices: [String], playlists: [Playlist]) -> [SidebarSection] {
+    [
+        SidebarSection(
+            title: "iPods",
+            rows: devices.isEmpty
+                ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
+                : devices.map { .init(title: $0, icon: "ipod", item: .device($0)) }),
+        SidebarSection(title: "Library", rows: SidebarItem.library.map { .init(title: $0.title, icon: $0.icon, item: $0) }),
+        SidebarSection(
+            title: "Playlists",
+            rows: playlists.map { .init(title: $0.name, icon: "music.note.list", item: .playlist($0.id)) }
+                + [.init(title: "New Playlist…", icon: "plus", item: nil)]),
+    ]
+}
+
+/// macOS's source-list sidebar at the default ("Medium") sidebar icon size, measured from an
+/// NSOutlineView: GTK and WinUI draw theirs to these numbers. Points, from the sidebar's left edge.
+enum SidebarMetrics {
+    /// Below the title area, before the first header.
+    static let topGap = 10.0
+    /// Above every other header.
+    static let sectionGap = 13.0
+    static let headerHeight = 19.0
+    static let headerTextX = 14.0
+    static let headerFontSize = 11.0
+    /// The collapse chevron, at the header's right.
+    static let chevronWidth = 15.0
+    static let chevronTrailing = 10.0
+    static let rowHeight = 28.0
+    static let rowFontSize = 13.0
+    static let iconX = 18.0
+    static let iconWidth = 22.0
+    static let textX = 44.0
+    /// The selection's rounded rectangle, inset from both sides.
+    static let selectionInset = 10.0
+    static let selectionRadius = 6.0
+    /// Expand and collapse.
+    static let collapseDuration = 0.25
+}
+
+/// Selected row: `selectedContentBackgroundColor` while the sidebar has focus,
+/// `unemphasizedSelectedContentBackgroundColor` otherwise.
+func sidebarSelectionRGB(focused: Bool, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8) {
+    switch (focused, dark) {
+    case (true, false): (0x00, 0x63, 0xE1)
+    case (true, true): (0x00, 0x59, 0xD0)
+    case (false, false): (0xDC, 0xDC, 0xDC)
+    case (false, true): (0x46, 0x46, 0x46)
+    }
+}
+
 /// The SwiftUI sidebar's selection when the list isn't focused: a neutral gray, not the accent color.
 let sidebarSelection = Color.adaptive(
     light: Color(white: 0, opacity: 0.1),

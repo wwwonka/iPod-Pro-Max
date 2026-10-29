@@ -1,16 +1,23 @@
 #if canImport(WinUIBackend)
+    import Foundation
     import SwiftCrossUI
+    import UWP
     import WinUI
     import WinUIBackend
+    import WindowsFoundation
 
-    /// On WinUI the sidebar is a ListView: native rows, selection and keyboard handling, and none of
-    /// its labels go through SwiftCrossUI's layout, which the chrome reruns on every frame of the
-    /// slide. It takes whatever width the split view gives it (zero once hidden); during a slide the
-    /// chrome gives the list the open width, right-aligned and clipped, so the rows slide with the
-    /// pane's edge instead of squeezing.
+    /// On WinUI the sidebar is drawn like macOS's source list, to `SidebarMetrics`: one ListView per
+    /// section (native selection and keyboard handling) under a header whose chevron fades in on
+    /// hover and collapses the section, its rows sliding up under the header. The selection is the
+    /// Mac's (accent while the sidebar has focus, gray otherwise), not WinUI's. None of its labels
+    /// go through SwiftCrossUI's layout, which the chrome reruns on every frame of the slide.
+    ///
+    /// It takes whatever width the split view gives it (zero once hidden); during a slide the chrome
+    /// gives the sections the open width, right-aligned and clipped, so the rows slide with the
+    /// pane's edge instead of squeezing. Transparent: the window's acrylic shows through.
     struct Sidebar: WinUIElementRepresentable {
-        // Bindings, not values: SwiftCrossUI hands a native view's updates the values it was
-        // created with, so the playlists loaded later never showed. (WinUI has its own Binding.)
+        // Bindings, not values: SwiftCrossUI used to hand a native view's updates the values it
+        // was created with (see scripts/patches/representables.patch). WinUI has its own Binding.
         @SwiftCrossUI.Binding var devices: [String]
         @SwiftCrossUI.Binding var library: Library?
         @SwiftCrossUI.Binding var selection: SidebarItem
@@ -20,15 +27,14 @@
         func makeCoordinator() -> Coordinator { Coordinator() }
 
         func makeWinUIElement(context: Context) -> WinUI.Grid {
-            let coordinator = context.coordinator
-            let list = ListView()
-            // Room for the traffic lights and the toggle drawn over the window's corner. A margin,
-            // not padding: that strip stays outside the list, where dragging moves the window.
-            list.margin = Thickness(left: 0, top: 52, right: 0, bottom: 0)
-            list.selectionChanged.addHandler { [weak coordinator] _, _ in coordinator?.selectionChanged() }
-            coordinator.list = list
+            let content = StackPanel()
+            // Below the title area, where dragging moves the window.
+            content.margin = Thickness(left: 0, top: titleBarHeight, right: 0, bottom: 0)
+            context.coordinator.content = content
+            let scroll = ScrollViewer()
+            scroll.content = content
             let root = WinUI.Grid()
-            root.children.append(list)
+            root.children.append(scroll)
             // The chrome owns the split view (width, slide): it finds it from here once it's on screen.
             root.loaded.addHandler { _, _ in WinUIChrome.shared.attach(sidebar: root) }
             return root
@@ -41,7 +47,7 @@
             let key = devices + ["|"] + playlists.map { $0.id + $0.name } + [dark ? "dark" : "light"]
             if key != coordinator.key {
                 coordinator.key = key
-                coordinator.rebuild(devices: devices, playlists: playlists, dark: dark)
+                coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists), dark: dark)
             }
             coordinator.select(selection)
         }
@@ -52,90 +58,326 @@
 
         @MainActor
         final class Coordinator {
-            var list: ListView?
+            var content: StackPanel?
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
-            /// Item of each row by index; nil for headers and placeholders.
-            private var items: [SidebarItem?] = []
-            private var isSyncingSelection = false
 
-            func rebuild(devices: [String], playlists: [Playlist], dark: Bool) {
-                guard let rows = list?.items else { return }
-                isSyncingSelection = true
-                rows.clear()
-                items = []
-                header("iPods")
-                if devices.isEmpty {
-                    row("No iPod connected", icon: "ipod", item: nil, dark: dark)
-                } else {
-                    devices.forEach { row($0, icon: "ipod", item: .device($0), dark: dark) }
+            fileprivate typealias Cell = (cell: WinUI.Grid, glyph: TextBlock, label: TextBlock, row: SidebarSection.Row)
+
+            fileprivate final class Section {
+                let title: String
+                let rows: WinUI.Grid
+                let list: ListView
+                let chevron: TextBlock
+                let cells: [Cell]
+                var open: Bool
+                /// Expand or collapse in progress: when it started and the heights it goes between.
+                var slide: (start: Date?, from: Double, to: Double)?
+
+                init(title: String, rows: WinUI.Grid, list: ListView, chevron: TextBlock, cells: [Cell], open: Bool) {
+                    self.title = title
+                    self.rows = rows
+                    self.list = list
+                    self.chevron = chevron
+                    self.cells = cells
+                    self.open = open
                 }
-                header("Library")
-                SidebarItem.library.forEach { row($0.title, icon: $0.icon, item: $0, dark: dark) }
-                header("Playlists")
-                playlists.forEach { row($0.name, icon: "music.note.list", item: .playlist($0.id), dark: dark) }
-                row("New Playlist…", icon: "plus", item: nil, dark: dark)
-                isSyncingSelection = false
+
+                var fullHeight: Double { Double(cells.count) * SidebarMetrics.rowHeight }
+                var items: [SidebarItem?] { cells.map(\.row.item) }
             }
+
+            private var sections: [Section] = []
+            /// Kept across rebuilds (a playlist added doesn't reopen a closed section).
+            private var collapsed: Set<String> = []
+            private var dark = false
+            private weak var focusedList: ListView?
+            private var isSyncingSelection = false
+            private var rendering: EventCleanup?
+
+            func rebuild(_ model: [SidebarSection], dark: Bool) {
+                guard let content else { return }
+                self.dark = dark
+                isSyncingSelection = true
+                defer { isSyncingSelection = false }
+                content.children.clear()
+                sections = model.enumerated().map { index, section in
+                    makeSection(section, first: index == 0, into: content)
+                }
+                paintSelection()
+            }
+
+            // MARK: Building
+
+            private func makeSection(_ model: SidebarSection, first: Bool, into content: StackPanel) -> Section {
+                typealias M = SidebarMetrics
+                let open = !collapsed.contains(model.title)
+
+                let header = WinUI.Grid()
+                header.height = M.headerHeight
+                header.margin = Thickness(left: M.headerTextX, top: first ? M.topGap : M.sectionGap,
+                                          right: M.chevronTrailing, bottom: 0)
+                // Transparent rather than none: the whole header reports the pointer.
+                header.background = brush(0, 0, 0, alpha: 0)
+                for width in [GridLength(value: 1, gridUnitType: .star), GridLength(value: M.chevronWidth, gridUnitType: .pixel)] {
+                    let column = ColumnDefinition()
+                    column.width = width
+                    header.columnDefinitions.append(column)
+                }
+                let title = TextBlock()
+                title.text = model.title
+                title.fontSize = M.headerFontSize
+                title.fontWeight.weight = 700
+                title.foreground = textBrush(secondary: true)
+                title.verticalAlignment = .center
+                header.children.append(title)
+
+                let chevron = TextBlock()
+                showSymbol("chevron.right", in: chevron, pointSize: 9, tint: .secondary, dark: dark)
+                chevron.horizontalAlignment = .center
+                chevron.verticalAlignment = .center
+                chevron.opacity = 0
+                chevron.opacityTransition = transition(0.15)
+                chevron.rotation = open ? 90 : 0
+                chevron.rotationTransition = transition(M.collapseDuration)
+                chevron.centerPoint = Vector3(x: 4, y: 6, z: 0)
+                let chevronTarget = WinUI.Grid()
+                chevronTarget.background = brush(0, 0, 0, alpha: 0)
+                chevronTarget.children.append(chevron)
+                WinUI.Grid.setColumn(chevronTarget, 1)
+                header.children.append(chevronTarget)
+                header.pointerEntered.addHandler { _, _ in chevron.opacity = 1 }
+                header.pointerExited.addHandler { _, _ in chevron.opacity = 0 }
+                content.children.append(header)
+
+                let list = ListView()
+                list.selectionMode = .single
+                list.verticalAlignment = .bottom
+                WinUI.ScrollViewer.setVerticalScrollBarVisibility(list, .hidden)
+                WinUI.ScrollViewer.setVerticalScrollMode(list, .disabled)
+                hideWinUISelection(list)
+                var cells: [Cell] = []
+                for row in model.rows {
+                    let (item, cell, glyph, label) = makeRow(row)
+                    list.items.append(item)
+                    cells.append((cell, glyph, label, row))
+                }
+                list.height = Double(model.rows.count) * M.rowHeight
+
+                // The rows' box: its height animates and clips the list, held to its bottom, so the
+                // rows slide up under the header.
+                let rows = WinUI.Grid()
+                rows.height = open ? list.height : 0
+                rows.visibility = open ? .visible : .collapsed
+                rows.children.append(list)
+                content.children.append(rows)
+
+                let section = Section(title: model.title, rows: rows, list: list, chevron: chevron, cells: cells, open: open)
+                chevronTarget.tapped.addHandler { [weak self, weak section] _, _ in
+                    guard let section else { return }
+                    MainActor.assumeIsolated { self?.toggle(section) }
+                }
+                list.selectionChanged.addHandler { [weak self, weak section] _, _ in
+                    guard let section else { return }
+                    MainActor.assumeIsolated { self?.selectionChanged(in: section) }
+                }
+                list.gotFocus.addHandler { [weak self, weak list] _, _ in
+                    MainActor.assumeIsolated {
+                        self?.focusedList = list
+                        self?.paintSelection()
+                    }
+                }
+                list.lostFocus.addHandler { [weak self, weak list] _, _ in
+                    MainActor.assumeIsolated {
+                        if self?.focusedList === list { self?.focusedList = nil }
+                        self?.paintSelection()
+                    }
+                }
+                list.previewKeyDown.addHandler { [weak self, weak section] _, args in
+                    guard let section, let args, args.key == .down || args.key == .up else { return }
+                    MainActor.assumeIsolated {
+                        if self?.leave(section, down: args.key == .down) == true { args.handled = true }
+                    }
+                }
+                return section
+            }
+
+            /// Icon and title in a cell inset like the source list's selection.
+            private func makeRow(_ row: SidebarSection.Row) -> (ListViewItem, WinUI.Grid, TextBlock, TextBlock) {
+                typealias M = SidebarMetrics
+                let cell = WinUI.Grid()
+                cell.margin = Thickness(left: M.selectionInset, top: 0, right: M.selectionInset, bottom: 0)
+                cell.padding = Thickness(left: M.iconX - M.selectionInset, top: 0, right: 4, bottom: 0)
+                cell.cornerRadius = CornerRadius(topLeft: M.selectionRadius, topRight: M.selectionRadius,
+                                                 bottomRight: M.selectionRadius, bottomLeft: M.selectionRadius)
+                for width in [GridLength(value: M.textX - M.iconX, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star)] {
+                    let column = ColumnDefinition()
+                    column.width = width
+                    cell.columnDefinitions.append(column)
+                }
+                let glyph = TextBlock()
+                glyph.width = M.iconWidth
+                glyph.textAlignment = .center
+                glyph.horizontalAlignment = .left
+                glyph.verticalAlignment = .center
+                let label = TextBlock()
+                label.text = row.title
+                label.fontSize = M.rowFontSize
+                label.textTrimming = .characterEllipsis
+                label.verticalAlignment = .center
+                WinUI.Grid.setColumn(label, 1)
+                cell.children.append(glyph)
+                cell.children.append(label)
+
+                let item = ListViewItem()
+                item.content = cell
+                item.height = M.rowHeight
+                item.minHeight = 0
+                item.padding = Thickness(left: 0, top: 0, right: 0, bottom: 0)
+                item.margin = Thickness(left: 0, top: 0, right: 0, bottom: 0)
+                item.horizontalContentAlignment = .stretch
+                item.verticalContentAlignment = .stretch
+                item.useSystemFocusVisuals = false
+                if row.item == nil { item.isEnabled = false }
+                return (item, cell, glyph, label)
+            }
+
+            /// WinUI's own row backgrounds and selection pill, made transparent: the cells draw the
+            /// Mac's selection instead.
+            private func hideWinUISelection(_ list: ListView) {
+                let resources = ResourceDictionary()
+                for key in ["ListViewItemBackgroundPointerOver", "ListViewItemBackgroundPressed",
+                            "ListViewItemBackgroundSelected", "ListViewItemBackgroundSelectedPointerOver",
+                            "ListViewItemBackgroundSelectedPressed", "ListViewItemSelectionIndicatorBrush",
+                            "ListViewItemSelectionIndicatorPointerOverBrush", "ListViewItemSelectionIndicatorPressedBrush"]
+                {
+                    _ = resources.insert(key, brush(0, 0, 0, alpha: 0))
+                }
+                list.resources = resources
+            }
+
+            // MARK: Selection
 
             func select(_ selection: SidebarItem) {
-                guard let list, let index = items.firstIndex(of: selection), list.selectedIndex != Int32(index)
-                else { return }
-                isSyncingSelection = true
-                list.selectedIndex = Int32(index)
-                isSyncingSelection = false
+                for section in sections {
+                    guard let index = section.items.firstIndex(of: selection) else { continue }
+                    guard section.list.selectedIndex != Int32(index) else { return }
+                    isSyncingSelection = true
+                    for other in sections where other !== section { other.list.selectedIndex = -1 }
+                    section.list.selectedIndex = Int32(index)
+                    isSyncingSelection = false
+                    paintSelection()
+                    return
+                }
             }
 
-            fileprivate func selectionChanged() {
-                guard !isSyncingSelection, let list else { return }
-                let index = Int(list.selectedIndex)
-                guard index >= 0, index < items.count, let item = items[index] else { return }
+            /// One selection across the sections' lists.
+            private func selectionChanged(in section: Section) {
+                defer { paintSelection() }
+                guard !isSyncingSelection else { return }
+                let index = Int(section.list.selectedIndex)
+                guard index >= 0, index < section.cells.count, let item = section.cells[index].row.item else { return }
+                isSyncingSelection = true
+                for other in sections where other !== section { other.list.selectedIndex = -1 }
+                isSyncingSelection = false
                 onSelect(item)
             }
 
-            private func header(_ title: String) {
-                let text = TextBlock()
-                text.text = title
-                text.fontSize = 11
-                text.fontWeight.weight = 600
-                text.opacity = 0.6
-                let row = append(text, item: nil)
-                row.isEnabled = false
-                row.isHitTestVisible = false
-                row.verticalContentAlignment = .bottom
-                row.height = items.count == 1 ? 24 : 34
+            /// The Mac's selection: accent with white text while the sidebar has focus, gray otherwise.
+            private func paintSelection() {
+                let focused = focusedList != nil
+                let selectionRGB = sidebarSelectionRGB(focused: focused, dark: dark)
+                for section in sections {
+                    let selected = Int(section.list.selectedIndex)
+                    for (index, entry) in section.cells.enumerated() {
+                        let isSelected = index == selected
+                        let emphasized = isSelected && focused
+                        entry.cell.background = isSelected ? brush(selectionRGB.r, selectionRGB.g, selectionRGB.b) : nil
+                        entry.label.foreground = emphasized ? brush(255, 255, 255) : textBrush(secondary: entry.row.item == nil)
+                        // White glyph on the accent: the primary tint in dark mode is white.
+                        showSymbol(entry.row.icon, in: entry.glyph, pointSize: 13,
+                                   tint: emphasized ? .primary : entry.row.item == nil ? .secondary : .accent,
+                                   dark: emphasized || dark)
+                    }
+                }
             }
 
-            private func row(_ title: String, icon: String, item: SidebarItem?, dark: Bool) {
-                let glyph = TextBlock()
-                glyph.width = 20
-                glyph.textAlignment = .center
-                glyph.verticalAlignment = .center
-                showSymbol(icon, in: glyph, pointSize: 14, tint: item == nil ? .secondary : .accent, dark: dark)
-                let label = TextBlock()
-                label.text = title
-                label.fontSize = 13
-                label.textTrimming = .characterEllipsis
-                label.verticalAlignment = .center
-                if item == nil { label.opacity = 0.5 }
-                let stack = StackPanel()
-                stack.orientation = .horizontal
-                stack.spacing = 8
-                stack.children.append(glyph)
-                stack.children.append(label)
-                let row = append(stack, item: item)
-                row.height = 28
-                if item == nil { row.isEnabled = false }
+            /// The arrow keys go on to the next open section, as in a single source list.
+            private func leave(_ section: Section, down: Bool) -> Bool {
+                guard let index = sections.firstIndex(where: { $0 === section }) else { return false }
+                let selectable = section.items.indices.filter { section.items[$0] != nil }
+                guard Int(section.list.selectedIndex) == (down ? selectable.last : selectable.first) else { return false }
+                let order = down ? Array(sections[(index + 1)...]) : sections[..<index].reversed()
+                for next in order where next.open {
+                    let targets = next.items.indices.filter { next.items[$0] != nil }
+                    guard let target = down ? targets.first : targets.last else { continue }
+                    next.list.selectedIndex = Int32(target)
+                    _ = try? next.list.focus(.keyboard)
+                    return true
+                }
+                return false
             }
 
-            @discardableResult
-            private func append(_ content: UIElement, item: SidebarItem?) -> ListViewItem {
-                let row = ListViewItem()
-                row.content = content
-                row.minHeight = 0
-                list?.items.append(row)
-                items.append(item)
-                return row
+            // MARK: Collapse
+
+            /// Slides the section's rows up under its header (or back down): the rows' box changes
+            /// height every frame; the chevron turns with WinUI's own transition.
+            private func toggle(_ section: Section) {
+                section.open.toggle()
+                if section.open { collapsed.remove(section.title) } else { collapsed.insert(section.title) }
+                section.chevron.rotation = section.open ? 90 : 0
+                section.rows.visibility = .visible
+                section.slide = (nil, section.rows.actualHeight, section.open ? section.fullHeight : 0)
+                if rendering == nil {
+                    rendering = CompositionTarget.rendering.addHandler { [weak self] _, _ in
+                        MainActor.assumeIsolated { self?.tick() }
+                    }
+                }
+            }
+
+            /// One frame of every expand or collapse in progress. The frame callback exists only
+            /// while one is.
+            private func tick() {
+                let now = Date()
+                var sliding = false
+                for section in sections {
+                    guard var slide = section.slide else { continue }
+                    let start = slide.start ?? now
+                    slide.start = start
+                    let t = min(1, now.timeIntervalSince(start) / SidebarMetrics.collapseDuration)
+                    let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+                    section.rows.height = slide.from + (slide.to - slide.from) * eased
+                    if t < 1 {
+                        section.slide = slide
+                        sliding = true
+                    } else {
+                        section.slide = nil
+                        // Closed rows leave the keyboard's path.
+                        if !section.open { section.rows.visibility = .collapsed }
+                    }
+                }
+                guard !sliding else { return }
+                rendering?.dispose()
+                rendering = nil
+            }
+
+            // MARK: Colors
+
+            private func textBrush(secondary: Bool) -> SolidColorBrush {
+                let value: UInt8 = dark ? 255 : 0
+                return brush(value, value, value, alpha: secondary ? 0.5 : 0.85)
+            }
+
+            private func brush(_ r: UInt8, _ g: UInt8, _ b: UInt8, alpha: Double = 1) -> SolidColorBrush {
+                let brush = SolidColorBrush()
+                brush.color = UWP.Color(a: UInt8(alpha * 255), r: r, g: g, b: b)
+                return brush
+            }
+
+            private func transition(_ seconds: Double) -> ScalarTransition {
+                let transition = ScalarTransition()
+                transition.duration = TimeSpan(duration: Int64(seconds * 10_000_000))
+                return transition
             }
         }
     }

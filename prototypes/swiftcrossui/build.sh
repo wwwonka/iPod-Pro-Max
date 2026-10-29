@@ -31,6 +31,8 @@ case $ROOT in
     *) echo "The prototype must live under $HOME so the VMs can see it." >&2; exit 1 ;;
 esac
 LINUX_SRC="/media/psf/Home/$REL"
+# The app icon for each platform, from Assets/AppIcon.appiconset (dist/icons, read by the VMs too).
+scripts/make-icons.sh
 WINDOWS_SRC='\\Mac\Home\'"${REL//\//\\}"
 
 build_mac() {
@@ -41,14 +43,16 @@ build_mac() {
     bin=$(swift build -c release --show-bin-path)
     app="dist/mac/iPod Pro Max Proto.app"
     rm -rf "$app"
-    mkdir -p "$app/Contents/MacOS"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$bin/iPodProMaxProto" "$app/Contents/MacOS/"
+    cp dist/icons/AppIcon.icns "$app/Contents/Resources/"
     cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>iPodProMaxProto</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>com.ipodpromax.proto</string>
     <key>CFBundleName</key><string>iPod Pro Max Proto</string>
     <key>CFBundlePackageType</key><string>APPL</string>

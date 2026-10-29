@@ -95,9 +95,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "swift package resolve failed" }
     & (Join-Path $env:ProgramFiles "Git\bin\bash.exe") scripts/patch-dependencies.sh .build
     if ($LASTEXITCODE -ne 0) { throw "patch-dependencies failed" }
-    swift build -c release --build-system native
+    # The app icon in the executable's resources (Explorer, taskbar), from build.sh's dist/icons.
+    $icon = Join-Path $Source "dist\icons\AppIcon.ico"
+    $linkFlags = @()
+    $rc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter rc.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match "\\(arm64|x64)\\" } | Sort-Object FullName -Descending | Select-Object -First 1
+    if ((Test-Path $icon) -and $rc) {
+        Copy-Item $icon "AppIcon.ico" -Force
+        Set-Content "AppIcon.rc" '1 ICON "AppIcon.ico"'
+        & $rc.FullName /nologo /fo AppIcon.res AppIcon.rc
+        if ($LASTEXITCODE -eq 0) { $linkFlags = @("-Xlinker", (Join-Path $Work "AppIcon.res")) }
+    } else { Write-Warning "No icon resource: dist\icons\AppIcon.ico or rc.exe missing." }
+    swift build -c release --build-system native @linkFlags
     if ($LASTEXITCODE -ne 0) { throw "swift build failed" }
     $bin = (swift build -c release --build-system native --show-bin-path).Trim()
+    # Also next to the executable, for the window's icon (AppWindow.SetIcon takes a file).
+    if (Test-Path "AppIcon.ico") { Copy-Item "AppIcon.ico" $bin -Force }
 } finally { Pop-Location; $ErrorActionPreference = "Stop" }
 
 # Self-contained folder: the exe, the DLLs built next to it, and the Swift runtime DLLs.
@@ -107,6 +120,7 @@ $stage = Join-Path $Work "dist-windows"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory $stage | Out-Null
 Copy-Item "$bin\iPodProMaxProto.exe" $stage
+Copy-Item "$bin\AppIcon.ico" $stage -ErrorAction SilentlyContinue
 foreach ($pattern in "*.dll", "*.pri", "*.winmd") { Copy-Item "$bin\$pattern" $stage -ErrorAction SilentlyContinue }
 Get-ChildItem $bin -Directory -Filter *.resources | Copy-Item -Destination $stage -Recurse
 $swiftCore = where.exe swiftCore.dll 2>$null | Select-Object -First 1

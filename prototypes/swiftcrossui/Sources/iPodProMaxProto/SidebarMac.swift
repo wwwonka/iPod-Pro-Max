@@ -63,27 +63,23 @@
             ViewSize(proposal.width ?? sidebarWidth, proposal.height ?? 400)
         }
 
+        /// Group rows are what NSOutlineView collapses: on hover they show a chevron at the right,
+        /// and the section slides closed or open.
         private static func sections(devices: [String], playlists: [Playlist]) -> [Node] {
-            let ipods =
-                devices.isEmpty
-                ? [Node(title: "No iPod connected", icon: "ipod", item: nil)]
-                : devices.map { Node(title: $0, icon: "ipod", item: .device($0)) }
-            return [
-                Node(title: "iPods", children: ipods),
-                Node(title: "Library", children: SidebarItem.library.map {
-                    Node(title: $0.title, icon: $0.icon, item: $0)
-                }),
-                Node(title: "Playlists", children: playlists.map {
-                    Node(title: $0.name, icon: "music.note.list", item: .playlist($0.id))
-                } + [Node(title: "New Playlist…", icon: "plus", item: nil)]),
-            ]
+            sidebarSections(devices: devices, playlists: playlists).map { section in
+                Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item) })
+            }
         }
 
-        /// Fills its width with the list, except during a slide: then the list keeps the open width,
-        /// pinned to the right edge and clipped.
-        final class SlidingContainer: NSView {
+        /// The sidebar's translucent material (the desktop blurred behind the window), filled with
+        /// the list except during a slide: then the list keeps the open width, pinned to the right
+        /// edge and clipped.
+        final class SlidingContainer: NSVisualEffectView {
             override init(frame: NSRect) {
                 super.init(frame: frame)
+                material = .sidebar
+                blendingMode = .behindWindow
+                state = .followsWindowActiveState
                 clipsToBounds = true
             }
 

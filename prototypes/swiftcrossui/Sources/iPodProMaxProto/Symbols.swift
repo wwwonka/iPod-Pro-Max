@@ -25,6 +25,10 @@ let symbolCodepoints: [String: UInt32] = [
     "magnifyingglass": 0xF12C,
     "film": 0xEDF5,  // landscape, as in SF Symbols 4
     "sidebar.left": 0xED77,
+    "chevron.right": 0xEBCC,
+    // The traffic lights' glyphs (the font's minus is a long bar: the lights use U+2212).
+    "xmark": 0xEBE5,
+    "arrow.up.left.and.arrow.down.right": 0xEB46,
 ]
 
 /// The Mac system colors of each tint, for platforms drawing the font; nil means the text color.
@@ -76,9 +80,10 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     func cast<T, U>(_ pointer: T) -> U { unsafeBitCast(pointer, to: U.self) }
 
     /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
-    func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint, dark: Bool) -> String {
+    /// - Parameter tint: nil leaves the color to CSS.
+    func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint?, dark: Bool) -> String {
         guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else { return "" }
-        let foreground = symbolRGB(tint, dark: dark).map { rgb in
+        let foreground = tint.flatMap { symbolRGB($0, dark: dark) }.map { rgb in
             " foreground='#" + [rgb.r, rgb.g, rgb.b].map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + "'"
         } ?? ""
         return "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>"

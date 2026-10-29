@@ -30,6 +30,8 @@ Mesures sur 5 000 pistes, builds Release, VM Parallels (Fedora 44 : 2 vCPU, Wind
 | Changement de section | **15–17 ms** (médiane) | **51 ms** dans la VM ; 19 ms pour le même code GTK sur le Mac | **10–25 ms** dans la VM |
 | Glissement de la sidebar (0,25 s) | 20–21 images, 5–7 ms de mise en page par image | 13–16 images (60 Hz) avec Vulkan ou Cairo, 6–8 ms par image ; le rendu GL de la VM cale les premiers glissements (2 images) | 16–27 images, 6 ms par image ; plus lentes quand le CPU de la VM sort du repos |
 | Mode sombre | système | suit GNOME (`color-scheme`), en direct | système |
+| Sidebar translucide floutée | oui (`NSVisualEffectView`) | **non** : GNOME n'a pas d'API de flou (KDE en a une) ; fond opaque aux couleurs du Mac | oui (acrylique) |
+| Sections de la sidebar repliables, flèche au survol | oui (natif) | oui (`GtkRevealer`) | oui |
 | Fenêtre sans barre, boutons façon Mac | oui (barre d'outils unifiée native) | oui (dessinés par l'app) | oui (dessinés par l'app ; zone de titre déclarée à Windows, qui déplace, agrandit et aimante la fenêtre) |
 | Icônes SF Symbols | vraies, vectorielles | police locale (voir [[Risques]]) | police locale (voir [[Risques]]) |
 

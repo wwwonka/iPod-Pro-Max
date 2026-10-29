@@ -20,8 +20,9 @@ Une seule vue Swift (par exemple `TrackTable`), avec trois implémentations choi
 | Vue | macOS | Linux | Windows |
 |---|---|---|---|
 | Tableau des pistes (`TrackTable`) | `NSTableView` | `GtkColumnView` | `ListView` (une ligne de texte par piste pour l'instant) |
-| Sidebar (`Sidebar`) | `NSOutlineView` en style *source list* | `GtkListBox` `.navigation-sidebar` | `ListView` à largeur fixe, alignée à droite et rognée par le panneau |
+| Sidebar (`Sidebar`) | `NSOutlineView` *source list* dans un `NSVisualEffectView` (matériau `.sidebar`) ; sections repliables natives | une `GtkListBox` par section, repliée dans un `GtkRevealer`, mise en forme CSS aux mesures du Mac ; fond opaque (GNOME n'a pas d'API de flou) | une `ListView` par section, repliée image par image, sélection dessinée façon Mac ; fond acrylique de la fenêtre (`DesktopAcrylicController`) |
 | Icônes (`Symbol`) | `NSImageView` + SF Symbol | `GtkLabel` + police SF Symbols locale | `TextBlock` + police SF Symbols locale |
+| Feux et bouton de sidebar (`WindowControls`) | natifs (fenêtre et barre d'outils) | boutons GTK : symboles au survol, gris fenêtre inactive, surbrillance arrondie en CSS | éléments WinUI : symboles au survol, gris fenêtre inactive, `Button` sans bordure pour la surbrillance |
 | Fenêtre (`windowChrome`) | barre d'outils unifiée, `NSSplitView` glissé image par image | barre CSD masquée, boutons dessinés, `GtkPaned` glissé sur l'horloge d'affichage | barre de titre repliée, zone de titre et contrôles déclarés à Windows (`InputNonClientPointerSource`), `SplitView` glissé sur `CompositionTarget.Rendering` |
 
 ## Règles

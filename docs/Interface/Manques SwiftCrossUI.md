@@ -25,6 +25,8 @@ Constat sur la **v0.10.0** (30 septembre 2026), dépôt cloné et code lu le 202
 | Une vue native (`NSViewRepresentable`, etc.) reçoit à ses mises à jour les valeurs de sa création | les playlists chargées après n'apparaissaient pas | passer les données en `Binding` |
 | `NavigationSplitView` : largeur minimale imposée, pas de repli animé | sidebar impossible à fermer | sidebars natives qui acceptent toute largeur, délégué intermédiaire (Mac), glissement image par image ([[Composants natifs par plateforme]]) |
 | **Les vues natives (`NSViewRepresentable`, `GtkWidgetRepresentable`, `WinUIElementRepresentable`) reçoivent pour toujours les valeurs de leur création** | tableau GTK vide après un changement de section ; la recherche ne filtrerait jamais | patch local `scripts/patches/representables.patch` (à proposer en amont) |
+| La projection Swift de WinUI n'a pas `DesktopAcrylicBackdrop`, ni `SetRegionRects` (paramètre tableau) | pas d'acrylique, pas de zone de titre | sous-classe de `SystemBackdrop` sur `DesktopAcrylicController` ; appel par la table C de l'interface |
+| SwiftCrossUI cherche les métadonnées de Swift Bundler octet par octet au lancement | ~8 % du lancement sous Linux, identifiant GTK `com.example.SwiftCrossUIApp` | `static var metadata` déclarée par l'app |
 | GTK : le rendu GL cale les premiers glissements dans la VM (GPU virtio) | 2 images au lieu de 15 | `GSK_RENDERER=vulkan` pour la VM seulement |
 | Pas de police nommée, pas d'API de barre de titre | ni SF Symbols ni fenêtre sans barre | widgets natifs et `inspectWindow` |
 | Retirer une grosse vue native de la fenêtre recalcule l'ordre du clavier | ~60 ms par clic sur Mac | garder la vue en place |
