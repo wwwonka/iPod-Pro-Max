@@ -4,12 +4,14 @@ import SwiftCrossUI
 #if os(Windows)
     import WinSDK
 #endif
+#if canImport(WinUIBackend)
+    import WinAppSDK
+#endif
 
 struct ContentView: View {
     @State var library: Library?
     @State var devices: [String] = []
     @State var selection: SidebarItem = .music
-    @State var sidebarVisible = true
     /// Followed from the system on Linux (GTK doesn't tell SwiftCrossUI); AppKit handles macOS.
     @State var colorScheme: ColorScheme = .light
 
@@ -24,7 +26,7 @@ struct ContentView: View {
                 WindowControls()
             }
         }
-        .windowChrome(sidebarVisible: $sidebarVisible, colorScheme: $colorScheme)
+        .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
         .task {
             let start = Date()
@@ -36,6 +38,7 @@ struct ContentView: View {
             log("[proto] decode \(loaded.loadMs) ms, index \(loaded.indexMs) ms, "
                 + "ready \(Int(Date().timeIntervalSince(start) * 1000)) ms after first render")
             if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil { await benchSidebar() }
+
         }
     }
 
@@ -47,13 +50,13 @@ struct ContentView: View {
         for item in steps {
             let start = Date()
             selection = item
-            await mainThreadIdle()
-            log("[bench] \(item.title): \(Int(Date().timeIntervalSince(start) * 1000)) ms")
+            let idle = await mainThreadIdle()
+            log("[bench] \(item.title): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
         }
         // The chrome logs how many frames each slide drew ([bench] sidebar ...).
         for _ in 0..<4 {
             toggleSidebar()
-            try? await Task.sleep(for: .seconds(0.8))
+            try? await Task.sleep(for: .seconds(SidebarSlide.duration + 0.55))
         }
         exit(0)
     }
@@ -113,8 +116,7 @@ struct ContentView: View {
             title = selection.title
             subtitle = ""
         }
-        return DetailHeader(title: title, subtitle: subtitle,
-                            leadingInset: sidebarVisible ? 0 : collapsedHeaderInset) {
+        return DetailHeader(title: title, subtitle: subtitle) {
             if selection == .music {
                 SegmentedControl(options: MusicMode.allCases, selection: $mode)
                 ToolbarButton(icon: "plus")
@@ -213,6 +215,7 @@ struct SegmentedControl<Value: Equatable & CustomStringConvertible>: View {
             .padding(2)
             .background(Color(white: 0.5, opacity: 0.12))
             .cornerRadius(7)
+            .titleBarControl()
         #endif
     }
 }
@@ -233,16 +236,18 @@ struct WindowControls: View {
             light(Color(red: 1, green: 0.74, blue: 0.18), .minimize)
             light(Color(red: 0.16, green: 0.79, blue: 0.25), .zoom)
             Symbol(name: "sidebar.left", size: 28, pointSize: 16, tint: .secondary)
-                .padding(.leading, 18)
                 .onTapGesture { toggleSidebar() }
+                .titleBarControl()
+                .padding(.leading, 18)
         }
         .padding(.leading, 20)
-        .frame(height: 52)
+        .frame(height: titleBarHeight)
     }
 
     private func light(_ color: Color, _ action: WindowAction) -> some View {
         color.frame(width: 12, height: 12).cornerRadius(6)
             .onTapGesture { performWindowAction(action) }
+            .titleBarControl()
     }
 }
 
@@ -250,32 +255,33 @@ struct WindowControls: View {
 struct DetailHeader<Controls: View>: View {
     var title: String
     var subtitle: String
-    /// Room for the traffic lights when the sidebar is hidden.
-    var leadingInset = 0
     var controls: Controls
 
-    init(title: String, subtitle: String, leadingInset: Int = 0, @ViewBuilder controls: () -> Controls) {
+    init(title: String, subtitle: String, @ViewBuilder controls: () -> Controls) {
         self.title = title
         self.subtitle = subtitle
-        self.leadingInset = leadingInset
         self.controls = controls()
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13, weight: .bold))
-                    if !subtitle.isEmpty {
-                        Text(subtitle).font(.system(size: 11)).foregroundColor(.gray)
+            HStack(spacing: 0) {
+                // Room for the traffic lights and the toggle where the sidebar no longer covers
+                // them: the title follows the sidebar's edge as it slides.
+                TitleClearance()
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.system(size: 13, weight: .bold))
+                        if !subtitle.isEmpty {
+                            Text(subtitle).font(.system(size: 11)).foregroundColor(.gray)
+                        }
                     }
+                    Spacer()
+                    controls
                 }
-                Spacer()
-                controls
             }
             .padding(.horizontal, 10)
-            .padding(.leading, leadingInset)
-            .frame(height: 52)
+            .frame(height: titleBarHeight)
             Divider()
         }
     }
@@ -298,6 +304,7 @@ struct ToolbarButton: View {
             Symbol(name: icon, size: 20, pointSize: 15, tint: .primary)
         }
         .buttonStyle(.borderless)
+        .titleBarControl()
     }
 }
 
@@ -311,6 +318,7 @@ struct SearchField: View {
             TextField(prompt, text: $text)
         }
         .frame(width: 240)
+        .titleBarControl()
     }
 }
 
@@ -334,11 +342,12 @@ struct EmptyState: View {
     }
 }
 
-/// Resumes once the main thread has drained the work queued before it (the view update). On GTK
+/// Returns when the main thread had drained the work queued before it (the view update). On GTK
 /// it waits for GLib's loop itself to go idle: dispatch's main queue is only drained by GLib now
-/// and then, which would add a fixed delay unrelated to the app.
+/// and then, which would add a fixed delay unrelated to the app. On WinUI the time is taken in the
+/// XAML dispatcher, at low priority, for the same reason: resuming the task adds its own delay.
 @MainActor
-func mainThreadIdle() async {
+func mainThreadIdle() async -> Date {
     #if canImport(GtkBackend)
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             let box = Unmanaged.passRetained(ContinuationBox(c)).toOpaque()
@@ -347,10 +356,20 @@ func mainThreadIdle() async {
                 return 0
             }, box, nil)
         }
+        return Date()
+    #elseif canImport(WinUIBackend)
+        // Twice: the first pass may run before XAML's layout of the update.
+        let queue = WinAppSDK.DispatcherQueue.getForCurrentThread()!
+        return await withCheckedContinuation { (c: CheckedContinuation<Date, Never>) in
+            _ = try? queue.tryEnqueue(.low) {
+                _ = try? queue.tryEnqueue(.low) { c.resume(returning: Date()) }
+            }
+        }
     #else
         for _ in 0..<3 {
             await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
         }
+        return Date()
     #endif
 }
 

@@ -6,7 +6,9 @@
     /// On macOS the sidebar is a real source-list NSOutlineView, like the one SwiftUI's
     /// `List(.sidebar)` makes: row height, fonts and icon size follow the "Sidebar icon size"
     /// setting, icons take the accent color, and selection looks native. Clicks don't go through
-    /// SwiftCrossUI's layout, which keeps them cheap.
+    /// SwiftCrossUI's layout, which keeps them cheap. It takes whatever width the split view gives
+    /// it (zero once hidden); during a slide the list keeps the open width, pinned to the right edge
+    /// and clipped, so the rows slide with the divider instead of squeezing.
     struct Sidebar: NSViewRepresentable {
         // Bindings, not values: SwiftCrossUI hands a native view's updates the values it was
         // created with, so the playlists loaded later never showed.
@@ -18,7 +20,7 @@
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
-        func makeNSView(context: Context) -> NSScrollView {
+        func makeNSView(context: Context) -> NSView {
             let outline = NSOutlineView()
             outline.style = .sourceList
             outline.headerView = nil
@@ -37,11 +39,14 @@
             scroll.autohidesScrollers = true
             // Starts below the toolbar the traffic lights sit in, as SwiftUI's sidebar does.
             scroll.automaticallyAdjustsContentInsets = true
-            return scroll
+            let container = SlidingContainer()
+            container.addSubview(scroll)
+            return container
         }
 
-        func updateNSView(_ scroll: NSScrollView, context: Context) {
-            guard let outline = scroll.documentView as? NSOutlineView else { return }
+        func updateNSView(_ container: NSView, context: Context) {
+            guard let scroll = container.subviews.first as? NSScrollView,
+                  let outline = scroll.documentView as? NSOutlineView else { return }
             let coordinator = context.coordinator
             coordinator.onSelect = { item in selection = item }
             let key = devices + ["|"] + playlists.map { $0.id + $0.name }
@@ -52,6 +57,10 @@
                 outline.expandItem(nil, expandChildren: true)
             }
             coordinator.select(selection, in: outline)
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> ViewSize {
+            ViewSize(proposal.width ?? sidebarWidth, proposal.height ?? 400)
         }
 
         private static func sections(devices: [String], playlists: [Playlist]) -> [Node] {
@@ -68,6 +77,22 @@
                     Node(title: $0.name, icon: "music.note.list", item: .playlist($0.id))
                 } + [Node(title: "New Playlist…", icon: "plus", item: nil)]),
             ]
+        }
+
+        /// Fills its width with the list, except during a slide: then the list keeps the open width,
+        /// pinned to the right edge and clipped.
+        final class SlidingContainer: NSView {
+            override init(frame: NSRect) {
+                super.init(frame: frame)
+                clipsToBounds = true
+            }
+
+            required init?(coder: NSCoder) { fatalError() }
+
+            override func resizeSubviews(withOldSize oldSize: NSSize) {
+                let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
+                subviews.first?.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+            }
         }
 
         final class Node: NSObject {

@@ -11,7 +11,7 @@ enum SymbolTint: Hashable {
 }
 
 /// The font numbers its glyphs from U+E900 without names. These were matched by shape against
-/// the real symbols (Tools: a Swift script comparing renders); nil means the font lacks it.
+/// the real symbols (scripts/match-glyph.swift); a missing name draws nothing.
 let symbolCodepoints: [String: UInt32] = [
     "music.note": 0xF134,
     "music.note.list": 0xF133,
@@ -23,9 +23,18 @@ let symbolCodepoints: [String: UInt32] = [
     "plus": 0xEC22,
     "square.and.arrow.down": 0xF2FC,
     "magnifyingglass": 0xF12C,
-    // Not in the font: the closest glyph stands in.
-    "sidebar.left": 0xF088,
+    "film": 0xEDF5,  // landscape, as in SF Symbols 4
+    "sidebar.left": 0xED77,
 ]
+
+/// The Mac system colors of each tint, for platforms drawing the font; nil means the text color.
+func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)? {
+    switch tint {
+    case .accent: dark ? (0x0A, 0x84, 0xFF) : (0x00, 0x7A, 0xFF)
+    case .primary: nil
+    case .secondary: dark ? (0x98, 0x98, 0x9D) : (0x8A, 0x8A, 0x8E)
+    }
+}
 
 #if canImport(AppKitBackend)
     import AppKit
@@ -69,13 +78,9 @@ let symbolCodepoints: [String: UInt32] = [
     /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
     func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint, dark: Bool) -> String {
         guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else { return "" }
-        let color: String? =
-            switch tint {
-            case .accent: dark ? "#0A84FF" : "#007AFF"
-            case .primary: nil
-            case .secondary: dark ? "#98989D" : "#8A8A8E"
-            }
-        let foreground = color.map { " foreground='\($0)'" } ?? ""
+        let foreground = symbolRGB(tint, dark: dark).map { rgb in
+            " foreground='#" + [rgb.r, rgb.g, rgb.b].map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + "'"
+        } ?? ""
         return "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>"
     }
 
@@ -96,6 +101,64 @@ let symbolCodepoints: [String: UInt32] = [
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
+            ViewSize(size, size)
+        }
+    }
+#elseif canImport(WinUIBackend)
+    import UWP
+    import WinUI
+    import WinUIBackend
+
+    /// One font object for every glyph.
+    @MainActor private let symbolFont = FontFamily("SF-Symbols")
+    /// One brush per color: the tints are a handful of system colors.
+    @MainActor private var symbolBrushes: [UInt32: SolidColorBrush] = [:]
+
+    /// Shows a symbol's glyph in a TextBlock (empty when the font lacks it). Only what changed is
+    /// set: SwiftCrossUI updates its views on every layout, and each property set makes XAML lay
+    /// the glyph out again.
+    @MainActor
+    func showSymbol(_ name: String, in text: TextBlock, pointSize: Double, tint: SymbolTint, dark: Bool) {
+        let glyph = symbolCodepoints[name].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? ""
+        if text.text != glyph {
+            text.fontFamily = symbolFont
+            text.text = glyph
+        }
+        if text.fontSize != pointSize { text.fontSize = pointSize }
+        let rgb = symbolRGB(tint, dark: dark) ?? (dark ? (255, 255, 255) : (0, 0, 0))
+        let key = UInt32(rgb.r) << 16 | UInt32(rgb.g) << 8 | UInt32(rgb.b)
+        let brush = symbolBrushes[key] ?? {
+            let brush = SolidColorBrush()
+            brush.color = UWP.Color(a: 255, r: rgb.r, g: rgb.g, b: rgb.b)
+            symbolBrushes[key] = brush
+            return brush
+        }()
+        if text.foreground !== brush { text.foreground = brush }
+    }
+
+    /// The glyph centered in a Grid of the symbol's size.
+    struct Symbol: WinUIElementRepresentable {
+        var name: String
+        var size: Double = 16
+        var pointSize: Double = 13
+        var tint: SymbolTint = .accent
+
+        func makeWinUIElement(context: Context) -> WinUI.Grid {
+            let text = TextBlock()
+            text.horizontalAlignment = .center
+            text.verticalAlignment = .center
+            let grid = WinUI.Grid()
+            grid.children.append(text)
+            return grid
+        }
+
+        func updateWinUIElement(_ grid: WinUI.Grid, context: Context) {
+            guard let text = grid.children.getAt(0) as? TextBlock else { return }
+            showSymbol(name, in: text, pointSize: pointSize, tint: tint,
+                       dark: context.environment.colorScheme == .dark)
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: WinUI.Grid, context: Context) -> ViewSize {
             ViewSize(size, size)
         }
     }

@@ -6,7 +6,10 @@
 
     /// On GTK the sidebar is a GtkListBox with the `navigation-sidebar` style, the one GNOME apps
     /// use: native rows, selection and keyboard handling, and none of its labels go through
-    /// SwiftCrossUI's layout, which measured every one of them on each click.
+    /// SwiftCrossUI's layout, which measured every one of them on each click. It takes whatever
+    /// width the split view gives it (zero once hidden); during a slide the chrome gives the list
+    /// the open width, kept scrolled to its right edge, so the rows slide with the pane's edge
+    /// instead of squeezing.
     struct Sidebar: GtkWidgetRepresentable {
         // Bindings, not values: SwiftCrossUI hands a native view's updates the values it was
         // created with, so the playlists loaded later never showed.
@@ -29,11 +32,17 @@
             gtk_widget_set_margin_end(list, 6)
             g_signal_connect_data(cast(list), "row-selected", unsafeBitCast(rowSelected, to: GCallback.self),
                                   Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
+            GtkChrome.shared.sidebarList = list
+            // Scrolls horizontally without a scroll bar, so it can be narrower than the list.
             let scroll = gtk_scrolled_window_new()!
-            gtk_scrolled_window_set_policy(cast(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
+            gtk_scrolled_window_set_policy(cast(scroll), GTK_POLICY_EXTERNAL, GTK_POLICY_AUTOMATIC)
             gtk_scrolled_window_set_child(cast(scroll), list)
-            gtk_widget_set_size_request(scroll, 200, -1)
             gtk_widget_set_vexpand(scroll, 1)
+            let horizontal = gtk_scrolled_window_get_hadjustment(cast(scroll))
+            for signal in ["changed", "value-changed"] {
+                g_signal_connect_data(cast(horizontal), signal, unsafeBitCast(pinToRightEdge, to: GCallback.self),
+                                      nil, nil, GConnectFlags(rawValue: 0))
+            }
             return Gtk.Widget(scroll)
         }
 
@@ -50,7 +59,7 @@
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
-            ViewSize(max(200, proposal.width ?? 200), proposal.height ?? 400)
+            ViewSize(proposal.width ?? sidebarWidth, proposal.height ?? 400)
         }
 
         final class Coordinator {
@@ -131,6 +140,13 @@
         }
     }
 
+
+    /// Keeps the list scrolled to its right edge whenever the sidebar's width (or a stray
+    /// horizontal scroll) moves it.
+    private let pinToRightEdge: @convention(c) (UnsafeMutablePointer<GtkAdjustment>?, gpointer?) -> Void = { adjustment, _ in
+        let end = gtk_adjustment_get_upper(adjustment) - gtk_adjustment_get_page_size(adjustment)
+        if gtk_adjustment_get_value(adjustment) != end { gtk_adjustment_set_value(adjustment, end) }
+    }
 
     private let rowSelected: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, row, data in
         guard let row, let data else { return }

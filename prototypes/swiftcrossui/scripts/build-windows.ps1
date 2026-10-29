@@ -66,6 +66,21 @@ git config --global http.postBuffer 524288000
 # A running copy locks the exe and the link step fails.
 Get-Process iPodProMaxProto -ErrorAction SilentlyContinue | Stop-Process -Force
 
+# SF Symbols font for the icons, if put in local/ (never committed: see Symbols.swift). Installed
+# for the current user only, which needs no admin approval.
+$font = Join-Path $Source "local\SF-SYMBOLS4.TTF"
+if (Test-Path $font) {
+    $fonts = Join-Path $env:LOCALAPPDATA "Microsoft\Windows\Fonts"
+    $installed = Join-Path $fonts "SF-SYMBOLS4.TTF"
+    if (-not (Test-Path $installed) -or (Get-FileHash $font).Hash -ne (Get-FileHash $installed).Hash) {
+        New-Item -ItemType Directory $fonts -Force | Out-Null
+        Copy-Item $font $installed -Force
+        New-ItemProperty "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts" -Name "SF-Symbols (TrueType)" `
+            -Value $installed -PropertyType String -Force | Out-Null
+        Write-Output "SF Symbols font installed"
+    }
+}
+
 # Local copy: building on the network share is slow, and some tools dislike UNC paths.
 robocopy $Source $Work /MIR /XD .build .build-gtk dist .swiftpm /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
@@ -76,6 +91,10 @@ Push-Location $Work
 # Swift writes warnings to stderr, which "Stop" would turn into a failure: judge by exit code.
 $ErrorActionPreference = "Continue"
 try {
+    swift package resolve
+    if ($LASTEXITCODE -ne 0) { throw "swift package resolve failed" }
+    & (Join-Path $env:ProgramFiles "Git\bin\bash.exe") scripts/patch-dependencies.sh .build
+    if ($LASTEXITCODE -ne 0) { throw "patch-dependencies failed" }
     swift build -c release --build-system native
     if ($LASTEXITCODE -ne 0) { throw "swift build failed" }
     $bin = (swift build -c release --build-system native --show-bin-path).Trim()

@@ -58,6 +58,8 @@ run)
     export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
     pkill -x iPodProMaxProto || true
     cd "$HOME/dev/swiftcrossui"
+    # GTK's GL renderer stalls the first slides in the VM (virtio GPU); Vulkan doesn't.
+    export GSK_RENDERER=${GSK_RENDERER:-vulkan}
     setsid nohup .build/release/iPodProMaxProto >/tmp/iPodProMaxProto.log 2>&1 </dev/null &
     echo "Launched (log: /tmp/iPodProMaxProto.log)"
     ;;

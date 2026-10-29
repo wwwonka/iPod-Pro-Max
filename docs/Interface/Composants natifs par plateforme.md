@@ -20,9 +20,9 @@ Une seule vue Swift (par exemple `TrackTable`), avec trois implémentations choi
 | Vue | macOS | Linux | Windows |
 |---|---|---|---|
 | Tableau des pistes (`TrackTable`) | `NSTableView` | `GtkColumnView` | `ListView` (une ligne de texte par piste pour l'instant) |
-| Sidebar (`Sidebar`) | `NSOutlineView` en style *source list* | `GtkListBox` `.navigation-sidebar` | dessinée en SwiftCrossUI (à remplacer) |
-| Icônes (`Symbol`) | `NSImageView` + SF Symbol | `GtkLabel` + police SF Symbols locale | à faire |
-| Fenêtre (`windowChrome`) | barre d'outils unifiée, `NSSplitView` animé | barre CSD masquée, boutons dessinés, `GtkPaned` animé | à faire |
+| Sidebar (`Sidebar`) | `NSOutlineView` en style *source list* | `GtkListBox` `.navigation-sidebar` | `ListView` à largeur fixe, alignée à droite et rognée par le panneau |
+| Icônes (`Symbol`) | `NSImageView` + SF Symbol | `GtkLabel` + police SF Symbols locale | `TextBlock` + police SF Symbols locale |
+| Fenêtre (`windowChrome`) | barre d'outils unifiée, `NSSplitView` glissé image par image | barre CSD masquée, boutons dessinés, `GtkPaned` glissé sur l'horloge d'affichage | barre de titre repliée, zone de titre et contrôles déclarés à Windows (`InputNonClientPointerSource`), `SplitView` glissé sur `CompositionTarget.Rendering` |
 
 ## Règles
 - Les données arrivent en `Binding` (voir [[Manques SwiftCrossUI]]) ; la vue native ne recharge que si elles ont changé.

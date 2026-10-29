@@ -34,6 +34,8 @@ LINUX_SRC="/media/psf/Home/$REL"
 WINDOWS_SRC='\\Mac\Home\'"${REL//\//\\}"
 
 build_mac() {
+    swift package resolve
+    scripts/patch-dependencies.sh .build
     swift build -c release
     local bin app
     bin=$(swift build -c release --show-bin-path)

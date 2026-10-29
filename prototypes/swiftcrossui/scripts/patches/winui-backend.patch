@@ -1,0 +1,116 @@
+SwiftCrossUI's WinUI backend, two changes to propose upstream:
+
+1. Split view: the pane kept being reset to the sidebar's minimum width on every layout, and the
+   relayout hook was internal, so an app could neither size the sidebar nor slide it. The width is
+   now clamped to the bounds instead (as AppKit's divider is), and CustomSplitView's hook is public.
+
+2. Text measurement cache: each measurement went through XAML (a dozen calls and a layout pass);
+   layouts measure the same strings at the same sizes on every frame of a resize. Cleared when the
+   system text scaling changes.
+diff --git a/Sources/WinUIBackend/WinUIBackend.swift b/Sources/WinUIBackend/WinUIBackend.swift
+index 9d31326f..f2737b7f 100644
+--- a/Sources/WinUIBackend/WinUIBackend.swift
++++ b/Sources/WinUIBackend/WinUIBackend.swift
+@@ -168,8 +168,23 @@ public final class WinUIBackend:
+ 
+     var windows: [Window] = []
+ 
++    /// Kept: its events only fire while it's alive.
++    private var uiSettings: UWP.UISettings?
++
+     private var measurementTextBlock: TextBlock!
+ 
++    /// Text sizes measured so far. Measuring goes through XAML (a dozen calls and a layout pass
++    /// each), and layouts measure the same strings at the same sizes over and over: on every
++    /// frame of a window or split view resize.
++    private var textSizes: [TextSizeKey: SIMD2<Int>] = [:]
++
++    private struct TextSizeKey: Hashable {
++        var text: String
++        var font: Font.Resolved
++        var proposedWidth: Int?
++        var proposedHeight: Int?
++    }
++
+     public convenience init() {
+         self.init(urlSchemes: nil)
+     }
+@@ -231,6 +246,15 @@ public final class WinUIBackend:
+                 _ = application.resources.insert("ToggleSwitchPreContentMargin", 0.0 as Double)
+                 _ = application.resources.insert("ToggleSwitchPostContentMargin", 0.0 as Double)
+ 
++                // Text sizes depend on the system text scaling setting
++                let uiSettings = UWP.UISettings()
++                self.uiSettings = uiSettings
++                uiSettings.textScaleFactorChanged.addHandler { _, _ in
++                    Task { @MainActor in
++                        self.textSizes.removeAll()
++                    }
++                }
++
+                 // Handle theme changes
+                 UWP.UISettings().colorValuesChanged.addHandler { _, _ in
+                     Task { @MainActor in
+@@ -879,15 +903,30 @@ public final class WinUIBackend:
+         proposedHeight: Int?,
+         environment: EnvironmentValues
+     ) -> SIMD2<Int> {
+-        // Update the text view's environment and measure its desired line height
+-        updateTextView(measurementTextBlock, content: text, environment: environment)
+-
+-        // Measure the text's size
+-        var size = Self.measure(
+-            measurementTextBlock,
++        let key = TextSizeKey(
++            text: text,
++            font: environment.resolvedFont,
+             proposedWidth: proposedWidth,
+             proposedHeight: proposedHeight
+         )
++        var size: SIMD2<Int>
++        if let cached = textSizes[key] {
++            size = cached
++        } else {
++            // Update the text view's environment and measure its desired line height
++            updateTextView(measurementTextBlock, content: text, environment: environment)
++
++            // Measure the text's size
++            size = Self.measure(
++                measurementTextBlock,
++                proposedWidth: proposedWidth,
++                proposedHeight: proposedHeight
++            )
++            if textSizes.count >= 4096 {
++                textSizes.removeAll(keepingCapacity: true)
++            }
++            textSizes[key] = size
++        }
+ 
+         var usedHeight = size.y
+         let lineHeight = environment.resolvedFont.lineHeight
+@@ -1476,7 +1515,12 @@ public final class WinUIBackend:
+         maximum maximumWidth: Int
+     ) {
+         let splitView = splitView as! CustomSplitView
+-        let newWidth = Double(max(minimumWidth, 10))
++        // Keep the pane's width within the bounds rather than reset it to the minimum, so that
++        // the app can size and animate the pane, as it can an NSSplitView's divider.
++        let newWidth = min(
++            max(splitView.openPaneLength, Double(minimumWidth)),
++            Double(max(minimumWidth, maximumWidth))
++        )
+         if newWidth != splitView.openPaneLength {
+             splitView.openPaneLength = newWidth
+             splitView.sidebarResizeHandler?()
+@@ -2267,8 +2311,9 @@ final class CustomRadioButtons: RadioButtons {
+     var onChangeSelection: ((Int?) -> Void)?
+ }
+ 
+-final class CustomSplitView: SplitView {
+-    var sidebarResizeHandler: (() -> Void)?
++public final class CustomSplitView: SplitView {
++    /// Lays the split view's panes out again; call it after changing `openPaneLength`.
++    public var sidebarResizeHandler: (() -> Void)?
+ }
+ 
+ final class TapGestureTarget: WinUI.Canvas {

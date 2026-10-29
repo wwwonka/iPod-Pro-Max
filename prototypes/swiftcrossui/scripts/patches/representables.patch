@@ -1,0 +1,47 @@
+SwiftCrossUI, to propose upstream: native views (NSViewRepresentable, GtkWidgetRepresentable,
+WinUIElementRepresentable) were updated with the view value they were created with, never with
+the current one, so they kept their first values forever: a table created empty never got its
+rows, and a filtered list never changed. Each layout now stores the current view first.
+
+diff --git a/Sources/AppKitBackend/NSViewRepresentable.swift b/Sources/AppKitBackend/NSViewRepresentable.swift
+index 724dd5f7..8c2d7dfb 100644
+--- a/Sources/AppKitBackend/NSViewRepresentable.swift
++++ b/Sources/AppKitBackend/NSViewRepresentable.swift
+@@ -150,6 +150,9 @@ extension View where Self: NSViewRepresentable {
+         backend: Backend
+     ) -> ViewLayoutResult {
+         let representingWidget = widget as! RepresentingWidget<Self>
++        // Update with this view, not the one the widget was created with: otherwise the native
++        // view keeps receiving its first values (stale rows, labels...).
++        representingWidget.representable = self
+         representingWidget.update(with: environment)
+ 
+         let size = representingWidget.representable.sizeThatFits(
+diff --git a/Sources/GtkBackend/GtkWidgetRepresentable.swift b/Sources/GtkBackend/GtkWidgetRepresentable.swift
+index 5c32507b..f6399218 100644
+--- a/Sources/GtkBackend/GtkWidgetRepresentable.swift
++++ b/Sources/GtkBackend/GtkWidgetRepresentable.swift
+@@ -144,6 +144,9 @@ extension View where Self: GtkWidgetRepresentable {
+         {
+             backend.setSize(of: child, to: savedSizeRequest)
+         }
++        // Update with this view, not the one the widget was created with: otherwise the native
++        // view keeps receiving its first values (stale rows, labels...).
++        representingWidget.representable = self
+         representingWidget.update(with: environment)
+ 
+         let size = representingWidget.representable.sizeThatFits(
+diff --git a/Sources/WinUIBackend/WinUIElementRepresentable.swift b/Sources/WinUIBackend/WinUIElementRepresentable.swift
+index 025af930..94f1035f 100644
+--- a/Sources/WinUIBackend/WinUIElementRepresentable.swift
++++ b/Sources/WinUIBackend/WinUIElementRepresentable.swift
+@@ -149,6 +149,9 @@ extension View where Self: WinUIElementRepresentable {
+             child.width = savedSize.x
+             child.height = savedSize.y
+         }
++        // Update with this view, not the one the widget was created with: otherwise the native
++        // view keeps receiving its first values (stale rows, labels...).
++        representingWidget.representable = self
+         representingWidget.update(with: environment)
+ 
+         let size = representingWidget.representable.sizeThatFits(

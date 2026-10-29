@@ -29,19 +29,26 @@ Comment ça marche :
 - Il faut une **session ouverte** dans chaque VM (`prlctl exec --current-user`).
 - Sous Windows, le build tourne détaché dans la VM (`prlctl` coupait les longues sessions) et écrit `dist/windows-vm.log` et `dist/windows-vm.exit`.
 - Sous Linux, on force `SCUI_DEFAULT_BACKEND=GtkBackend` ; sous Windows, `WinUIBackend` (sinon SwiftPM compile aussi l'autre backend et échoue).
-- `scripts/patch-dependencies.sh` corrige SwiftCrossUI avant chaque build GTK (réutilisation du contexte Pango), en attendant que ce soit fait en amont.
+- `scripts/patch-dependencies.sh` corrige SwiftCrossUI avant chaque build (les 3 OS), en attendant que ce soit fait en amont :
+  - GTK : réutilisation du contexte Pango ;
+  - `scripts/patches/representables.patch` : les vues natives recevaient pour toujours les valeurs de leur création (tableau vide, recherche sans effet) ;
+  - `scripts/patches/winui-backend.patch` : split view que l'app peut dimensionner et faire glisser, cache des mesures de texte.
+
+  Sous Windows, il tourne avec le bash fourni par Git.
+- Dans la VM Linux, l'app est lancée avec `GSK_RENDERER=vulkan` : le rendu GL de GTK y cale les premiers glissements (GPU virtio).
 
 ## Données
 `library.json` est cherché dans cet ordre : `--library <chemin>` ou `IPPM_LIBRARY` ; celui de l'app Mac ; le dossier personnel du Mac vu depuis la VM ; `library.json` dans le dossier courant. Si rien n'est trouvé **ou si la bibliothèque est vide**, le prototype génère 5 000 pistes et deux playlists.
 
 ## Icônes (à lire)
 - **Mac** : vrais SF Symbols.
-- **Linux et Windows** : glyphes de la police `SF-SYMBOLS4.TTF` (github.com/DrunkSonic/SF-Symbols-for-Windows), associés aux noms des symboles par comparaison de forme (`symbolCodepoints` dans `Symbols.swift`). C'est l'œuvre d'Apple, sans licence pour cet usage : elle se met **à la main** dans `local/` (ignoré par Git), le script de build la copie seulement dans la VM, et elle n'est **jamais commitée ni distribuée**. Sans elle, les icônes sont des cases vides. Il manque `film` (Videos) dans la police ; `sidebar.left` utilise le glyphe le plus proche.
+- **Linux et Windows** : glyphes de la police `SF-SYMBOLS4.TTF` (github.com/DrunkSonic/SF-Symbols-for-Windows), associés aux noms des symboles par comparaison de forme (`symbolCodepoints` dans `Symbols.swift`). C'est l'œuvre d'Apple, sans licence pour cet usage : elle se met **à la main** dans `local/` (ignoré par Git), le script de build l'installe seulement dans la VM (Linux : `~/.local/share/fonts` ; Windows : polices de l'utilisateur, sans droits administrateur), et elle n'est **jamais commitée ni distribuée**. Sans elle, les icônes sont des cases vides. `film` y est horizontal, comme dans SF Symbols 4.
 
 ## Variables d'environnement
 | Variable | Effet |
 |---|---|
-| `IPPM_BENCH=<tours>` | change de section comme des clics, journalise le temps de chaque mise à jour, ouvre et ferme la sidebar (nombre d'images), puis quitte |
+| `IPPM_BENCH=<tours>` | change de section comme des clics, journalise le temps de chaque mise à jour, ouvre et ferme la sidebar (nombre d'images ; sous Windows, aussi le temps de mise en page par image), puis quitte |
+| `IPPM_SLIDE_SECONDS=<s>` | ralentit le glissement de la sidebar, pour en regarder les images |
 | `IPPM_SNAPSHOT=<fichier.png>` | (Mac) enregistre la fenêtre telle que l'app la dessine, puis quitte ; `IPPM_SNAPSHOT_COLLAPSED=1` ferme d'abord la sidebar |
 | `IPPM_LOG=<fichier>` | journal dans un fichier ; sous Windows, `%TEMP%\ippm.log` par défaut (une app lancée depuis l'Explorateur n'a pas de console) |
 
@@ -51,7 +58,8 @@ Comment ça marche :
 | `App.swift` | fenêtre, sections, en-tête, vue Musique, mesure |
 | `Library.swift` | lecture et indexation de `library.json` hors du thread principal |
 | `TrackTable.swift` | tableau virtualisé : `NSTableView`, `GtkColumnView`, `ListView` WinUI |
-| `SidebarMac.swift`, `SidebarGtk.swift`, `Sidebar.swift` | sidebar native Mac, native GTK, dessinée (WinUI) |
-| `Symbols.swift` | SF Symbols par plateforme |
-| `WindowChrome.swift` | fenêtre sans barre, bouton et animation de la sidebar, mode sombre GTK, coins arrondis GTK |
+| `Sidebar.swift`, `SidebarMac.swift`, `SidebarGtk.swift`, `SidebarWinUI.swift` | éléments de la sidebar ; sidebar native Mac, GTK et WinUI |
+| `Symbols.swift` | SF Symbols par plateforme ; `scripts/match-glyph.swift` retrouve un glyphe de la police par sa forme |
+| `WindowChrome.swift` | modèle commun de la fenêtre sans barre et du glissement de la sidebar |
+| `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |
 | `Devices.swift` | iPods montés au lancement |
