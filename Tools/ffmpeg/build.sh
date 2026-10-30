@@ -18,14 +18,16 @@ FFMPEG_VERSION=8.1
 FFMPEG_SHA256=b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
 OPENH264_VERSION=2.6.0
 OPENH264_SHA256=558544ad358283a7ab2930d69a9ceddf913f4a51ee9bf1bfb9e377322af81a69
-LLVM_MINGW=20251021
+LLVM_MINGW=20261020
+LLVM_MINGW_SHA256_aarch64=ca16bb0f4f485876496fa46ad8d353c525eba57d0cf9e9e49ec1738fe4810151
+LLVM_MINGW_SHA256_x86_64=55064b60b991a1e1e8090b8c2f84e82b22cfe5903d12c159d65064cf5e8ae335
 CACHE=${IPPM_FFMPEG_CACHE:-$HERE/.cache}
 JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 mkdir -p "$CACHE"
 
 fetch() { # url file sha256
     local url=$1 file=$CACHE/$2 sum=$3
-    [ -f "$file" ] || curl -fsSL -o "$file.part" "$url" && { [ -f "$file" ] || mv "$file.part" "$file"; }
+    if [ ! -f "$file" ]; then curl -fsSL -o "$file.part" "$url" && mv "$file.part" "$file"; fi
     local actual
     actual=$( (command -v sha256sum >/dev/null && sha256sum "$file" || shasum -a 256 "$file") | cut -d' ' -f1)
     [ "$actual" = "$sum" ] || { echo "Checksum mismatch for $2: $actual" >&2; rm -f "$file"; exit 1; }
@@ -116,10 +118,12 @@ build_macos() {
 build_windows() {
     local toolchain=$CACHE/llvm-mingw-$LLVM_MINGW
     if [ ! -d "$toolchain" ]; then
+        # The cross-compiler (llvm-mingw, Apache 2.0 with LLVM exceptions), pinned like the sources.
         local host=x86_64; [ "$(uname -m)" = aarch64 ] && host=aarch64
-        curl -fsSL -o "$CACHE/llvm-mingw.tar.xz" \
-            "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-22.04-$host.tar.xz"
-        mkdir -p "$toolchain" && tar -xJf "$CACHE/llvm-mingw.tar.xz" -C "$toolchain" --strip-components 1
+        local sum=LLVM_MINGW_SHA256_$host
+        local archive=llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-22.04-$host.tar.xz
+        fetch "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/$archive" "$archive" "${!sum}"
+        mkdir -p "$toolchain" && tar -xJf "$CACHE/$archive" -C "$toolchain" --strip-components 1
     fi
     export PATH=$toolchain/bin:$PATH
     for arch in arm64 x64; do
@@ -130,7 +134,7 @@ build_windows() {
         unpack_ffmpeg "$work/ffmpeg"
         (cd "$work/ffmpeg" && ./configure --prefix="$work/prefix" --target-os=mingw32 --arch=$farch --cross-prefix=$triple- \
             --enable-cross-compile --cc=$triple-clang --cxx=$triple-clang++ "${COMMON[@]}" --disable-zlib \
-            --enable-mediafoundation --enable-encoder=h264_mf,aac_mf --extra-ldflags=-static >/dev/null && make -s -j"$JOBS" >/dev/null)
+            --enable-mediafoundation --enable-d3d11va --enable-encoder=h264_mf,aac_mf --extra-ldflags=-static >/dev/null && make -s -j"$JOBS" >/dev/null)
         cp "$work/ffmpeg/ffmpeg.exe" "$out/ffmpeg.exe"
         $triple-strip "$out/ffmpeg.exe" 2>/dev/null || true
         license "$out" "H.264 and AAC can be encoded by Windows's Media Foundation; the static C++ runtime is from llvm-mingw (Apache 2.0 with LLVM exceptions)."

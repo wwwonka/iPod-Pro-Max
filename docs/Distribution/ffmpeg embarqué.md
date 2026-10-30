@@ -14,11 +14,11 @@ Licence LGPL, sans aucune partie GPL ni non libre ; un `LICENSE.md` accompagne c
 |---|---|---|
 | macOS (universel arm64 + x86_64) | 12 Mo (5 + 7) | rien d'autre que macOS |
 | Linux arm64 | 5,8 Mo | libc, libm, zlib (présentes partout) |
-| Windows arm64 / x64 | à faire | rien d'autre que Windows |
+| Windows arm64 / x64 | 5,0 / 7,0 Mo | rien d'autre que Windows |
 
 À comparer aux builds « complets » publiés (BtbN) : 80 à 130 Mo pour le seul exécutable, et des versions « latest » remplacées en continu.
 
-`Tools/ffmpeg/check.sh <ffmpeg> …` vérifie un binaire sur tous les usages de MediaKit : FLAC → AAC, vidéo pour l'iPod avec progression, image d'aperçu, fusion de livre audio avec chapitres. Passé sur Mac et Linux le 2026-10-30.
+`Tools/ffmpeg/check.sh <ffmpeg> …` vérifie un binaire sur tous les usages de MediaKit : FLAC → AAC, vidéo pour l'iPod avec progression, image d'aperçu, fusion de livre audio avec chapitres. Passé sur Mac et Linux le 2026-10-30. Sous Windows 11 ARM, sans aucun ffmpeg installé : sync FLAC → AAC et vidéo par Media Foundation (H.264 Baseline 320×180, AAC stéréo).
 
 ## Où il est rangé
 MediaKit (`FFmpeg.binaryPath()`) cherche, dans l'ordre : `IPODPROMAX_FFMPEG`, à côté de l'exécutable, `Tools/<OS>/` (la disposition sur l'iPod, voir [[Sur l'iPod]]), puis, pour le développement, `Tools/ffmpeg/dist/<os>-<arch>/` dans le repo.
@@ -26,10 +26,9 @@ MediaKit (`FFmpeg.binaryPath()`) cherche, dans l'ordre : `IPODPROMAX_FFMPEG`, à
 - **Prototype** : `build.sh` le pose à côté de l'exécutable sur les trois OS.
 - **CLI** : `ipodpromax info` affiche le ffmpeg utilisé.
 
-Les binaires ne sont pas dans git : on les reconstruit (`Tools/ffmpeg/build.sh`, puis `build.sh windows` depuis Linux).
+Les binaires ne sont pas dans git : on les reconstruit (`Tools/ffmpeg/build.sh`, puis `build.sh windows` depuis Linux, avec la chaîne de compilation llvm-mingw, elle aussi figée par version et empreinte). La machine de build a besoin de `make`, `gcc`/`g++`, de la bibliothèque C++ statique et de `nasm` ; l'utilisateur, de rien.
 
 ## Reste à faire
-- **Windows** : compilation croisée depuis Linux avec la chaîne llvm-mingw (télécharger une version figée de cette chaîne de compilation, puis l'exécuter dans la VM).
 - **Linux ancien** : compiler dans un conteneur d'une vieille distribution, pour une glibc ancienne (voir [[Compilation multiplateforme]]).
 - **Licence** : OpenH264 compilé par nous n'est pas couvert par la licence de brevets que Cisco offre pour ses propres binaires ; à trancher avec la carte « Licence ffmpeg tranchée ».
 

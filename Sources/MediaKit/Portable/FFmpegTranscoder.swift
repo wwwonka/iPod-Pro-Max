@@ -96,6 +96,8 @@ public enum FFmpegTranscoder {
         case "libx264": args += ["-profile:v", "baseline", "-level", "1.3", "-preset", "medium"]
         case "libopenh264": args += ["-profile:v", "constrained_baseline", "-allow_skip_frames", "0"]
         case "h264_vaapi": args.insert(contentsOf: ["-vaapi_device", "/dev/dri/renderD128"], at: 0); args += ["-profile:v", "constrained_baseline", "-level", "13"]
+        // Media Foundation reads the generic numeric fields: 66 is Baseline, 13 is level 1.3.
+        case "h264_mf": args += ["-profile:v", "66", "-level", "13"]
         default: args += ["-profile:v", "baseline", "-level", "1.3"]
         }
         args += ["-c:a", "aac", "-b:a", "\(IPodVideo.audioBitrate / 1000)k", "-ac", "2", "-ar", "44100",
