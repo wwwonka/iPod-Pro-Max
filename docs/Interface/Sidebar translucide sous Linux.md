@@ -1,28 +1,35 @@
 # Sidebar translucide sous Linux
 
-Comme la sidebar du Mac (`NSVisualEffectView`) et l'acrylique de Windows : on voit le bureau flouté à travers la sidebar, le reste de la fenêtre reste opaque.
+Comme la sidebar du Mac (`NSVisualEffectView`) et l'acrylique de Windows : la sidebar laisse deviner le bureau, le reste de la fenêtre reste opaque et net.
 
-## Comment font WhiteSur-Glassy et Aura Glass
-Ni l'un ni l'autre ne floute dans l'app :
-- un **thème GTK/libadwaita** rend les fonds des fenêtres transparents (`rgba`), en gardant texte et contrôles opaques ;
-- l'extension GNOME **Blur my Shell** floute ce qu'il y a derrière les fenêtres, dans le compositeur (GNOME Shell), sur le GPU.
+**Règle** : rien à installer, aucune permission à demander, pas de déconnexion. D'où trois modes, choisis tout seuls par `GlassGtk.swift` :
 
-## Ce que fait le prototype (`GlassGtk.swift`)
-Le même principe, mais sans thème à installer : seule la sidebar de notre fenêtre devient translucide (fond de la fenêtre transparent, sidebar aux couleurs du Mac à 60 %, colonne de droite opaque).
-- **Aucun coût pour l'app** : pas de flou calculé par nous (sous Wayland une app ne voit même pas le bureau) ; le compositeur mélange et floute sur le GPU.
-- **Seulement quand ça floute vraiment** : une sidebar transparente sans flou laisse voir le bureau net derrière le texte. Le mode s'active donc si :
-  - GNOME, Blur my Shell activée, son flou « Applications » allumé, et `com.ipodpromax.proto` dans sa liste blanche (ou « flouter toutes les applications ») ;
-  - Hyprland, qui floute par défaut les fenêtres translucides.
-- **Réagit en direct**, par signal GSettings (pas de polling) : activer ou couper le flou dans Blur my Shell change la sidebar sans relancer l'app.
-- `IPPM_GLASS=1` ou `0` force le mode, pour essayer.
+| Mode | Quand | Ce qu'on voit |
+|---|---|---|
+| **Verre** | le compositeur floute déjà derrière les fenêtres : Hyprland, ou Blur my Shell que l'utilisateur a déjà (flou « Applications », app dans sa liste blanche) | le bureau et les fenêtres derrière, floutés en direct |
+| **Teinte du fond d'écran** | GNOME sans flou (le cas par défaut) | un dégradé doux tiré du fond d'écran, comme la teinte des fenêtres de macOS |
+| **Opaque** | les autres bureaux | la couleur de sidebar du Mac |
 
-## Réglages conseillés dans Blur my Shell
-Applications : flou activé, `com.ipodpromax.proto` dans la liste blanche, **opacité 255**. L'opacité par défaut (215) estompe la fenêtre entière, texte compris ; à 255, seule la sidebar est translucide et tout le reste reste net.
+`IPPM_GLASS=1`, `tint` ou `0` force un mode, pour essayer.
 
-Vérifié dans la VM Fedora 44 (GNOME 50.6, Wayland) : transparence forcée (capture), puis détection et bascule en direct quand le flou est activé dans les réglages de Blur my Shell. Le flou lui-même ne s'est pas vu dans la VM : une extension installée n'est chargée qu'à la prochaine ouverture de session.
+## Pourquoi pas un vrai flou partout sous GNOME
+GNOME Shell ne propose aucune API de flou aux apps : flouter ce qui est derrière une fenêtre demande du code dans le Shell, c'est-à-dire une extension, à installer et qui n'est chargée qu'à la prochaine ouverture de session. Refusé : l'app ne doit rien installer ni rien demander. Une app ne peut pas non plus le faire elle-même : sous Wayland, elle ne voit pas le bureau et ne connaît pas sa position.
+
+(WhiteSur-Glassy et Aura Glass reposent tous deux sur l'extension Blur my Shell, plus un thème GTK qui rend les fonds transparents.)
+
+## La teinte du fond d'écran (`WallpaperTintGtk.swift`)
+- Le fond d'écran vient des réglages de GNOME (`org.gnome.desktop.background`, variantes claire et sombre), sans permission. Diaporamas XML : la première image. SVG et JPEG XL (fonds par défaut de GNOME 50) sont décodés par GTK/glycin.
+- Rendu en petit (96 px de large, sans jamais décoder l'image en grand), flouté très fort (trois flous en boîte), mélangé à 65 % avec la couleur de sidebar du Mac, enregistré en PNG dans `~/.cache/iPodProMax/`. GTK l'étire en douceur : ce ne sont que des dégradés, donc la position de la fenêtre n'a pas d'importance.
+- **Coût** : quelques millisecondes hors du thread principal, une fois au lancement et à chaque changement de fond d'écran (signal GSettings, pas de polling). Les versions claire et sombre sont prêtes d'avance : changer d'apparence ne coûte rien.
+- Si le fond d'écran ne peut pas être lu, la couleur unie des réglages de GNOME sert de teinte ; sinon, la sidebar reste opaque.
+
+Vérifié dans la VM Fedora 44 (GNOME 50.6, Wayland) : teinte au lancement (fond SVG), puis changement de fond d'écran en direct vers un JPEG XL, suivi sans relancer l'app (captures).
+
+## Le mode verre (`GlassGtk.swift`)
+Seule la sidebar devient translucide (fond de fenêtre transparent, couleurs du Mac à 60 %), le compositeur floute sur le GPU, l'app ne calcule rien. Il suit les réglages de Blur my Shell en direct. Avec Blur my Shell, mettre l'**opacité des applications à 255** : à 215 (défaut), toute la fenêtre est estompée, texte compris.
 
 ## Plus tard
-- **KDE** : KWin floute à la demande de l'app (protocole `org_kde_kwin_blur`), sans extension. Carte à part.
-- **`ext-background-effect-v1`** : protocole Wayland standard de flou d'arrière-plan. GNOME 50 ne l'expose pas encore ; s'il arrive, le prototype pourra demander le flou lui-même, sans Blur my Shell.
+- **KDE** : KWin floute à la demande de l'app (protocole Wayland `org_kde_kwin_blur`), sans extension ni permission : le vrai mode verre, natif. Carte à part ; à tester dans une session KDE.
+- **`ext-background-effect-v1`** : protocole Wayland standard de flou d'arrière-plan. Si GNOME l'expose un jour, l'app pourra demander le vrai flou elle-même.
 
 Voir [[Composants natifs par plateforme]].

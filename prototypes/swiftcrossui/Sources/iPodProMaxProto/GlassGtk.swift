@@ -10,7 +10,9 @@
     // - GNOME with the Blur my Shell extension, its "Applications" blur on, and this app in its
     //   whitelist (or "blur all applications"),
     // - Hyprland, which blurs translucent windows by default.
-    // `IPPM_GLASS=1` or `0` forces it on or off. KDE (org_kde_kwin_blur) is a separate card.
+    // Without blur, GNOME gets the wallpaper tint instead (WallpaperTintGtk.swift), and other desktops
+    // the opaque Mac color. `IPPM_GLASS=1`, `tint` or `0` forces glass, tint or opaque.
+    // KDE (org_kde_kwin_blur) is a separate card.
     //
     // Only the sidebar's background is translucent: text, icons and the track table stay opaque.
     // Blur my Shell's own "opacity" setting fades whole windows, text included; 255 keeps them crisp.
@@ -32,35 +34,40 @@
             self.window = window
             installStyle()
             if forced == nil { watchBlurMyShell() }
+            if forced != "0" {
+                WallpaperTint.shared.onChange = { LinuxGlass.shared.apply() }
+                WallpaperTint.shared.start()
+            }
             apply()
         }
 
-        private var forced: Bool? {
-            switch ProcessInfo.processInfo.environment["IPPM_GLASS"] {
-            case "1": true
-            case "0": false
-            default: nil
-            }
+        private var forced: String? {
+            let value = ProcessInfo.processInfo.environment["IPPM_GLASS"]
+            return ["1", "0", "tint"].contains(value) ? value : nil
         }
 
         /// What blurs behind the window, if anything.
         private func blurSource() -> String? {
-            if let forced { return forced ? "IPPM_GLASS=1" : nil }
+            if let forced { return forced == "1" ? "IPPM_GLASS=1" : nil }
             if ProcessInfo.processInfo.environment["HYPRLAND_INSTANCE_SIGNATURE"] != nil { return "Hyprland" }
             if blurMyShellBlursThisApp() { return "Blur my Shell" }
             return nil
         }
 
-        /// The last state applied: settings fire one "changed" per key, most of them unrelated.
-        private var appliedSource: String??
+        /// The last style applied: settings fire one "changed" per key, most of them unrelated.
+        private var appliedStyle: String?
 
-        private func apply() {
+        fileprivate func apply() {
             guard let window else { return }
             let source = blurSource()
-            guard appliedSource != .some(source) else { return }
-            appliedSource = .some(source)
-            if source != nil { gtk_widget_add_css_class(cast(window), "ippm-glass") } else { gtk_widget_remove_css_class(cast(window), "ippm-glass") }
-            log("[glass] sidebar \(source.map { "translucent, blurred by \($0)" } ?? "opaque (no compositor blur)")")
+            let tint = source == nil && forced != "0" && WallpaperTint.shared.isReady
+            let style = source.map { "translucent, blurred by \($0)" } ?? (tint ? "tinted by the wallpaper" : "opaque")
+            guard appliedStyle != style else { return }
+            appliedStyle = style
+            for (cssClass, on) in [("ippm-glass", source != nil), ("ippm-tint", tint)] {
+                if on { gtk_widget_add_css_class(cast(window), cssClass) } else { gtk_widget_remove_css_class(cast(window), cssClass) }
+            }
+            log("[glass] sidebar \(style)")
         }
 
         // MARK: Blur my Shell
