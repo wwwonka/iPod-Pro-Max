@@ -83,6 +83,22 @@ Sync de test (47 pistes de 4 albums, dont 12 FLAC à convertir, vers un iPod sim
 | Linux | 0,3 s | 57 s (ffmpeg, sources sur le partage Parallels) | 0 copie |
 | Windows (ARM, ffmpeg x64 émulé) | 0,2 s | 125 s, conversions comprises | 0 copie, 1,2 s |
 
+## Revue de code (2026-10-30)
+Corrigé après la revue du package, du CLI et du prototype :
+- **Identifiant d'iPod stable** : le FireWire GUID repris du numéro de série USB servait aussi d'identifiant ; pour un iPod déjà synchronisé, l'enregistrement de sync n'était plus retrouvé et toute la bibliothèque aurait été recopiée. Il ne sert plus qu'à signer la base.
+- **`--ipod`** : chemins comparés après normalisation (liens, séparateur final, casse sous Windows) ; `eject` sur un dossier simulé le dit au lieu d'annoncer une éjection.
+- **ffmpeg** trouvé à côté de l'exécutable même lancé depuis le `PATH` ; chaque encodeur H.264 listé est essayé tour à tour (nvenc sans carte NVIDIA, VA-API sans GPU dans une VM), celui qui marche est retenu ; VA-API reçoit `hwupload`. Vérifié sous Linux : repli sur libopenh264, fichier Baseline 320×180.
+- **Une seule réencodage de pochette par album**, même quand toutes ses pistes sont lues en parallèle (CLAUDE.md).
+- **Lecteur de tags** : plus de dépassement d'entier sur un atome MP4 abîmé (le scan entier plantait) ; débit Vorbis lu signé.
+- **DeviceKit** : `stop()` du watcher Mac attend les rappels en file ; le watcher Linux ferme son tube en cas d'échec ; sous Windows, plus de boîte « Aucun disque » en sondant un lecteur de cartes vide (aussi dans le prototype).
+- **SHA-1** : tampon de travail sur la pile au lieu d'une allocation par bloc de 64 octets.
+- **Prototype** : chansons triées sans casse ni accents comme la liste d'artistes ; « Unknown Artist / Album » au lieu de libellés français dans une interface anglaise ; plus de promesse de sélection multiple (⌘-clic) dans la liste d'artistes qui ne l'a pas ; symboles GTK réécrits seulement quand ils changent (pas à chaque image du glissement) ; journal Windows `%TEMP%\ippm.log` remis à zéro au-delà de 1 Mo.
+
+Constaté et laissé ouvert :
+- Prototype Windows : la liste d'artistes crée un élément XAML par artiste (pas virtualisée, contrairement à ce que dit son commentaire), comme le tableau des pistes ; même cause (`itemsSource` refuse le vecteur Swift), à régler ensemble.
+- Annuler une sync avant le lancement de ffmpeg n'arrête pas cette conversion-là.
+- `DeviceMonitor` de l'app appelle encore `IPodDevice.detect` sans `usbLookup` : à brancher sur `DeviceScanner` avec le reste de l'app.
+
 ## Ce qui reste
 - **Le projet Xcode doit consommer le package** (référence de package local, `import iPodKit / MediaKit / DeviceKit` dans l'app, `DeviceMonitor` sur `DeviceScanner` et `VolumeWatcher`, `PhotosAccess` derrière `PhotoLibrarySource`). Tant que ce n'est pas fait, **l'app Mac ne compile pas sur cette branche** : ses fichiers sont partis dans le package.
 - **Le prototype SwiftCrossUI** doit afficher les vrais iPods (`DeviceScanner`, `VolumeWatcher`) et proposer la sync d'un dossier (`FolderImporter` + `SyncEngine`).

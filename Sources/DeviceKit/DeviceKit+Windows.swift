@@ -21,6 +21,9 @@ private func string(_ buffer: [UInt16]) -> String {
 
 enum Platform {
     static func candidateVolumes() -> [MountedVolume] {
+        // An empty card reader or optical drive would otherwise show a "No disk" dialog.
+        let previousMode = SetErrorMode(UINT(SEM_FAILCRITICALERRORS))
+        defer { SetErrorMode(previousMode) }
         let mask = GetLogicalDrives()
         let system = ProcessInfo.processInfo.environment["SystemDrive"]?.uppercased().first
         var result: [MountedVolume] = []

@@ -145,7 +145,7 @@ struct ContentView: View {
                               message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.")
         case .music where mode == .byArtist && selectedArtist == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
-                              message: "⌘-click or ⇧-click to see several artists at once.")
+                              message: "Pick an artist in the list to see their songs.")
         case .music, .playlist:
             return nil
         case .device:
@@ -364,7 +364,12 @@ func songCount(_ n: Int) -> String {
 private let logFile: String? = {
     if let path = ProcessInfo.processInfo.environment["IPPM_LOG"] { return path }
     #if os(Windows)
-        return (ProcessInfo.processInfo.environment["TEMP"] ?? "C:\\Windows\\Temp") + "\\ippm.log"
+        let path = (ProcessInfo.processInfo.environment["TEMP"] ?? "C:\\Windows\\Temp") + "\\ippm.log"
+        // Appended to on every launch: start over past 1 MB rather than grow forever.
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber, size.intValue > 1_000_000 {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        return path
     #else
         return nil
     #endif

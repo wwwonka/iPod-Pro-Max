@@ -101,8 +101,11 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
 
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
             let label: OpaquePointer = unsafeBitCast(widget.widgetPointer, to: OpaquePointer.self)
-            gtk_label_set_markup(label, symbolMarkup(name, pointSize: pointSize, tint: tint,
-                                                     dark: context.environment.colorScheme == .dark))
+            let markup = symbolMarkup(name, pointSize: pointSize, tint: tint, dark: context.environment.colorScheme == .dark)
+            // SwiftCrossUI updates views on every layout (each frame of a sidebar slide): only
+            // re-parse the markup when it changed.
+            if let current = gtk_label_get_label(label), String(cString: current) == markup { return }
+            gtk_label_set_markup(label, markup)
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {

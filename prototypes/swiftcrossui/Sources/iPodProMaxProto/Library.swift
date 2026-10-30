@@ -101,9 +101,10 @@ struct Library {
 
     private static func index(_ document: LibraryDocument, source: String) -> Library {
         let tracks = document.tracks
+        // Folded once per track: sorted without case or accents, like the artist list.
+        func fold(_ s: String?) -> String { (s ?? "").folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
         func key(_ t: Track) -> (String, String, Int, Int) {
-            let artist: String = t.albumArtist ?? t.artist ?? ""
-            return (artist, t.album ?? "", t.discNumber ?? 0, t.trackNumber ?? 0)
+            (fold(t.albumArtist ?? t.artist), fold(t.album), t.discNumber ?? 0, t.trackNumber ?? 0)
         }
         let sorted = tracks.map { (key($0), $0) }.sorted { $0.0 < $1.0 }.map(\.1)
         var all: [TrackRow] = []
@@ -114,8 +115,8 @@ struct Library {
         for t in sorted {
             let row = TrackRow(
                 title: t.title,
-                artist: t.artist ?? "Artiste inconnu",
-                album: t.album ?? "Album inconnu",
+                artist: t.artist ?? "Unknown Artist",
+                album: t.album ?? "Unknown Album",
                 number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "",
                 year: (t.year ?? 0) > 0 ? "\(t.year!)" : "",
                 duration: formatDuration(t.durationMs ?? 0)
