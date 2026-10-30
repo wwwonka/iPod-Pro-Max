@@ -18,12 +18,27 @@ public struct FolderImport: Sendable {
 
 public enum FolderImporter {
     /// Media files under `folder` (hidden files skipped), in a stable order.
+    /// A plain recursive walk: on Windows, FileManager's enumerator returns nothing for network
+    /// (UNC) folders such as \\server\share\Music.
     public static func mediaFiles(in folder: URL) -> [URL] {
         let fm = FileManager.default
         var out: [URL] = []
-        guard let e = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
-        for case let f as URL in e where MetadataExtractor.isAudioFile(f) || IPodVideo.isVideoFile(f) {
-            out.append(f)
+        var pending = [folder]
+        while let dir = pending.popLast() {
+            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+            for name in names where !name.hasPrefix(".") {
+                let url = dir.appendingPathComponent(name)
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
+                if isDir.boolValue {
+                    #if os(macOS)
+                    if (try? url.resourceValues(forKeys: [.isPackageKey]))?.isPackage == true { continue }
+                    #endif
+                    pending.append(url)
+                } else if MetadataExtractor.isAudioFile(url) || IPodVideo.isVideoFile(url) {
+                    out.append(url)
+                }
+            }
         }
         return out.sorted { $0.path < $1.path }
     }

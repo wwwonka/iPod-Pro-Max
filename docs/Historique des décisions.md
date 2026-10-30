@@ -44,8 +44,15 @@ Comment on est arrivé au plan actuel, et pourquoi certaines options ont été �
 6. **SF Symbols partout** : vrais symboles sur Mac ; sur Linux et Windows, police SF Symbols en local seulement, en connaissance de cause (voir [[Risques]]).
 7. **Sidebar translucide floutée** : Mica sous Windows ; sous GNOME il n'existe pas d'API de flou pour les apps (seulement sous KDE).
 
-## 5. Options écartées
+## 5. Le noyau portable (2026-10-29 → 30)
+1. Demande : rendre iPodKit, DeviceKit et MediaKit compatibles avec les 3 plateformes, pour un CLI qui marche partout, à intégrer ensuite au prototype SwiftCrossUI.
+2. Réalisé dans un package Swift à la racine, sans dépendance Apple dans iPodKit ; détails et écarts avec le plan dans [[ADR-006 Noyau portable sans dépendance Apple]] et [[Package Swift]].
+3. Vérification demandée avant la documentation : « assure-toi que ça fonctionne avec Windows ». Fait : tests de référence identiques et sync du CLI sous Windows 11 ARM.
+
+## 6. Options écartées
 - **Bibliothèque sur l'iPod** : écrites sur un disque dur lent et en veille, avec des chemins sources qui n'existent que sur un ordi.
+- **swift-crypto pour hash58** : BoringSSL à compiler pour un seul hash ; remplacé par un SHA-1 en Swift pur.
+- **CoreGraphics pour l'échelle des pochettes sur Mac** : des vignettes différentes selon l'OS qui synchronise.
 - **ffmpeg partout** : trop lent pour lire les tags, et on perdrait VideoToolbox et ImageIO sur Mac.
 - **SwiftUI sur Mac + SwiftCrossUI ailleurs** : deux codes d'interface.
 - **WinUI 3 direct (swift-winrt) + adwaita-swift** : la meilleure intégration par OS, mais trois codes et un look Windows ou GNOME, pas Mac.

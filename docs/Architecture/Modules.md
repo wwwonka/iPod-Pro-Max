@@ -31,3 +31,6 @@ Package.swift
 - **Le Mac ne descend jamais au plus petit dénominateur commun.** Ses chemins rapides restent derrière les protocoles de [[MediaKit]].
 - **AppModel ne connaît pas l'interface.** Tri, sélection, regroupement et progression y vivent, pour que les vues restent minces.
 - **L'état partagé entre tâches** passe par `Mutex` ou un acteur, jamais par le main actor.
+
+## État (2026-10-30)
+iPodKit, MediaKit, DeviceKit et le CLI existent : voir [[Package Swift]]. Écarts avec le plan ci-dessus : une seule cible MediaKit au lieu de MediaKitApple et MediaKitPortable, un SHA-1 maison au lieu de swift-crypto, une cible C `CWinDevices` pour Windows. Les modèles de bibliothèque (`LibraryTrack`, `DeviceSyncRecord`…) sont dans iPodKit, parce que `SyncEngine` en dépend ; ils pourront passer dans AppModel en phase 3. Voir [[ADR-006 Noyau portable sans dépendance Apple]].

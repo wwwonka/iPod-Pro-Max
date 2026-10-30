@@ -96,6 +96,19 @@ Development launch arguments (Edit Scheme › Arguments):
 
 Settings › Advanced can also create a test iPod folder without hardware.
 
+## Portable core and command-line tool
+
+`Package.swift` at the repository root builds the app's core for macOS, Linux and Windows: `iPodKit` (iTunesDB, ArtworkDB, PhotoDB, hash58, the sync engine; Foundation only), `MediaKit` (tags, artwork, conversions: AVFoundation on the Mac, pure Swift and ffmpeg elsewhere), `DeviceKit` (finding, watching and ejecting iPods on each OS) and the `ipodpromax` command-line tool.
+
+```sh
+swift build -c release
+swift test                                   # reference tests: same bytes on every OS
+.build/release/ipodpromax list
+.build/release/ipodpromax sync ~/Music/Library --ipod /Volumes/IPOD
+```
+
+Details, measurements and what's left (the Xcode app consuming the package): `docs/Architecture/Package Swift.md` and `docs/Architecture/CLI ipodpromax.md`.
+
 ## Testing tools
 
 - `Tools/dbtest/run.sh <samples dir> <ipod folder>` — end-to-end sync against a simulated iPod, then dumps the resulting database. Add `--read-only` to just parse an iPod folder. Diagnostic-only flags, each self-contained (no samples needed beyond what they generate/fetch themselves): `--audiobooks` (scans `<samples dir>/Audiobooks`, syncs it, prints the resulting device tracks), `--ohdio` / `--youtube` (live network smoke test of those podcast sources), `--lyrics` (ID3 fixup against `<samples dir>/song.mp3`), `--migration` (writes a fully-populated library.json, strips newer fields, confirms it still reloads).

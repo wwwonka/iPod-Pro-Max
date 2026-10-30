@@ -24,3 +24,20 @@ L'encodage RGB565, UYVY et I420 des pochettes et photos se fait en Swift pur dan
 
 ## Outils externes
 ffmpeg et yt-dlp sont embarqués par OS dans `Tools/` sur l'iPod (voir [[Sur l'iPod]]). Ils remplacent la recherche actuelle dans `/opt/homebrew/bin`. yt-dlp se met à jour lui-même (`-U`) quand l'ordi a du réseau. Voir [[Risques]].
+
+## Mise en œuvre (2026-10-30)
+Une seule cible `MediaKit` ; les fichiers AVFoundation sont sous `#if canImport(AVFoundation)` (voir [[ADR-006 Noyau portable sans dépendance Apple]]).
+
+| Rôle | Mac | Linux, Windows |
+|---|---|---|
+| Tags (`MetadataExtractor.extract`) | `AVTagReader` (AVFoundation, inchangé) | `PortableTagReader` : ID3v1, ID3v2.2–2.4 (désynchronisation, UTF-16, APIC, USLT) et en-têtes MP3 (Xing/Info, VBRI, sinon débit constant ou comptage des trames), atomes MP4, FLAC (STREAMINFO, Vorbis comments, PICTURE), Ogg Vorbis et Opus, WAV (+ LIST INFO, `id3 `), AIFF (+ `ID3 `) |
+| Décodage d'images (`ImageLoading.pixels`) | ImageIO | swift-image-formats (JPEG Swift pur, libpng, libwebp) |
+| JPEG des pochettes (`ImageLoading.jpegData`) | ImageIO | swift-image-formats |
+| Audio vers AAC | `Transcoder` (AVFoundation) | `FFmpegTranscoder` (aac 256 kbit/s) |
+| Vidéo pour l'iPod | `VideoTranscoder` (VideoToolbox) | `FFmpegTranscoder` (premier encodeur H.264 disponible, Baseline, 320×240 max) |
+| Infos et image d'une vidéo | AVFoundation | `ffmpeg -i`, sans ffprobe |
+| Livres audio en plusieurs fichiers | ffmpeg | ffmpeg |
+
+`MediaServices` répond aux besoins de `SyncEngine` (`SyncMediaServices`) avec la bonne implémentation selon l'OS. `FolderImporter` lit un dossier entier en parallèle (CLI et prototype). Recherche de ffmpeg : voir [[CLI ipodpromax]].
+
+Mesures et comparaison avec AVFoundation : voir [[Package Swift]].

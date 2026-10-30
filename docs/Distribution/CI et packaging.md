@@ -20,3 +20,6 @@ On part de `Tools/dbtest`. On génère sur Mac un jeu de bibliothèques de test,
 L'app elle-même propose « Mettre à jour l'app sur cet iPod ». Elle télécharge la dernière release et remplace `App/` et `Tools/` de façon atomique (dossier temporaire puis renommage).
 
 Voir [[Lancement portatif par OS]] et [[Compilation multiplateforme]].
+
+## État (2026-10-30)
+Les tests de référence existent (`Tests/iPodKitTests/ReferenceTests.swift`) : empreintes de l'iTunesDB, de la signature hash58 et des vignettes, identiques sur macOS, Linux et Windows. Pas encore de GitHub Actions : les trois OS sont testés dans les VM Parallels. Voir [[Package Swift]].
