@@ -84,6 +84,14 @@ if (Test-Path $font) {
 # Local copy: building on the network share is slow, and some tools dislike UNC paths.
 robocopy $Source $Work /MIR /XD .build .build-gtk dist .swiftpm /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
+# The portable core (DeviceKit), copied too: the manifest finds it through IPPM_CORE.
+$core = "C:\dev\ipodpromax-core"
+$repo = [System.IO.Path]::GetFullPath((Join-Path $Source "..\.."))
+robocopy $repo $core Package.swift Package.resolved /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy of the core failed ($LASTEXITCODE)" }
+robocopy (Join-Path $repo "Sources") (Join-Path $core "Sources") /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy of the core failed ($LASTEXITCODE)" }
+$env:IPPM_CORE = $core
 
 # Only WinUI: left to its platform conditions, SwiftPM also builds the GTK backend here.
 $env:SCUI_DEFAULT_BACKEND = "WinUIBackend"

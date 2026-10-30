@@ -1,31 +1,17 @@
+import DeviceKit
 import Foundation
-#if os(Windows)
-import WinSDK
-#endif
 
-/// Names of mounted iPods (volumes with an `iPod_Control` folder), read once at launch. The real
-/// app reacts to mount events; the prototype only needs the sidebar to show what's plugged in.
+/// Names of the mounted iPods, from DeviceKit (the same detection as the CLI). Touches the disk:
+/// call it off the main thread.
 func connectedIPods() -> [String] {
-    let fm = FileManager.default
-    var roots: [String] = []
-    #if os(macOS)
-    roots = (try? fm.contentsOfDirectory(atPath: "/Volumes"))?.map { "/Volumes/" + $0 } ?? []
-    #elseif os(Windows)
-    // An empty card reader would otherwise show a "No disk" dialog while probing.
-    let previousMode = SetErrorMode(UINT(SEM_FAILCRITICALERRORS))
-    defer { SetErrorMode(previousMode) }
-    // Plain strings: Foundation's URL traps on some drive roots (e.g. Parallels' Z: share).
-    return "DEFGHIJKLMNOPQRSTUVWXYZ".compactMap { letter in
-        fm.fileExists(atPath: "\(letter):\\iPod_Control") ? "\(letter):" : nil
+    DeviceScanner.scan().map(\.displayName).sorted()
+}
+
+/// Calls `update` with the mounted iPods now, then each time a volume is mounted, unmounted or
+/// renamed. Waits on the OS's notifications (DeviceKit's `VolumeWatcher`): nothing runs in between.
+func watchIPods(_ update: @MainActor ([String]) -> Void) async {
+    await update(Task.detached(priority: .utility) { connectedIPods() }.value)
+    for await _ in VolumeWatcher.changes() {
+        await update(Task.detached(priority: .utility) { connectedIPods() }.value)
     }
-    #else
-    let user = ProcessInfo.processInfo.environment["USER"] ?? ""
-    for base in ["/run/media/\(user)", "/media/\(user)"] {
-        roots += ((try? fm.contentsOfDirectory(atPath: base)) ?? []).map { base + "/" + $0 }
-    }
-    #endif
-    return roots
-        .filter { fm.fileExists(atPath: URL(fileURLWithPath: $0).appendingPathComponent("iPod_Control").path) }
-        .map { URL(fileURLWithPath: $0).lastPathComponent }
-        .sorted()
 }

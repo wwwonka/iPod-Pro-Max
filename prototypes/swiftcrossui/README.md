@@ -26,6 +26,7 @@ Autres usages :
 
 Comment ça marche :
 - Les VM lisent les sources et écrivent `dist/` par le dossier personnel du Mac partagé par Parallels, et compilent dans une copie locale (`~/dev/swiftcrossui`, `C:\dev\swiftcrossui`).
+- Les iPods viennent de DeviceKit, le noyau portable du repo (`../../Package.swift`). Les VM en font aussi une copie locale (`~/dev/ipodpromax-core`, `C:\dev\ipodpromax-core`), que le manifeste trouve par la variable `IPPM_CORE` ; sur le Mac, il prend `../..`.
 - Il faut une **session ouverte** dans chaque VM (`prlctl exec --current-user`).
 - Sous Windows, le build tourne détaché dans la VM (`prlctl` coupait les longues sessions) et écrit `dist/windows-vm.log` et `dist/windows-vm.exit`.
 - Sous Linux, on force `SCUI_DEFAULT_BACKEND=GtkBackend` ; sous Windows, `WinUIBackend` (sinon SwiftPM compile aussi l'autre backend et échoue).
@@ -68,4 +69,4 @@ Comment ça marche :
 | `Symbols.swift` | SF Symbols par plateforme ; `scripts/match-glyph.swift` retrouve un glyphe de la police par sa forme |
 | `WindowChrome.swift` | modèle commun de la fenêtre sans barre et du glissement de la sidebar |
 | `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |
-| `Devices.swift` | iPods montés au lancement |
+| `Devices.swift` | iPods montés, par DeviceKit (`DeviceScanner`), mis à jour à chaque montage ou démontage (`VolumeWatcher`, sans polling) |

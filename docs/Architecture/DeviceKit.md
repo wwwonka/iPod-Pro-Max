@@ -37,4 +37,6 @@ Sous Windows, les appels cfgmgr32 sont dans la cible C `CWinDevices` (voir [[ADR
 
 Le **FireWire GUID** est maintenant repris du numéro de série USB quand SysInfo n'en donne pas et que la série fait 16 chiffres hexadécimaux (`USBDeviceIdentity.firewireGUIDFromSerial`).
 
-**Pas encore testé avec un vrai iPod hors Mac** : dans les VM, la détection d'iPods simulés, la compilation et l'absence d'erreur sans iPod ont été vérifiées, pas la lecture du numéro de série, les événements ni l'éjection. C'est le prochain test réel (passage USB de l'iPod à la VM).
+**Pas encore testé avec un vrai iPod hors Mac** : dans les VM, la détection d'iPods simulés, la compilation et l'absence d'erreur sans iPod ont été vérifiées, pas la lecture du numéro de série ni l'éjection. C'est le prochain test réel (passage USB de l'iPod à la VM).
+
+**Événements vérifiés sur les 3 OS (2026-10-30)**, avec le prototype SwiftCrossUI qui affiche maintenant ses iPods par DeviceKit : un faux iPod (disque FAT32 avec `iPod_Control/Device/SysInfo`) apparaît dans la sidebar au montage et disparaît au démontage, sans relancer l'app. Disque : image `hdiutil` sur macOS, périphérique loop monté avec l'uid de l'utilisateur sous Fedora (monté par root sans `uid=`, le volume est illisible pour l'app et donc ignoré), VHD attaché et détaché par `diskpart` sous Windows.

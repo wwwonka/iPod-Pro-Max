@@ -19,6 +19,10 @@ build)
 
     mkdir -p "$WORK"
     rsync -a --delete --exclude .build --exclude .build-gtk --exclude dist --exclude .swiftpm "$SRC/" "$WORK/"
+    # The portable core (DeviceKit), copied too: the manifest finds it through IPPM_CORE.
+    export IPPM_CORE=$HOME/dev/ipodpromax-core
+    mkdir -p "$IPPM_CORE"
+    rsync -a --delete --include /Package.swift --include /Package.resolved --include '/Sources/***' --exclude '*' "$SRC/../../" "$IPPM_CORE/"
     cd "$WORK"
     # Static Swift runtime, so the binary only needs GTK 4 from the system. If this toolchain
     # lacks the static libraries, fall back to a build that needs Swift installed to run.

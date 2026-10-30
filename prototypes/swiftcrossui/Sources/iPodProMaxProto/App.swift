@@ -30,15 +30,21 @@ struct ContentView: View {
         .followingSystemColorScheme(colorScheme)
         .task {
             let start = Date()
-            async let found = Task.detached(priority: .utility) { connectedIPods() }.value
             let loaded = await Library.load(arguments: CommandLine.arguments)
             library = loaded
-            devices = await found
             log("[proto] \(loaded.allRows.count) tracks from \(loaded.source)")
             log("[proto] decode \(loaded.loadMs) ms, index \(loaded.indexMs) ms, "
                 + "ready \(Int(Date().timeIntervalSince(start) * 1000)) ms after first render")
             if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil { await benchSidebar() }
 
+        }
+        .task {
+            await watchIPods { found in
+                if found != devices { log("[proto] iPods: \(found.isEmpty ? "none" : found.joined(separator: ", "))") }
+                devices = found
+                // The selected iPod was unplugged.
+                if case .device(let name) = selection, !found.contains(name) { selection = .music }
+            }
         }
     }
 
