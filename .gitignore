@@ -25,3 +25,7 @@ docs/.obsidian/*
 # Swift package (Package.swift at the root)
 /.build/
 /.swiftpm/
+
+# ffmpeg built by Tools/ffmpeg/build.sh (sources and outputs, never committed)
+Tools/ffmpeg/.cache/
+Tools/ffmpeg/dist/

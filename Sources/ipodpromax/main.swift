@@ -151,6 +151,7 @@ func info(_ args: Arguments) {
     if let s = d.serialNumber { print("    serial number: \(s)") }
     if let g = d.firewireGUID { print("    FireWire GUID: \(g)") }
     print("    database signature: \(d.checksumType)")
+    print("    conversions: \(FFmpeg.binaryPath().map { "ffmpeg at \($0)" } ?? "ffmpeg missing from this copy")")
     print("    artwork: \(d.supportsArtwork ? d.coverArtFormats.map { "\($0.width)×\($0.height)" }.joined(separator: ", ") : "none")")
     do {
         let db = try d.readDatabase()

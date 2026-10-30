@@ -21,32 +21,38 @@ public enum FFmpeg {
     static let platformFolder = "Linux"
     #endif
 
-    /// Where ffmpeg is looked for, first match wins: `IPODPROMAX_FFMPEG`, next to the running
-    /// executable, a `Tools/<OS>/` folder next to it or one level up (the layout on the iPod, see
-    /// docs/Données/Sur l'iPod.md), the PATH, then the usual Homebrew and system locations.
+    #if arch(arm64)
+    static let architecture = "arm64"
+    #else
+    static let architecture = "x64"
+    #endif
+
+    /// Our own ffmpeg, which ships inside the app (Tools/ffmpeg/build.sh): never one the user would
+    /// have to install, and never whatever version happens to be on the PATH. First match wins:
+    /// `IPODPROMAX_FFMPEG`, next to the running executable (also `Contents/MacOS` in a Mac app), a
+    /// `Tools/<OS>/` folder next to it or up to two levels up (the layout on the iPod, see
+    /// docs/Données/Sur l'iPod.md), then, for development builds run from the repository
+    /// (`.build/<config>/`), `Tools/ffmpeg/dist/<os>-<arch>/`.
     public static func binaryPath() -> String? {
         let fm = FileManager.default
-        let env = ProcessInfo.processInfo.environment
         var candidates: [String] = []
-        if let explicit = env["IPODPROMAX_FFMPEG"], !explicit.isEmpty { candidates.append(explicit) }
+        if let explicit = ProcessInfo.processInfo.environment["IPODPROMAX_FFMPEG"], !explicit.isEmpty { candidates.append(explicit) }
         // The running binary's real location: argv[0] is just "ipodpromax" when launched from the PATH.
         let exeURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "")
         let exeDir = exeURL.resolvingSymlinksInPath().deletingLastPathComponent()
         candidates.append(exeDir.appendingPathComponent(executableName).path)
-        for base in [exeDir, exeDir.deletingLastPathComponent(), exeDir.deletingLastPathComponent().deletingLastPathComponent()] {
+        var base = exeDir
+        for _ in 0..<3 {
             candidates.append(base.appendingPathComponent("Tools").appendingPathComponent(platformFolder).appendingPathComponent(executableName).path)
+            base = base.deletingLastPathComponent()
         }
-        #if os(Windows)
-        let separator: Character = ";"
-        #else
-        let separator: Character = ":"
-        #endif
-        for dir in (env["PATH"] ?? env["Path"] ?? "").split(separator: separator) where !dir.isEmpty {
-            candidates.append(URL(fileURLWithPath: String(dir)).appendingPathComponent(executableName).path)
+        // Development: <repo>/.build/<triple>/<config>/ipodpromax or <repo>/.build/<config>/ipodpromax.
+        var dir = exeDir
+        for _ in 0..<4 {
+            let devCopy = dir.appendingPathComponent("Tools/ffmpeg/dist/\(platformFolder.lowercased())-\(architecture)/\(executableName)")
+            candidates.append(devCopy.path)
+            dir = dir.deletingLastPathComponent()
         }
-        #if !os(Windows)
-        candidates += ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]
-        #endif
         return candidates.first { fm.isExecutableFile(atPath: $0) }
     }
 
@@ -59,17 +65,11 @@ public enum FFmpeg {
         #endif
     }
 
-    /// The binary, or an error that tells the user how to get one.
+    /// The binary, or an error saying this copy of the app is incomplete: ffmpeg is part of it.
     public static func requireBinary(for job: String) throws -> String {
         if let path = binaryPath() { return path }
-        #if os(macOS)
-        let hint = "Install it with “brew install ffmpeg”"
-        #elseif os(Windows)
-        let hint = "Put ffmpeg.exe next to ipodpromax.exe or in your PATH (winget install ffmpeg)"
-        #else
-        let hint = "Install it with your package manager (e.g. “sudo dnf install ffmpeg-free” or “sudo apt install ffmpeg”)"
-        #endif
-        throw IPodDBError.unsupported("\(job) needs ffmpeg. \(hint), then try again.")
+        throw IPodDBError.unsupported("\(job) needs the ffmpeg that comes with iPod Pro Max, and this copy doesn't have it. "
+            + "Reinstall iPod Pro Max (developers: run Tools/ffmpeg/build.sh).")
     }
 
     /// Runs ffmpeg and waits. stdout lines go to `onOutput` (used with `-progress pipe:1`).

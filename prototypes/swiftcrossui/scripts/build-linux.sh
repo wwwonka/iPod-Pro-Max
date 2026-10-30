@@ -64,6 +64,9 @@ DESKTOP
     # rsync rather than rm -rf + cp: deleting a folder on the Parallels share fails now and then.
     mkdir -p "$DIST"
     rsync -a --delete --include 'iPodProMaxProto' --include '*.resources/***' --exclude '*' "$BIN/" "$DIST/"
+    # The app's own ffmpeg (Tools/ffmpeg/build.sh), next to the executable where MediaKit looks.
+    FFMPEG="$SRC/../../Tools/ffmpeg/dist/linux-$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')/ffmpeg"
+    if [ -x "$FFMPEG" ]; then cp "$FFMPEG" "$DIST/ffmpeg"; else echo "warning: ffmpeg not built (Tools/ffmpeg/build.sh)" >&2; fi
     echo "OK: $DIST/iPodProMaxProto"
     ;;
 check)

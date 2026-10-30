@@ -32,15 +32,11 @@ Les caches (pochettes, conversions) vont dans le dossier de cache de l'OS : `~/L
 Pas de podcasts ni de photos dans le CLI : ils viennent de la bibliothèque et de Photos de l'app.
 
 ## ffmpeg
-Nécessaire seulement pour convertir (FLAC, OGG, vidéo hors Mac, livres audio en plusieurs fichiers). Sans lui, ces fichiers sont signalés en échec avec la marche à suivre, et le reste se synchronise. Il est cherché dans cet ordre :
-1. la variable `IPODPROMAX_FFMPEG` ;
-2. à côté de l'exécutable ;
-3. `Tools/<OS>/ffmpeg` à côté de l'exécutable ou un ou deux niveaux plus haut, c'est-à-dire la disposition prévue sur l'iPod ([[Sur l'iPod]]) ;
-4. le `PATH`, puis les emplacements Homebrew et système.
+Il fait partie de l'outil : notre propre ffmpeg minimal, posé à côté de l'exécutable, à ne jamais installer (voir [[ffmpeg embarqué]]). `ipodpromax info` affiche celui qui est utilisé. Une copie de l'outil sans son ffmpeg signale les fichiers à convertir en échec, et synchronise le reste.
 
 ffmpeg est toujours lancé avec `-nostdin` : sans console, il guette le clavier et tourne à 100 % du CPU sous Windows sans jamais finir.
 
-Pour la vidéo, le premier encodeur H.264 disponible est choisi : libx264, puis les encodeurs matériels (nvenc, qsv, amf, mf, vaapi), puis libopenh264. Le ffmpeg-free de Fedora n'a que libopenh264.
+Pour la vidéo, le premier encodeur H.264 qui fonctionne est retenu : celui du système (VideoToolbox, Media Foundation), un encodeur matériel, sinon OpenH264.
 
 ## Essais faits (2026-10-30)
 Même dossier de 47 pistes (MP3, M4A, 12 FLAC) vers un iPod simulé (`init-sim`, modèle 5G) :

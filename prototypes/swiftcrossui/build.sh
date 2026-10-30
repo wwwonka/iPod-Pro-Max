@@ -45,6 +45,9 @@ build_mac() {
     rm -rf "$app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$bin/iPodProMaxProto" "$app/Contents/MacOS/"
+    # The app's own ffmpeg (Tools/ffmpeg/build.sh), next to the executable where MediaKit looks.
+    local ffmpeg="$ROOT/../../Tools/ffmpeg/dist/macos-universal/ffmpeg"
+    if [ -x "$ffmpeg" ]; then cp "$ffmpeg" "$app/Contents/MacOS/"; else echo "warning: ffmpeg not built (Tools/ffmpeg/build.sh)" >&2; fi
     cp dist/icons/AppIcon.icns "$app/Contents/Resources/"
     cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

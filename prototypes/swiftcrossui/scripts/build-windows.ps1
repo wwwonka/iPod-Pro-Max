@@ -123,6 +123,10 @@ Copy-Item "$bin\iPodProMaxProto.exe" $stage
 Copy-Item "$bin\AppIcon.ico" $stage -ErrorAction SilentlyContinue
 foreach ($pattern in "*.dll", "*.pri", "*.winmd") { Copy-Item "$bin\$pattern" $stage -ErrorAction SilentlyContinue }
 Get-ChildItem $bin -Directory -Filter *.resources | Copy-Item -Destination $stage -Recurse
+# The app's own ffmpeg (Tools/ffmpeg/build.sh windows), next to the executable where MediaKit looks.
+$ffArch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+$ffmpeg = Join-Path $Source "..\..\Tools\ffmpeg\dist\windows-$ffArch\ffmpeg.exe"
+if (Test-Path $ffmpeg) { Copy-Item $ffmpeg $stage } else { Write-Warning "ffmpeg not built (Tools/ffmpeg/build.sh windows)" }
 $swiftCore = where.exe swiftCore.dll 2>$null | Select-Object -First 1
 if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $stage }
 else { Write-Warning "swiftCore.dll not found on PATH: the exe will only run where Swift is installed." }

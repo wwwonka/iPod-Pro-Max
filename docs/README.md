@@ -40,6 +40,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 ## Distribution
 - [[Lancement portatif par OS]] : lanceur « shadow copy », Gatekeeper, FAT32
 - [[CI et packaging]] : GitHub Actions et assemblage du dossier pour l'iPod
+- [[ffmpeg embarqué]] : notre ffmpeg minimal (5 à 12 Mo), livré avec l'app, jamais à installer
 
 ## Décisions
 - [[ADR-001 Bibliothèque sur l'hôte, données de l'iPod sur l'iPod]]

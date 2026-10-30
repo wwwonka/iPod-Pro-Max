@@ -38,6 +38,8 @@ Une seule cible `MediaKit` ; les fichiers AVFoundation sont sous `#if canImport(
 | Infos et image d'une vidéo | AVFoundation | `ffmpeg -i`, sans ffprobe |
 | Livres audio en plusieurs fichiers | ffmpeg | ffmpeg |
 
+ffmpeg n'est jamais celui du système : c'est le nôtre, livré avec l'app ([[ffmpeg embarqué]]).
+
 `MediaServices` répond aux besoins de `SyncEngine` (`SyncMediaServices`) avec la bonne implémentation selon l'OS. `FolderImporter` lit un dossier entier en parallèle (CLI et prototype). Recherche de ffmpeg : voir [[CLI ipodpromax]].
 
 Mesures et comparaison avec AVFoundation : voir [[Package Swift]].

@@ -10,9 +10,25 @@
 		A1B2C3D4E5F6000000000110 /* iPodKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000210 /* iPodKit */; };
 		A1B2C3D4E5F6000000000111 /* MediaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000211 /* MediaKit */; };
 		A1B2C3D4E5F6000000000112 /* DeviceKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000212 /* DeviceKit */; };
+		A1B2C3D4E5F6000000000303 /* ffmpeg in Embed ffmpeg */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000000000302 /* ffmpeg */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		A1B2C3D4E5F6000000000301 /* Embed ffmpeg */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				A1B2C3D4E5F6000000000303 /* ffmpeg in Embed ffmpeg */,
+			);
+			name = "Embed ffmpeg";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		A1B2C3D4E5F6000000000302 /* ffmpeg */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = ffmpeg; path = "Tools/ffmpeg/dist/macos-universal/ffmpeg"; sourceTree = SOURCE_ROOT; };
 		84847AFA304A13F200303053 /* iPod Pro Max.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iPod Pro Max.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -42,6 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				84847AFC304A13F200303053 /* iPod Pro Max */,
+				A1B2C3D4E5F6000000000302 /* ffmpeg */,
 				84847AFB304A13F200303053 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -64,6 +81,7 @@
 				84847AF6304A13F200303053 /* Sources */,
 				84847AF7304A13F200303053 /* Frameworks */,
 				84847AF8304A13F200303053 /* Resources */,
+				A1B2C3D4E5F6000000000301 /* Embed ffmpeg */,
 			);
 			buildRules = (
 			);

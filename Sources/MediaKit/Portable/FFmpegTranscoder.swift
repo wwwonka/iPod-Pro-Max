@@ -34,8 +34,8 @@ public enum FFmpegTranscoder {
     }
 
     /// H.264 encoders in order of preference. libx264 gives the best Baseline output; hardware
-    /// encoders are faster; libopenh264 is the one Fedora's ffmpeg-free ships.
-    static let videoEncoders = ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_vaapi", "libopenh264"]
+    /// encoders are faster; libopenh264 is the one Fedora's ffmpeg-free and our own Linux build have.
+    static let videoEncoders = ["libx264", "h264_videotoolbox", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_vaapi", "libopenh264"]
 
     /// The encoder that last worked, so later videos don't retry the ones that failed.
     private static let encoderCache = EncoderCache()
