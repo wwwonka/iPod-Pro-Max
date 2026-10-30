@@ -42,11 +42,24 @@ public enum DeviceScanner {
 
     /// The iPod at `path` (a mount point or a simulated iPod folder), if there is one.
     public static func device(at path: URL) -> IPodDevice? {
-        let standardized = path.standardizedFileURL
-        if let volume = Platform.candidateVolumes().first(where: { $0.url.standardizedFileURL == standardized }) {
+        // Compared as normalized paths, not URLs: "E:", "e:\" and "/Volumes/IPOD" (no trailing slash,
+        // or through a symlink) must still find the mounted iPod, not fall back to a simulated one.
+        let wanted = comparablePath(path)
+        if let volume = Platform.candidateVolumes().first(where: { comparablePath($0.url) == wanted }) {
             return IPodDevice.detect(volume: volume.url, volumeName: volume.name, usbLookup: USBIdentification.identify(volume:))
         }
         return IPodDevice.detect(volume: path, simulated: true)
+    }
+
+    private static func comparablePath(_ url: URL) -> String {
+        var path = FileOps.nativePath(url.resolvingSymlinksInPath().standardizedFileURL)
+        #if os(Windows)
+        path = path.replacingOccurrences(of: "/", with: "\\").uppercased()
+        while path.hasSuffix("\\") { path.removeLast() }
+        #else
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        #endif
+        return path
     }
 
     /// Mounted removable volumes, iPods or not (what `scan` looks at).

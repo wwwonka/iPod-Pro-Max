@@ -111,6 +111,7 @@ final class PlatformWatcher: @unchecked Sendable {
 
     init(onChange: @escaping @Sendable () -> Void) {
         self.onChange = onChange
+        queue.setSpecific(key: Self.queueKey, value: true)
         session = DASessionCreate(kCFAllocatorDefault)
         guard let session else { return }
         let ctx = Unmanaged.passUnretained(self)
@@ -130,8 +131,12 @@ final class PlatformWatcher: @unchecked Sendable {
     func stop() {
         guard let session, context != nil else { return }
         context = nil
-        // Unscheduling is synchronous: no callback runs after this returns.
+        // Unscheduling stops new callbacks, but one may already be queued: drain the queue so none
+        // runs (with this object's unretained pointer) after stop() returns and the watcher is freed.
         DASessionSetDispatchQueue(session, nil)
+        if DispatchQueue.getSpecific(key: Self.queueKey) == nil { queue.sync {} }
     }
+
+    private static let queueKey = DispatchSpecificKey<Bool>()
 }
 #endif

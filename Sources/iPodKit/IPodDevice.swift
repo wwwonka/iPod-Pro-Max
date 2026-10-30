@@ -150,7 +150,8 @@ public struct IPodDevice: Identifiable, Hashable, Sendable {
         var modelNumber = extended?["ModelNumStr"] as? String ?? sysInfo["ModelNumStr"]
         if modelNumber == nil, let pt = extended?["ProductType"] as? String { modelNumber = pt }
         var info = modelNumber.flatMap { IPodModelTable.info(forModelNumber: $0) }
-        var firewire = (extended?["FireWireGUID"] as? String) ?? sysInfo["FirewireGuid"] ?? sysInfo["FireWireGUID"]
+        let sysInfoFirewire = (extended?["FireWireGUID"] as? String) ?? sysInfo["FirewireGuid"] ?? sysInfo["FireWireGUID"]
+        var firewire = sysInfoFirewire
         var serial = (extended?["SerialNumber"] as? String) ?? sysInfo["pszSerialNumber"] ?? sysInfo["SerialNumber"]
         if let s = serial, s.isEmpty { serial = nil }
 
@@ -186,7 +187,9 @@ public struct IPodDevice: Identifiable, Hashable, Sendable {
 
         let volumeName = simulated ? volume.lastPathComponent
             : (knownName ?? (try? volume.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? volume.lastPathComponent)
-        var identifier = serial ?? firewire ?? ""
+        // The id keys the library's per-device sync record: the GUID borrowed from the USB serial
+        // number above must not change it, or an iPod already synced would look brand new.
+        var identifier = serial ?? sysInfoFirewire ?? ""
         if identifier.isEmpty {
             identifier = (try? volume.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? volume.path
         }

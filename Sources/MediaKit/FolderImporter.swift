@@ -149,17 +149,34 @@ public enum FolderImporter {
 /// Covers stored once per distinct image, as `<key>.jpg` (JPEG, at most 600 px). Every track of an
 /// album usually embeds the same bytes, so the re-encode is skipped for all but the first.
 final class ArtworkStore: @unchecked Sendable {
+    /// One per distinct image. The first worker to see it holds `lock` while it encodes, so the other
+    /// tracks of the album (read at the same time, one per core) wait for that result instead of
+    /// re-encoding the same cover.
+    private final class Entry: @unchecked Sendable {
+        let lock = NSLock()
+        var key: String?
+    }
+
     private let directory: URL
     private let lock = NSLock()
-    private var keysByDigest: [[UInt8]: String] = [:]
+    private var entries: [[UInt8]: Entry] = [:]
 
     init(directory: URL) { self.directory = directory }
 
     func key(for data: Data) -> String? {
         let digest = SHA1.hash([UInt8](data))
         lock.lock()
-        if let known = keysByDigest[digest] { lock.unlock(); return known }
+        if let entry = entries[digest] {
+            lock.unlock()
+            entry.lock.lock(); defer { entry.lock.unlock() }
+            return entry.key
+        }
+        let entry = Entry()
+        entry.lock.lock()
+        entries[digest] = entry
         lock.unlock()
+        defer { entry.lock.unlock() }
+
         let key = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
         let url = directory.appendingPathComponent("\(key).jpg")
         if !FileManager.default.fileExists(atPath: url.path) {
@@ -167,9 +184,7 @@ final class ArtworkStore: @unchecked Sendable {
             guard let jpeg = ImageLoading.jpegData(from: data) else { return nil }
             try? jpeg.write(to: url, options: .atomic)
         }
-        lock.lock()
-        keysByDigest[digest] = key
-        lock.unlock()
+        entry.key = key
         return key
     }
 }

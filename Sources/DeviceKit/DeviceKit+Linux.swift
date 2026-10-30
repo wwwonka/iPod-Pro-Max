@@ -149,7 +149,10 @@ final class PlatformWatcher: @unchecked Sendable {
         let fd = mountFD
         let wake = wakePipe[0]
         guard fd >= 0, wake >= 0 else {
+            // No thread will close these: do it here (stop() then has nothing to wake).
             if fd >= 0 { close(fd) }
+            if wake >= 0 { close(wake) }
+            if wakePipe[1] >= 0 { close(wakePipe[1]); wakePipe[1] = -1 }
             thread = nil
             return
         }

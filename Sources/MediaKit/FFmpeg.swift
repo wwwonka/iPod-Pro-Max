@@ -29,7 +29,9 @@ public enum FFmpeg {
         let env = ProcessInfo.processInfo.environment
         var candidates: [String] = []
         if let explicit = env["IPODPROMAX_FFMPEG"], !explicit.isEmpty { candidates.append(explicit) }
-        let exeDir = URL(fileURLWithPath: CommandLine.arguments.first ?? "").resolvingSymlinksInPath().deletingLastPathComponent()
+        // The running binary's real location: argv[0] is just "ipodpromax" when launched from the PATH.
+        let exeURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "")
+        let exeDir = exeURL.resolvingSymlinksInPath().deletingLastPathComponent()
         candidates.append(exeDir.appendingPathComponent(executableName).path)
         for base in [exeDir, exeDir.deletingLastPathComponent(), exeDir.deletingLastPathComponent().deletingLastPathComponent()] {
             candidates.append(base.appendingPathComponent("Tools").appendingPathComponent(platformFolder).appendingPathComponent(executableName).path)

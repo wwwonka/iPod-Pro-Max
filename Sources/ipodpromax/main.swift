@@ -228,6 +228,10 @@ func sync(_ args: Arguments) async {
 }
 
 func eject(_ device: IPodDevice) async {
+    if device.isSimulated {
+        print("\(FileOps.nativePath(device.mountPoint)) is a folder, not a mounted iPod: nothing to eject.")
+        return
+    }
     do {
         try await Ejector.eject(device)
         print("Ejected \(device.displayName): you can unplug it.")

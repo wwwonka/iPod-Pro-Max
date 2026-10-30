@@ -550,7 +550,8 @@ enum MP4Reader {
             var header = 8
             if size == 1 { size = Bytes.be64(h, 8); header = 16 }
             else if size == 0 { size = to - o }
-            guard size >= header, o + size <= to else { break }
+            // `size <= to - o`, not `o + size <= to`: a damaged 64-bit size would overflow and trap.
+            guard size >= header, size <= to - o else { break }
             result.append(Atom(type: type, start: o, dataStart: o + header, end: o + size))
             o += size
         }
@@ -565,7 +566,8 @@ enum MP4Reader {
             let type = Bytes.fourCC(b, o + 4)
             var header = 8
             if size == 1 { size = Bytes.be64(b, o + 8); header = 16 } else if size == 0 { size = to - o }
-            guard size >= header, o + size <= to else { break }
+            // `size <= to - o`, not `o + size <= to`: a damaged 64-bit size would overflow and trap.
+            guard size >= header, size <= to - o else { break }
             result.append((type, (o + header)..<(o + size)))
             o += size
         }
@@ -752,7 +754,8 @@ enum OggReader {
         } else if ident.count >= 16, ident[0] == 1, Array(ident[1..<7]) == Array("vorbis".utf8) {
             rate = Bytes.le32(ident, 12)
             md.sampleRate = rate
-            let nominal = Bytes.le32(ident, 20)
+            // Signed in the Vorbis header: 0 or -1 means "not set".
+            let nominal = Int(Int32(truncatingIfNeeded: Bytes.le32(ident, 20)))
             if nominal > 0 { md.bitrate = nominal / 1000 }
         }
         if packets.count > 1 {

@@ -59,7 +59,13 @@ public struct SHA1: Sendable {
     }
 
     private mutating func processBlock<C: Collection>(_ block: C) where C.Element == UInt8, C.Index == Int {
-        var w = [UInt32](repeating: 0, count: 80)
+        // Stack scratch space: a heap array per 64-byte block would be thousands of allocations per cover.
+        withUnsafeTemporaryAllocation(of: UInt32.self, capacity: 80) { w in
+            compress(block, w)
+        }
+    }
+
+    private mutating func compress<C: Collection>(_ block: C, _ w: UnsafeMutableBufferPointer<UInt32>) where C.Element == UInt8, C.Index == Int {
         let base = block.startIndex
         for t in 0..<16 {
             let i = base + t * 4

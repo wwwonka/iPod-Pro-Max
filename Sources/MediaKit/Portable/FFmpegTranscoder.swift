@@ -37,31 +37,60 @@ public enum FFmpegTranscoder {
     /// encoders are faster; libopenh264 is the one Fedora's ffmpeg-free ships.
     static let videoEncoders = ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "h264_vaapi", "libopenh264"]
 
+    /// The encoder that last worked, so later videos don't retry the ones that failed.
     private static let encoderCache = EncoderCache()
 
-    static func availableVideoEncoder(_ ffmpeg: String) async -> String? {
-        if let cached = encoderCache.value { return cached.isEmpty ? nil : cached }
+    /// The H.264 encoders this ffmpeg was built with, best first. Being built in doesn't mean the
+    /// machine has the hardware (h264_nvenc without an NVIDIA GPU): transcodeVideo tries them in turn.
+    static func availableVideoEncoders(_ ffmpeg: String) async -> [String] {
+        if let cached = encoderCache.value { return [cached] }
         let list = await stdout(ffmpeg, ["-hide_banner", "-encoders"])
         let names = Set(list.split(whereSeparator: \.isNewline).compactMap { line -> String? in
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
             return parts.count >= 2 && parts[0].hasPrefix("V") ? String(parts[1]) : nil
         })
-        let found = videoEncoders.first { names.contains($0) }
-        encoderCache.value = found ?? ""
-        return found
+        return videoEncoders.filter { names.contains($0) }
     }
 
     public static func transcodeVideo(source: URL, destination: URL, durationMs: Int, progress: @escaping @Sendable (Double) -> Void) async throws {
         let ffmpeg = try FFmpeg.requireBinary(for: "Converting video for the iPod")
-        guard let encoder = await availableVideoEncoder(ffmpeg) else {
+        let encoders = await availableVideoEncoders(ffmpeg)
+        guard !encoders.isEmpty else {
             throw IPodDBError.unsupported("This ffmpeg has no H.264 encoder (libx264, libopenh264 or a hardware one).")
         }
+        var lastError: Error?
+        for encoder in encoders {
+            try Task.checkCancellation()
+            do {
+                try await transcodeVideo(ffmpeg: ffmpeg, encoder: encoder, source: source, destination: destination,
+                                         durationMs: durationMs, progress: progress)
+                encoderCache.value = encoder
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? IPodDBError.unsupported("No H.264 encoder worked on this machine.")
+    }
+
+    private static func transcodeVideo(ffmpeg: String, encoder: String, source: URL, destination: URL, durationMs: Int,
+                                       progress: @escaping @Sendable (Double) -> Void) async throws {
         try prepare(destination)
         // Fit 320×240, keep the aspect ratio, even dimensions; never upscale.
-        let scale = "scale='min(\(IPodVideo.maxWidth),iw)':'min(\(IPodVideo.maxHeight),ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
+        var scale = "scale='min(\(IPodVideo.maxWidth),iw)':'min(\(IPodVideo.maxHeight),ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1"
+        // VA-API encodes GPU surfaces: the scaled frames are uploaded as NV12 instead of -pix_fmt yuv420p.
+        let pixelFormat: [String]
+        if encoder == "h264_vaapi" {
+            scale += ",format=nv12,hwupload"
+            pixelFormat = []
+        } else {
+            pixelFormat = ["-pix_fmt", "yuv420p"]
+        }
         var args = ["-y", "-v", "error", "-nostats", "-progress", "pipe:1", "-i", FileOps.nativePath(source),
                     "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-                    "-vf", scale, "-r", "\(Int(IPodVideo.maxFrameRate))", "-pix_fmt", "yuv420p",
+                    "-vf", scale, "-r", "\(Int(IPodVideo.maxFrameRate))"] + pixelFormat + [
                     "-c:v", encoder, "-b:v", "\(IPodVideo.videoBitrate / 1000)k", "-maxrate", "768k", "-bufsize", "1536k"]
         switch encoder {
         case "libx264": args += ["-profile:v", "baseline", "-level", "1.3", "-preset", "medium"]
