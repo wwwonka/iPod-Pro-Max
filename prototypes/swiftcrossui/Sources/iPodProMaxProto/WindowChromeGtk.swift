@@ -154,6 +154,7 @@
             gtk_window_set_icon_name(pointer, appIdentifier)
 
             roundCorners(pointer)
+            LinuxGlass.shared.install(on: pointer)
 
             let click = gtk_gesture_click_new()!
             gtk_gesture_single_set_button(cast(click), 1)

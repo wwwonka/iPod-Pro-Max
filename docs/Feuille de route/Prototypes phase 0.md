@@ -30,7 +30,7 @@ Mesures sur 5 000 pistes, builds Release, VM Parallels (Fedora 44 : 2 vCPU, Wind
 | Changement de section | **15–17 ms** (médiane) | **51 ms** dans la VM ; 19 ms pour le même code GTK sur le Mac | **10–25 ms** dans la VM |
 | Glissement de la sidebar (0,25 s) | 20–21 images, 5–7 ms de mise en page par image | 13–16 images (60 Hz) avec Vulkan ou Cairo, 6–8 ms par image ; le rendu GL de la VM cale les premiers glissements (2 images) | 16–27 images, 6 ms par image ; plus lentes quand le CPU de la VM sort du repos |
 | Mode sombre | système | suit GNOME (`color-scheme`), en direct | système |
-| Sidebar translucide floutée | oui (`NSVisualEffectView`) | **non** : GNOME Shell 50 n'expose aucun protocole de flou (ni `ext-background-effect-v1` ni celui de KDE, vérifié avec `wayland-info`) ; fond opaque aux couleurs du Mac | oui (acrylique) |
+| Sidebar translucide floutée | oui (`NSVisualEffectView`) | **avec Blur my Shell ou Hyprland** : GNOME Shell 50 n'expose aucun protocole de flou aux apps (ni `ext-background-effect-v1` ni celui de KDE, vérifié avec `wayland-info`) ; la sidebar devient translucide quand le compositeur floute, opaque sinon (voir [[Sidebar translucide sous Linux]]) | oui (acrylique) |
 | Sidebar redimensionnable (180–400 pt) | oui | oui | oui (poignée sur le bord du panneau) |
 | Sections de la sidebar repliables, flèche au survol | oui (natif) | oui (`GtkRevealer`) | oui |
 | Fenêtre sans barre, boutons façon Mac | oui (barre d'outils unifiée native) | oui (dessinés par l'app) | oui (dessinés par l'app ; zone de titre déclarée à Windows, qui déplace, agrandit et aimante la fenêtre) |

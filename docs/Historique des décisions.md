@@ -42,7 +42,7 @@ Comment on est arrivé au plan actuel, et pourquoi certaines options ont été �
 4. **Natif le plus possible** et **hyper réactif** : tableaux et sidebars natifs par plateforme ([[Composants natifs par plateforme]]), mesures avant et après chaque changement.
 5. **Fenêtre comme sur Mac partout** : sans barre, boutons façon Mac, bouton de sidebar animé. Une option pour des boutons natifs pourra venir dans les réglages.
 6. **SF Symbols partout** : vrais symboles sur Mac ; sur Linux et Windows, police SF Symbols en local seulement, en connaissance de cause (voir [[Risques]]).
-7. **Sidebar translucide floutée** : Mica sous Windows ; sous GNOME il n'existe pas d'API de flou pour les apps (seulement sous KDE).
+7. **Sidebar translucide floutée** : Mica sous Windows ; sous GNOME il n'existe pas d'API de flou pour les apps (seulement sous KDE). Ensuite (2026-10-30), inspiré de WhiteSur-Glassy et Aura Glass : sidebar translucide quand Blur my Shell (ou Hyprland) floute derrière la fenêtre, voir [[Sidebar translucide sous Linux]].
 
 ## 5. Le noyau portable (2026-10-29 → 30)
 1. Demande : rendre iPodKit, DeviceKit et MediaKit compatibles avec les 3 plateformes, pour un CLI qui marche partout, à intégrer ensuite au prototype SwiftCrossUI.

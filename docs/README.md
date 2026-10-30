@@ -35,6 +35,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Thème GTK Mac]] : la feuille de style qui donne le look Mac sur Windows et Linux
 - [[Manques SwiftCrossUI]] : ce qu'il faut ajouter au framework, et ce que le prototype a découvert
 - [[Composants natifs par plateforme]] : tableau, sidebar, icônes et fenêtre natifs, derrière une même vue Swift
+- [[Sidebar translucide sous Linux]] : sidebar floutée via Blur my Shell ou Hyprland, sans coût pour l'app
 
 ## Distribution
 - [[Lancement portatif par OS]] : lanceur « shadow copy », Gatekeeper, FAT32
