@@ -2,7 +2,7 @@
 
 Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lance depuis **n'importe quel Mac, PC Windows ou Linux**, garde un **look Mac partout**, et reste aussi rapide qu'aujourd'hui. Une seule base de code Swift qui sait se compiler pour les trois OS.
 
-> Statut : plan approuvé le 2026-10-22 ; phase 0 en cours (prototype dans `prototypes/swiftcrossui/`). Avancement : [GitHub Project](https://github.com/users/wwwonka/projects/5). Ce vault s'ouvre dans Obsidian via « Open folder as vault » sur `docs/`.
+> Statut : plan approuvé le 2026-10-22 ; phase 0 en cours (prototype dans `prototypes/swiftcrossui/`) ; noyau portable et CLI en place depuis le 2026-10-30 (voir [[Package Swift]]). Avancement : [GitHub Project](https://github.com/users/wwwonka/projects/5). Ce vault s'ouvre dans Obsidian via « Open folder as vault » sur `docs/`.
 
 ## Commencer ici
 - [[Vision]] : objectifs, contraintes, principes de performance
@@ -15,6 +15,8 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Compilation multiplateforme]] : un `Package.swift`, trois OS
 - [[MediaKit]] : tags, pochettes, transcodage (rapide sur Mac, portable ailleurs)
 - [[DeviceKit]] : détection d'iPod, numéro de série USB, éjection
+- [[Package Swift]] : ce qui est en place, comment compiler et tester sur les 3 OS, mesures
+- [[CLI ipodpromax]] : synchroniser un iPod en ligne de commande, sur les 3 OS
 
 ## Données
 - [[Sur l'hôte]] : la bibliothèque et les caches restent sur l'ordi
@@ -44,3 +46,4 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[ADR-003 GTK et thème Mac sur Windows et Linux]]
 - [[ADR-004 Caches sur l'hôte]]
 - [[ADR-005 FAT32 en mode portatif]]
+- [[ADR-006 Noyau portable sans dépendance Apple]]

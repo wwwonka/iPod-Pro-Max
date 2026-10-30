@@ -34,3 +34,6 @@ Ce qui concerne **l'iPod lui-même** voyage avec lui. Décision : [[ADR-001 Bibl
 - **Écriture sûre** (FAT32 n'a pas de journal) : on écrit `x.json.tmp`, on fait `fsync`, on renomme, et on garde `x.json.bak` (génération précédente). Au chargement, si `x.json` est illisible, on prend `.bak`.
 
 Objectif mesuré : données de l'iPod disponibles moins de 300 ms après le montage (voir [[Phases]]).
+
+## Déjà en place (2026-10-30)
+Le CLI écrit son registre de sync dans `Data/cli-sync.json` avec l'écriture sûre décrite plus haut (`DeviceDataFolder` dans iPodKit). Voir [[CLI ipodpromax]].

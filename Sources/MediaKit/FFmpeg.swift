@@ -74,7 +74,9 @@ public enum FFmpeg {
     public static func run(_ binary: String, _ arguments: [String], onOutput: (@Sendable (String) -> Void)? = nil) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = arguments
+        // Without -nostdin, ffmpeg polls the console for keys and spins at 100 % CPU under Windows when
+        // started without one.
+        process.arguments = ["-nostdin"] + arguments
         let errPipe = Pipe()
         let outPipe = Pipe()
         process.standardError = errPipe
@@ -115,7 +117,9 @@ public enum FFmpeg {
     public static func probe(_ binary: String, _ arguments: [String]) async -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
-        process.arguments = arguments
+        // Without -nostdin, ffmpeg polls the console for keys and spins at 100 % CPU under Windows when
+        // started without one.
+        process.arguments = ["-nostdin"] + arguments
         let errPipe = Pipe()
         process.standardError = errPipe
         process.standardOutput = FileHandle.nullDevice

@@ -22,3 +22,19 @@ Sans FireWire GUID, un iPod classic ou nano 3G/4G est `.unsupported` (`Device/IP
 
 ## Ce qui ne change pas
 `IPodDevice.load` (lecture de SysInfo et SysInfoExtended) et `IPodModelTable` sont du Foundation pur et vont dans iPodKit tels quels. Voir [[Modules]].
+
+## Mise en œuvre (2026-10-30)
+API commune (`Sources/DeviceKit/DeviceKit.swift`) : `DeviceScanner.scan()` et `device(at:)`, `USBIdentification.identify(volume:)`, `VolumeWatcher` (rappel ou `AsyncStream`), `Ejector.eject(_:)`. Les protocoles imaginés plus haut sont devenus ces types concrets, avec un fichier par OS :
+
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| Volumes candidats | `mountedVolumeURLs`, disques locaux éjectables | `/proc/self/mountinfo`, systèmes de fichiers vfat, hfsplus, exfat sur `/dev/…` | lettres de lecteur amovibles ou fixes, hors lecteur système |
+| Événements | DiskArbitration (chemin et nom de volume, disparition) | `poll()` bloquant sur `/proc/self/mountinfo` (POLLPRI), dans un thread | `CM_Register_Notification` sur les interfaces de volume, regroupés sur une seconde le temps que la lettre soit attribuée |
+| USB → volume | IORegistry (code existant) | `/sys/dev/block/<maj:min>` puis remontée jusqu'à `idVendor` / `idProduct` / `serial` | disque (`IOCTL_STORAGE_GET_DEVICE_NUMBER`) puis parents Plug and Play jusqu'à `USB\VID_…&PID_…\<série>` |
+| Éjection | `DADiskUnmount` (disque entier) puis `DADiskEject` | `udisksctl unmount` puis `power-off` ; sinon `umount` + `eject` | `CM_Request_Device_EjectW` sur le disque, puis son parent |
+
+Sous Windows, les appels cfgmgr32 sont dans la cible C `CWinDevices` (voir [[ADR-006 Noyau portable sans dépendance Apple]]).
+
+Le **FireWire GUID** est maintenant repris du numéro de série USB quand SysInfo n'en donne pas et que la série fait 16 chiffres hexadécimaux (`USBDeviceIdentity.firewireGUIDFromSerial`).
+
+**Pas encore testé avec un vrai iPod hors Mac** : dans les VM, la détection d'iPods simulés, la compilation et l'absence d'erreur sans iPod ont été vérifiées, pas la lecture du numéro de série, les événements ni l'éjection. C'est le prochain test réel (passage USB de l'iPod à la VM).
