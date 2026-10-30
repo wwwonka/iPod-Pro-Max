@@ -8,6 +8,9 @@
 
 import Foundation
 import AppKit
+import iPodKit
+import MediaKit
+import DeviceKit
 
 enum MusicPID {
     /// Music's AppleScript persistent IDs are 16 uppercase hex digits; iTunesLibrary gives an unpadded number.

@@ -7,6 +7,9 @@
 
 import Foundation
 import Observation
+import iPodKit
+import MediaKit
+import DeviceKit
 
 @MainActor
 @Observable
@@ -86,7 +89,9 @@ final class SyncCoordinator {
                                       transcodeDir: library.transcodeDir,
                                       photoCacheDir: library.photoCacheDir,
                                       photoSelection: library.photoSelection,
-                                      options: options)
+                                      options: options,
+                                      media: MediaServices(),
+                                      photoLibrary: PhotosLibrary())
             let deviceID = device.id
             let engine = SyncEngine(request: request) { [weak self] progress in
                 Task { @MainActor [weak self] in

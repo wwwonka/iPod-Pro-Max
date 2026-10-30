@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A1B2C3D4E5F6000000000110 /* iPodKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000210 /* iPodKit */; };
+		A1B2C3D4E5F6000000000111 /* MediaKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000211 /* MediaKit */; };
+		A1B2C3D4E5F6000000000112 /* DeviceKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6000000000212 /* DeviceKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		84847AFA304A13F200303053 /* iPod Pro Max.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "iPod Pro Max.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +29,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1B2C3D4E5F6000000000110 /* iPodKit in Frameworks */,
+				A1B2C3D4E5F6000000000111 /* MediaKit in Frameworks */,
+				A1B2C3D4E5F6000000000112 /* DeviceKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +74,9 @@
 			);
 			name = "iPod Pro Max";
 			packageProductDependencies = (
+				A1B2C3D4E5F6000000000210 /* iPodKit */,
+				A1B2C3D4E5F6000000000211 /* MediaKit */,
+				A1B2C3D4E5F6000000000212 /* DeviceKit */,
 			);
 			productName = "iPod Pro Max";
 			productReference = 84847AFA304A13F200303053 /* iPod Pro Max.app */;
@@ -94,6 +106,9 @@
 			);
 			mainGroup = 84847AF1304A13F200303053;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A1B2C3D4E5F6000000000001 /* XCLocalSwiftPackageReference "." */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 84847AFB304A13F200303053 /* Products */;
 			projectDirPath = "";
@@ -349,6 +364,28 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A1B2C3D4E5F6000000000001 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1B2C3D4E5F6000000000210 /* iPodKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = iPodKit;
+		};
+		A1B2C3D4E5F6000000000211 /* MediaKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MediaKit;
+		};
+		A1B2C3D4E5F6000000000212 /* DeviceKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = DeviceKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 84847AF2304A13F200303053 /* Project object */;
 }

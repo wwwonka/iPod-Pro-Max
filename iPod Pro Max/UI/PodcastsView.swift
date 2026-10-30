@@ -4,6 +4,9 @@
 //
 
 import SwiftUI
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct PodcastsView: View {
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?

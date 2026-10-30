@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+import iPodKit
+import MediaKit
+import DeviceKit
 
 @main
 struct iPod_Pro_MaxApp: App {

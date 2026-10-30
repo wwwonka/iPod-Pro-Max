@@ -12,6 +12,9 @@
 //
 
 import Foundation
+import iPodKit
+import MediaKit
+import DeviceKit
 
 enum YouTubeFeed {
     static func isYouTubeURL(_ url: URL) -> Bool {

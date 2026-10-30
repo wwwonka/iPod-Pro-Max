@@ -10,6 +10,9 @@
 import Foundation
 import Observation
 import CryptoKit
+import iPodKit
+import MediaKit
+import DeviceKit
 
 /// Spaces Deezer API requests so a big first pass stays under its limit (50 requests per 5 s)
 /// instead of tripping it and retrying.

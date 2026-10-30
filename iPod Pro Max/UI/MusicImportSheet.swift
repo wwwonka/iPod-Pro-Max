@@ -7,6 +7,9 @@
 //
 
 import SwiftUI
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct MusicImportSheet: View {
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?

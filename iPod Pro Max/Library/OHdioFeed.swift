@@ -13,6 +13,9 @@
 //
 
 import Foundation
+import iPodKit
+import MediaKit
+import DeviceKit
 
 enum OHdioFeed {
     private static let baseURL = "https://services.radio-canada.ca"

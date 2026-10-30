@@ -9,6 +9,9 @@
 
 import Foundation
 import iTunesLibrary
+import iPodKit
+import MediaKit
+import DeviceKit
 
 enum MusicItemStatus: String {
     case ready

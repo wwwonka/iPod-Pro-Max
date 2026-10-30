@@ -6,6 +6,9 @@
 //
 
 import Foundation
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct ParsedFeed {
     var title: String = ""

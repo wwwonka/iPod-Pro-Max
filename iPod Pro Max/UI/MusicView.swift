@@ -5,6 +5,9 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import iPodKit
+import MediaKit
+import DeviceKit
 
 private enum MusicViewMode: String {
     case byArtist, allSongs

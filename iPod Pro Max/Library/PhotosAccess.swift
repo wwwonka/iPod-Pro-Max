@@ -11,6 +11,9 @@ import Photos
 import AppKit
 import CoreGraphics
 import ImageIO
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct PhotosAlbumInfo: Identifiable, Hashable {
     let id: String
@@ -141,5 +144,28 @@ enum PhotosAccess {
         for u in items where !keep.contains(u.deletingPathExtension().lastPathComponent) {
             try? FileManager.default.removeItem(at: u)
         }
+    }
+}
+
+/// The Photos app as the sync engine's photo source (iPodKit doesn't know about PhotoKit).
+struct PhotosLibrary: PhotoLibrarySource {
+    var isAuthorized: Bool { PhotosAccess.isAuthorized }
+
+    func estimatedCount(selection: PhotoSelection) -> Int {
+        var n = 0
+        if selection.includeAllPhotos { n += PhotosAccess.allPhotosCount() }
+        for a in PhotosAccess.albums() where selection.albumIDs.contains(a.id) { n += a.count }
+        return n
+    }
+
+    func export(selection: PhotoSelection, cacheDir: URL, progress: @escaping (Int, Int) -> Void) throws -> PhotoExport {
+        let result = try PhotosAccess.export(selection: selection, cacheDir: cacheDir, progress: progress)
+        return PhotoExport(photos: result.photos,
+                           albums: result.albums.map { PhotoExport.Album(name: $0.name, photoKeys: $0.photoKeys) },
+                           failed: result.failed)
+    }
+
+    func pruneCache(_ cacheDir: URL, keep: Set<String>) {
+        PhotosAccess.pruneCache(cacheDir, keep: keep)
     }
 }

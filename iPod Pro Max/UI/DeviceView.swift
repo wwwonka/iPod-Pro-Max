@@ -4,6 +4,9 @@
 //
 
 import SwiftUI
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct DeviceView: View {
     let device: IPodDevice

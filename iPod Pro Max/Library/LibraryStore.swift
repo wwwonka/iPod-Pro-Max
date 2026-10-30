@@ -11,6 +11,9 @@ import Observation
 import CryptoKit
 import AppKit
 import os
+import iPodKit
+import MediaKit
+import DeviceKit
 
 /// Every track of an album usually embeds the same cover. Decoding and re-encoding it as JPEG is the
 /// most expensive part of reading a file, so during one import pass each distinct embedded image

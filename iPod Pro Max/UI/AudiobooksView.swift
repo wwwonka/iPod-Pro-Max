@@ -7,6 +7,9 @@
 //
 
 import SwiftUI
+import iPodKit
+import MediaKit
+import DeviceKit
 
 private struct AudiobookEntry: Identifiable {
     let id: String

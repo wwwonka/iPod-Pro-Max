@@ -5,6 +5,9 @@
 
 import SwiftUI
 import Photos
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct PhotosView: View {
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?

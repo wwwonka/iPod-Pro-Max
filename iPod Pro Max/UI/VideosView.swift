@@ -5,6 +5,9 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import iPodKit
+import MediaKit
+import DeviceKit
 
 struct VideosView: View {
     @Environment(LibraryStore.self) private var envLibrary: LibraryStore?

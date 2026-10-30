@@ -5,6 +5,9 @@
 
 import SwiftUI
 import AppKit
+import iPodKit
+import MediaKit
+import DeviceKit
 
 enum Format {
     static func duration(ms: Int) -> String {

@@ -1,6 +1,9 @@
 // dbtest: end-to-end check of the sync engine against a simulated iPod folder.
 // Build: see Tools/dbtest/run.sh
 import Foundation
+import iPodKit
+import MediaKit
+import DeviceKit
 
 @main
 struct DBTest {
@@ -37,7 +40,7 @@ struct DBTest {
             t.hasLyrics = md.hasLyrics
 
             let record = DeviceSyncRecord(deviceID: dev.id, deviceName: dev.volumeName)
-            let req = SyncRequest(device: dev, record: record, tracks: [t], playlists: [], shows: [], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: SyncOptions(syncPhotos: false))
+            let req = SyncRequest(device: dev, record: record, tracks: [t], playlists: [], shows: [], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: syncOptions(), media: MediaServices())
             let engine = SyncEngine(request: req) { p in print("  [\(p.phase)] \(p.detail)") }
             let result = try await engine.run()
             print("Sync: added=\(result.added) failed=\(result.failed) log=\(result.log)")
@@ -176,7 +179,7 @@ struct DBTest {
 
             var record = DeviceSyncRecord(deviceID: dev.id, deviceName: dev.volumeName)
             record.syncAllMusic = true
-            let req = SyncRequest(device: dev, record: record, tracks: tracks, playlists: [], shows: [], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: SyncOptions(syncPhotos: false))
+            let req = SyncRequest(device: dev, record: record, tracks: tracks, playlists: [], shows: [], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: syncOptions(), media: MediaServices())
             let engine = SyncEngine(request: req) { p in print("  [\(p.phase)] \(p.detail)") }
             let result = try await engine.run()
             print("Sync: added=\(result.added) removed=\(result.removed) failed=\(result.failed)")
@@ -196,7 +199,7 @@ struct DBTest {
             }
             let albums = [PhotoAlbumItem(name: "Holiday", photoKeys: [items[0].key]), PhotoAlbumItem(name: "Both", photoKeys: items.map(\.key))]
             let writer = PhotoDBWriter(mountPoint: ipod, formats: dev.generation.photoFormats)
-            let n = try writer.write(photos: items, albums: albums, tzOffset: 0) { _, _ in }
+            let n = try writer.write(photos: items, albums: albums, tzOffset: 0, decode: { ImageLoading.pixels(from: $0) }) { _, _ in }
             print("Wrote \(n) photos, formats \(dev.generation.photoFormats.map(\.id))")
             return
         }
@@ -260,7 +263,7 @@ struct DBTest {
         record.removeUnknownTracks = args.contains("--remove-unknown")
 
         func runSync(label: String, tracks: [LibraryTrack], record: DeviceSyncRecord) async throws -> SyncResult {
-            let req = SyncRequest(device: device, record: record, tracks: tracks, playlists: [playlist], shows: [show], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: SyncOptions(removeUnknownTracks: record.removeUnknownTracks, syncPhotos: false))
+            let req = SyncRequest(device: device, record: record, tracks: tracks, playlists: [playlist], shows: [show], artworkDir: artworkDir, transcodeDir: transcodeDir, photoCacheDir: work.appendingPathComponent("PhotoCache"), photoSelection: PhotoSelection(), options: syncOptions(removeUnknownTracks: record.removeUnknownTracks), media: MediaServices())
             let engine = SyncEngine(request: req) { p in print("  [\(p.phase)] \(p.detail) \(p.fraction.map { String(format: "%.0f%%", $0 * 100) } ?? "")") }
             let r = try await engine.run()
             print("\(label): added=\(r.added) removed=\(r.removed) failed=\(r.failed) log=\(r.log)")
@@ -302,4 +305,12 @@ struct DBTest {
             print("  PLAYLIST \(p.name) master=\(p.isMaster) podcast=\(p.isPodcasts) members=\(p.memberDBIDs.count)")
         }
     }
+}
+
+/// Photos off (dbtest has no Photos library); the rest as SyncOptions' defaults.
+func syncOptions(removeUnknownTracks: Bool = true) -> SyncOptions {
+    var options = SyncOptions()
+    options.removeUnknownTracks = removeUnknownTracks
+    options.syncPhotos = false
+    return options
 }

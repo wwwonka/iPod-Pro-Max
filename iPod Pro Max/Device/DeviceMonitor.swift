@@ -2,12 +2,14 @@
 //  DeviceMonitor.swift
 //  iPod Pro Max
 //
-//  Watches mounted volumes and keeps the list of connected iPods up to date.
+//  Keeps the list of connected iPods up to date. Finding, identifying (USB fallback), watching and
+//  ejecting are DeviceKit's, the same code as on Linux and Windows and in the command-line tool.
 //
 
 import Foundation
-import AppKit
 import Observation
+import iPodKit
+import DeviceKit
 
 @MainActor
 @Observable
@@ -16,7 +18,8 @@ final class DeviceMonitor {
     /// Folders attached through Settings › Advanced as simulated iPods (persisted as paths).
     private(set) var simulatedFolders: [URL] = []
 
-    private var observers: [NSObjectProtocol] = []
+    /// DiskArbitration mount, unmount and rename events (no polling).
+    private var watcher: VolumeWatcher?
     private let defaultsKey = "simulatedIPodFolders"
 
     init() {
@@ -28,16 +31,9 @@ final class DeviceMonitor {
             let url = URL(fileURLWithPath: extra)
             if !simulatedFolders.contains(url) { simulatedFolders.append(url) }
         }
-        let nc = NSWorkspace.shared.notificationCenter
-        observers.append(nc.addObserver(forName: NSWorkspace.didMountNotification, object: nil, queue: .main) { [weak self] _ in
+        watcher = VolumeWatcher { [weak self] in
             Task { @MainActor [weak self] in self?.rescan() }
-        })
-        observers.append(nc.addObserver(forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.rescan() }
-        })
-        observers.append(nc.addObserver(forName: NSWorkspace.didRenameVolumeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.rescan() }
-        })
+        }
         rescan()
     }
 
@@ -63,27 +59,9 @@ final class DeviceMonitor {
     }
 
     nonisolated static func scanVolumes(simulatedFolders: [URL]) -> [IPodDevice] {
-        var found: [IPodDevice] = []
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeIsRemovableKey, .volumeIsEjectableKey, .volumeIsInternalKey, .volumeIsLocalKey, .volumeIsRootFileSystemKey]
         // Development aid: `-ignoreDevices YES` hides real iPods.
-        let volumes = UserDefaults.standard.bool(forKey: "ignoreDevices") ? [] : (FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? [])
-        for v in volumes {
-            guard let values = try? v.resourceValues(forKeys: Set(keys)) else { continue }
-            // iPods are local, ejectable USB/FireWire disks. Skip network shares, the boot disk and internal drives.
-            if values.volumeIsLocal == false { continue }
-            if values.volumeIsRootFileSystem == true { continue }
-            let ejectable = (values.volumeIsRemovable ?? false) || (values.volumeIsEjectable ?? false)
-            if !ejectable && (values.volumeIsInternal ?? true) { continue }
-            if let dev = IPodDevice.detect(volume: v) {
-                found.append(dev)
-            }
-        }
-        for folder in simulatedFolders {
-            if let dev = IPodDevice.detect(volume: folder, simulated: true) {
-                found.append(dev)
-            }
-        }
-        return found
+        DeviceScanner.scan(simulatedFolders: simulatedFolders,
+                           includeRealDevices: !UserDefaults.standard.bool(forKey: "ignoreDevices"))
     }
 
     func device(id: String) -> IPodDevice? { devices.first { $0.id == id } }
@@ -112,10 +90,7 @@ final class DeviceMonitor {
             detachSimulatedFolder(device.mountPoint)
             return
         }
-        let url = device.mountPoint
-        try await Task.detached(priority: .userInitiated) {
-            try NSWorkspace.shared.unmountAndEjectDevice(at: url)
-        }.value
+        try await Ejector.eject(device)
         rescan()
     }
 }

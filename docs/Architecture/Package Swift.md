@@ -2,7 +2,7 @@
 
 Le noyau d'iPod Pro Max est un package Swift à la racine du repo (`Package.swift`). Il se compile et ses tests passent **sur macOS, Linux et Windows** avec `swift build` et `swift test`. C'est la réalisation des phases 1 et 4 de [[Phases]] côté code ; le plan d'origine est dans [[Modules]].
 
-> Mis en place le 2026-10-29/30. Le projet Xcode doit encore consommer ce package (voir « Ce qui reste » plus bas).
+> Mis en place le 2026-10-29/30. L'app SwiftUI (projet Xcode) consomme ce package depuis le 2026-10-30.
 
 ## Les cibles
 
@@ -97,12 +97,19 @@ Corrigé après la revue du package, du CLI et du prototype :
 Constaté et laissé ouvert :
 - Prototype Windows : la liste d'artistes crée un élément XAML par artiste (pas virtualisée, contrairement à ce que dit son commentaire), comme le tableau des pistes ; même cause (`itemsSource` refuse le vecteur Swift), à régler ensemble.
 - Annuler une sync avant le lancement de ffmpeg n'arrête pas cette conversion-là.
-- `DeviceMonitor` de l'app appelle encore `IPodDevice.detect` sans `usbLookup` : à brancher sur `DeviceScanner` avec le reste de l'app.
+
+## L'app SwiftUI sur le package
+Le projet Xcode référence le package local (la racine du repo) et lie iPodKit, MediaKit et DeviceKit. L'app ne garde que ce qui est à elle :
+- interface SwiftUI, `LibraryStore`, `SyncCoordinator`, flux de podcasts, import depuis Musique ;
+- `PhotosAccess`, branché sur la sync par `PhotosLibrary: PhotoLibrarySource` ;
+- `DeviceMonitor`, qui passe maintenant par DeviceKit (`DeviceScanner`, `VolumeWatcher`, `Ejector`) : même détection que le CLI, avec le repli USB pour le modèle et le FireWire GUID ; plus d'AppKit pour les montages et l'éjection.
+
+`Tools/dbtest/run.sh` compile le package avec `swift build` et lie le harnais aux modules : la sync de bout en bout (MP3, Apple Lossless, FLAC → AAC, WAV, vidéos, pochettes, playlists, compteurs de lecture, deuxième sync sans copie) repasse.
+
+C'est une étape de transition : à terme, l'app multiplateforme (SwiftCrossUI) remplace l'app SwiftUI et le projet Xcode disparaît ; Xcode ouvre directement `Package.swift`.
 
 ## Ce qui reste
-- **Le projet Xcode doit consommer le package** (référence de package local, `import iPodKit / MediaKit / DeviceKit` dans l'app, `DeviceMonitor` sur `DeviceScanner` et `VolumeWatcher`, `PhotosAccess` derrière `PhotoLibrarySource`). Tant que ce n'est pas fait, **l'app Mac ne compile pas sur cette branche** : ses fichiers sont partis dans le package.
 - **Le prototype SwiftCrossUI** doit afficher les vrais iPods (`DeviceScanner`, `VolumeWatcher`) et proposer la sync d'un dossier (`FolderImporter` + `SyncEngine`).
-- `Tools/dbtest/run.sh` compile encore les anciens chemins (`Core/*`, `Sync/*`) : à rebrancher sur le package en même temps que l'app.
 - Conversions en parallèle avant la copie : la sync convertit encore une piste à la fois.
 - Test avec un vrai iPod sous Linux et Windows : numéro de série USB, éjection, événements de montage (seule la partie sans matériel a pu être testée dans les VM).
 - CI GitHub Actions sur les 3 OS (voir [[CI et packaging]]).
