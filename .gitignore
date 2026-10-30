@@ -21,3 +21,7 @@ docs/.obsidian/*
 # Claude Code: local worktrees and settings
 .claude/worktrees/
 .claude/settings.local.json
+
+# Swift package (Package.swift at the root)
+/.build/
+/.swiftpm/
