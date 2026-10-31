@@ -241,7 +241,7 @@
         sidebarStyleInstalled = true
         typealias M = SidebarMetrics
         let provider = gtk_css_provider_new()!
-        gtk_css_provider_load_from_string(provider, """
+        loadCSS(provider, """
             .ippm-sidebar-pane { background-color: #EBEBEB; }
             .ippm-dark .ippm-sidebar-pane { background-color: #2C2C2C; }
             .ippm-sidebar { margin-top: \(Int(titleBarHeight))px; }

@@ -8,6 +8,13 @@
     /// GTK has no Mac-style title bar, so the app draws the traffic lights and the toggle.
     let drawsWindowControls = true
 
+    /// Loads a style sheet into `provider`. `gtk_css_provider_load_from_string` only exists from
+    /// GTK 4.12; this one is in every GTK 4 (deprecated in 4.12, not removed), so the app also runs
+    /// on Ubuntu 22.04's GTK 4.6.
+    func loadCSS(_ provider: UnsafeMutablePointer<GtkCssProvider>, _ css: String) {
+        gtk_css_provider_load_from_data(provider, css, -1)
+    }
+
     extension View {
         /// - Parameter colorScheme: set from GNOME's setting, which GTK doesn't tell SwiftCrossUI.
         func windowChrome(colorScheme: Binding<ColorScheme>) -> some View {
@@ -79,7 +86,7 @@
         guard !titleBarStyleInstalled else { return }
         titleBarStyleInstalled = true
         let provider = gtk_css_provider_new()!
-        gtk_css_provider_load_from_string(provider, """
+        loadCSS(provider, """
             .ippm-titlebar-buttons { min-height: \(Int(titleBarHeight))px; }
             .ippm-lights { margin-left: 20px; }
             .ippm-light { min-width: 12px; min-height: 12px; padding: 0; margin: 0; border: none; border-radius: 6px;
@@ -205,7 +212,7 @@
         /// maximized or tiled.
         private func roundCorners(_ window: UnsafeMutablePointer<GtkWindow>) {
             let provider = gtk_css_provider_new()!
-            gtk_css_provider_load_from_string(provider, """
+            loadCSS(provider, """
                 window.csd { border-radius: 12px; }
                 window.csd > .ippm-content { border-radius: 12px; }
                 window.maximized > .ippm-content, window.tiled > .ippm-content,

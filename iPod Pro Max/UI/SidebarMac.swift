@@ -23,7 +23,7 @@
 
         func makeNSView(context: Context) -> NSView {
             let outline = NSOutlineView()
-            outline.style = .sourceList
+            if #available(macOS 11, *) { outline.style = .sourceList }
             outline.headerView = nil
             outline.floatsGroupRows = false
             outline.rowSizeStyle = .default
@@ -170,7 +170,7 @@
                 }
                 cell.textField?.stringValue = node.title
                 if let icon = node.icon {
-                    cell.imageView?.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+                    cell.imageView?.image = systemSymbol(icon)
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
                 let dimmed = !node.isGroup && node.item == nil
@@ -253,8 +253,7 @@
 
         override init(frame: NSRect) {
             super.init(frame: frame)
-            image.image = NSImage(systemSymbolName: "eject.fill", accessibilityDescription: "Eject")?
-                .withSymbolConfiguration(.init(pointSize: SidebarMetrics.ejectPointSize, weight: .regular))
+            image.image = systemSymbol("eject.fill", description: "Eject", pointSize: SidebarMetrics.ejectPointSize)
             image.imageScaling = .scaleNone
             image.translatesAutoresizingMaskIntoConstraints = false
             addSubview(image)

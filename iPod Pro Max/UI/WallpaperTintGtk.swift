@@ -66,7 +66,7 @@
                 onChange()
                 return
             }
-            gtk_css_provider_load_from_string(provider, """
+            loadCSS(provider, """
                 window.ippm-tint .ippm-sidebar-pane { background: #EBEBEB url("file://\(light)") center / cover no-repeat; }
                 window.ippm-tint.ippm-dark .ippm-sidebar-pane { background: #2C2C2C url("file://\(dark)") center / cover no-repeat; }
                 """)

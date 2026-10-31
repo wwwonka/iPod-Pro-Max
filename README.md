@@ -24,17 +24,20 @@ Un seul `Package.swift` à la racine décrit l’application, les bibliothèques
 
 ## Compiler et lancer
 
-Depuis le Finder, double-cliquer sur `build-mac.command`, `build-linux.command` ou `build-windows.command`. Les versions Linux et Windows utilisent les VM Parallels existantes.
+Depuis le Finder, double-cliquer sur `Build.command` : il construit les trois OS, puis fait de `Build/` la **racine d’un iPod** (FAT32) avec les applications, la CLI, un `iPod_Control/` simulé et le lanceur `LAUNCHER.cmd` / `LAUNCHER.command`. Le build ne touche jamais un vrai iPod. Linux se compile dans Docker (OrbStack) sur le Mac ; Windows utilise encore la VM Parallels.
 
 Depuis la racine du dépôt :
 
 ```sh
-Tools/Build/build.sh mac          # construit Build/mac/iPod Pro Max.app
-Tools/Build/build.sh mac --run    # construit et ouvre l’app
-Tools/Build/build.sh linux windows
+Tools/Build/build.sh              # mac + linux + windows, puis Build/
+Tools/Build/build.sh mac --run    # seulement macOS, puis lance l’app par Build/LAUNCHER.command
+Tools/Build/build.sh --clean      # repart de zéro, iPod_Control et Persistent Data compris
+sh Build/LAUNCHER.cmd cli list    # la CLI de cet OS, depuis l’iPod simulé
 Tools/Build/run-mac.sh            # lancement de développement
 Tools/Build/run-mac.sh gtk        # aperçu GTK sur Mac
 ```
+
+`iPod_Control/` et `iPod Pro Max/Persistent Data/` (réglages partagés par les 3 OS) sont conservés d’un build à l’autre. Ce qu’on veut simplement retrouver sur l’iPod va dans `Distribution/iPod Root/`. Disposition : [Sur l’iPod](Docs/Données/Sur%20l'iPod.md).
 
 Les scripts résolvent les dépendances et appliquent les correctifs SwiftCrossUI avant de compiler. Les exécutables s’appellent `iPodProMaxApp` (interface) et `ipodpromax` (CLI), pour éviter une collision sur les disques insensibles à la casse.
 
@@ -44,7 +47,7 @@ swift test
 .build/debug/ipodpromax list
 ```
 
-Détails : [application SwiftCrossUI](Docs/Architecture/Application%20SwiftCrossUI.md). Les sorties vont dans `Build/`, les ressources privées restent dans `iPod Pro Max/Resources/Local/`. Ces dossiers sont ignorés par Git.
+Détails : [application SwiftCrossUI](Docs/Architecture/Application%20SwiftCrossUI.md). Les étapes intermédiaires (ffmpeg, icônes, logs, build de chaque OS) vont dans `.build-work/`, l’iPod dans `Build/`, les ressources privées restent dans `iPod Pro Max/Resources/Local/`. Ces dossiers sont ignorés par Git.
 
 ## État fonctionnel
 

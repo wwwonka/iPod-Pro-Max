@@ -11,6 +11,8 @@ import AVFoundation
 import CoreMedia
 import iPodKit
 
+/// macOS 12 for AVAsset's `load`; older Macs read tags with PortableTagReader (MetadataExtractor).
+@available(macOS 12, *)
 enum AVTagReader {
     static func extract(from url: URL) async throws -> ExtractedMetadata {
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])

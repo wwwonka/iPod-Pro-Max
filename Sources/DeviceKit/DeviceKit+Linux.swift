@@ -9,7 +9,11 @@
 
 #if os(Linux)
 import Foundation
+#if canImport(Glibc)
 import Glibc
+#else
+import Musl  // the static Linux SDK, for the command-line tool
+#endif
 import iPodKit
 
 enum Platform {

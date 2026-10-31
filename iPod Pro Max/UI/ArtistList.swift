@@ -17,7 +17,7 @@ import SwiftCrossUI
 
         func makeNSView(context: Context) -> NSScrollView {
             let table = NSTableView()
-            table.style = .plain
+            if #available(macOS 11, *) { table.style = .plain }
             table.headerView = nil
             table.rowHeight = 24
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("artist")))

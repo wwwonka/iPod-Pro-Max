@@ -82,7 +82,7 @@ if (Test-Path $font) {
 }
 
 # Local copy: building on the network share is slow, and some tools dislike UNC paths.
-robocopy $Source $Work /MIR /XD .build .build-gtk (Join-Path $Source "Build") (Join-Path $Work "Build") Local Legacy Docs Site Refs .git .claude .scratch .swiftpm .cache /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy $Source $Work /MIR /XD .build .build-gtk .build-work (Join-Path $Source "Build") (Join-Path $Work "Build") Local Legacy Docs Site Refs .git .claude .scratch .swiftpm .cache /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)" }
 # Only WinUI: left to its platform conditions, SwiftPM also builds the GTK backend here.
 $env:SCUI_DEFAULT_BACKEND = "WinUIBackend"
@@ -94,8 +94,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "swift package resolve failed" }
     & (Join-Path $env:ProgramFiles "Git\bin\bash.exe") Tools/Build/patch-dependencies.sh .build
     if ($LASTEXITCODE -ne 0) { throw "patch-dependencies failed" }
-    # The app icon in the executable's resources (Explorer, taskbar), from build.sh's Build/icons.
-    $icon = Join-Path $Source "Build\icons\AppIcon.ico"
+    # The app icon in the executable's resources (Explorer, taskbar), from build.sh's .build-work/icons.
+    $icon = Join-Path $Source ".build-work\icons\AppIcon.ico"
     $linkFlags = @()
     $rc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter rc.exe -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match "\\(arm64|x64)\\" } | Sort-Object FullName -Descending | Select-Object -First 1
@@ -104,9 +104,11 @@ try {
         Set-Content "AppIcon.rc" '1 ICON "AppIcon.ico"'
         & $rc.FullName /nologo /fo AppIcon.res AppIcon.rc
         if ($LASTEXITCODE -eq 0) { $linkFlags = @("-Xlinker", (Join-Path $Work "AppIcon.res")) }
-    } else { Write-Warning "No icon resource: Build\icons\AppIcon.ico or rc.exe missing." }
+    } else { Write-Warning "No icon resource: .build-work\icons\AppIcon.ico or rc.exe missing." }
     swift build -c release --product iPodProMaxApp --build-system native @linkFlags
     if ($LASTEXITCODE -ne 0) { throw "swift build failed" }
+    swift build -c release --product ipodpromax --build-system native
+    if ($LASTEXITCODE -ne 0) { throw "swift build of ipodpromax failed" }
     $bin = (swift build -c release --build-system native --show-bin-path).Trim()
     # Also next to the executable, for the window's icon (AppWindow.SetIcon takes a file).
     if (Test-Path "AppIcon.ico") { Copy-Item "AppIcon.ico" $bin -Force }
@@ -124,15 +126,27 @@ foreach ($pattern in "*.dll", "*.pri", "*.winmd") { Copy-Item "$bin\$pattern" $s
 Get-ChildItem $bin -Directory -Filter *.resources | Copy-Item -Destination $stage -Recurse
 # The app's own ffmpeg (Tools/FFmpeg/build.sh windows), next to the executable where MediaKit looks.
 $ffArch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
-$ffmpeg = Join-Path $Source "Build\FFmpeg\windows-$ffArch\ffmpeg.exe"
+$ffmpeg = Join-Path $Source ".build-work\FFmpeg\windows-$ffArch\ffmpeg.exe"
 if (Test-Path $ffmpeg) { Copy-Item $ffmpeg $stage } else { Write-Warning "ffmpeg not built (Tools/FFmpeg/build.sh windows)" }
 $swiftCore = where.exe swiftCore.dll 2>$null | Select-Object -First 1
 if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $stage }
 else { Write-Warning "swiftCore.dll not found on PATH: the exe will only run where Swift is installed." }
-$dist = Join-Path $Source "Build\windows"
+$dist = Join-Path $Source ".build-work\windows\$ffArch"
 robocopy $stage $dist /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy to $dist failed ($LASTEXITCODE)" }
 Write-Output "OK: $dist\iPodProMaxApp.exe"
+
+# The command-line tool: its exe, ffmpeg and the Swift runtime DLLs (no WinUI).
+$cliStage = Join-Path $Work "dist-windows-cli"
+if (Test-Path $cliStage) { Remove-Item $cliStage -Recurse -Force }
+New-Item -ItemType Directory $cliStage | Out-Null
+Copy-Item "$bin\ipodpromax.exe" $cliStage
+if (Test-Path $ffmpeg) { Copy-Item $ffmpeg $cliStage }
+if ($swiftCore) { Copy-Item (Join-Path (Split-Path $swiftCore) "*.dll") $cliStage }
+$cliDist = Join-Path $Source ".build-work\windows-cli\$ffArch"
+robocopy $cliStage $cliDist /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy to $cliDist failed ($LASTEXITCODE)" }
+Write-Output "OK: $cliDist\ipodpromax.exe"
 
 if ($Run) {
     # Started from the local build folder: running WinUI from the \\Mac share is slow and fragile.

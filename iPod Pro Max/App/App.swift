@@ -93,7 +93,7 @@ struct ContentView: View {
         // The chrome logs how many frames each slide drew ([bench] sidebar ...).
         for _ in 0..<4 {
             toggleSidebar()
-            try? await Task.sleep(for: .seconds(SidebarSlide.duration + 0.55))
+            try? await Task.sleep(nanoseconds: UInt64((SidebarSlide.duration + 0.55) * 1e9))
         }
         exit(0)
     }

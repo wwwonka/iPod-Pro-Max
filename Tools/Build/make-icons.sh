@@ -1,11 +1,11 @@
 #!/bin/bash
 # Makes the app icon for each platform from iPod Pro Max/Resources/AppIcon.appiconset (the one source):
-#   Build/icons/AppIcon.icns  (macOS bundle)    Build/icons/AppIcon.ico  (Windows executable and window)
+#   .build-work/icons/AppIcon.icns  (macOS bundle)    .build-work/icons/AppIcon.ico  (Windows executable and window)
 # Linux takes the PNGs as they are (Tools/Build/build-linux.sh). macOS only: uses iconutil.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 src="iPod Pro Max/Resources/AppIcon.appiconset"
-out=Build/icons
+out=.build-work/icons
 mkdir -p "$out"
 [ "$out/AppIcon.ico" -nt "$src" ] && [ "$out/AppIcon.icns" -nt "$src" ] && exit 0
 

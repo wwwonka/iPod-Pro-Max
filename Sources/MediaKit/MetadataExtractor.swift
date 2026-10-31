@@ -19,10 +19,9 @@ public enum MetadataExtractor {
 
     public static func extract(from url: URL) async throws -> ExtractedMetadata {
         #if canImport(AVFoundation)
-        return try await AVTagReader.extract(from: url)
-        #else
-        return try PortableTagReader.read(url)
+        if #available(macOS 12, *) { return try await AVTagReader.extract(from: url) }
         #endif
+        return try PortableTagReader.read(url)
     }
 
     /// Looks for a cover image next to the audio file (folder.jpg, cover.png, …).

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs inside the Fedora VM, called by ../build.sh through prlctl exec.
 #   build-linux.sh deps                 (as root)  installs GTK 4 and Swift (Fedora's swift-lang package)
-#   build-linux.sh build <source dir>   (as user)  builds, fills Build/linux
+#   build-linux.sh build <source dir>   (as user)  builds, fills .build-work/linux/<arch>
 #   build-linux.sh run                  (as user)  opens the last build in the desktop session
 #   build-linux.sh check                           exits 0 when Swift and GTK 4 are installed
 set -euo pipefail
@@ -18,7 +18,7 @@ build)
     swift --version
 
     mkdir -p "$WORK"
-    rsync -a --delete --exclude .build --exclude .build-gtk --exclude /Build/ --exclude Local --exclude Legacy --exclude Docs --exclude Site --exclude Refs --exclude .git --exclude .claude --exclude .scratch --exclude .swiftpm --exclude .cache "$SRC/" "$WORK/"
+    rsync -a --delete --exclude .build --exclude .build-gtk --exclude /Build/ --exclude /.build-work/ --exclude Local --exclude Legacy --exclude Docs --exclude Site --exclude Refs --exclude .git --exclude .claude --exclude .scratch --exclude .swiftpm --exclude .cache "$SRC/" "$WORK/"
     cd "$WORK"
     # Static Swift runtime, so the binary only needs GTK 4 from the system. If this toolchain
     # lacks the static libraries, fall back to a build that needs Swift installed to run.
@@ -60,12 +60,12 @@ DESKTOP
         fi
     fi
 
-    DIST=$SRC/Build/linux
+    DIST=$SRC/.build-work/linux/$(uname -m)
     # rsync rather than rm -rf + cp: deleting a folder on the Parallels share fails now and then.
     mkdir -p "$DIST"
     rsync -a --delete --include 'iPodProMaxApp' --include '*.resources/***' --exclude '*' "$BIN/" "$DIST/"
     # The app's own ffmpeg (Tools/FFmpeg/build.sh), next to the executable where MediaKit looks.
-    FFMPEG="$SRC/Build/FFmpeg/linux-$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')/ffmpeg"
+    FFMPEG="$SRC/.build-work/FFmpeg/linux-$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')/ffmpeg"
     if [ -x "$FFMPEG" ]; then cp "$FFMPEG" "$DIST/ffmpeg"; else echo "warning: ffmpeg not built (Tools/FFmpeg/build.sh)" >&2; fi
     echo "OK: $DIST/iPodProMaxApp"
     ;;

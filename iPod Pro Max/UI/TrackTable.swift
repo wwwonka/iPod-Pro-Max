@@ -35,7 +35,7 @@ extension Array {
 
         func makeNSView(context: Context) -> NSScrollView {
             let table = NSTableView()
-            table.style = .inset
+            if #available(macOS 11, *) { table.style = .inset }
             table.usesAlternatingRowBackgroundColors = true
             table.allowsMultipleSelection = true
             table.columnAutoresizingStyle = .noColumnAutoresizing

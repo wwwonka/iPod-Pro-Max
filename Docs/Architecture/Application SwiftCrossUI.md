@@ -3,32 +3,31 @@
 Application principale du projet depuis le 2026-10-30, écrite en Swift et lancée sur macOS, Fedora et Windows 11. Son code est dans `iPod Pro Max/` ; le package unique est à la racine. Résultats et leçons : `Docs/Feuille de route/Prototypes phase 0.md`. Méthode : `Docs/Interface/Composants natifs par plateforme.md`.
 
 ## Lancer
-Depuis le Finder, double-cliquer à la racine du repo :
+Depuis le Finder, double-cliquer sur `Build.command` à la racine du repo. Il appelle `Tools/Build/build.sh`, qui construit les trois OS dans `.build-work/<os>/`, puis `Tools/Build/assemble-ipod.sh` fait de `Build/` la racine d'un iPod (disposition dans [[Sur l'iPod]]). On lance ensuite l'app par `Build/LAUNCHER.command` (Mac), `Build\LAUNCHER.cmd` (Windows) ou `sh Build/LAUNCHER.cmd` (Linux).
 
-| Lanceur | Effet |
-|---|---|
-| `build-mac.command` | construit l'app Mac et l'ouvre |
-| `build-linux.command` | construit dans la VM « Fedora Linux » et ouvre l'app dans sa session |
-| `build-windows.command` | construit dans la VM « Windows 11 » et ouvre l'app |
+| OS | Où ça compile | Sortie |
+|---|---|---|
+| macOS | sur le Mac, arm64 puis x86_64, réunis par `lipo` (le build multi-architecture de SwiftPM ne sait pas compiler les macros de SwiftCrossUI) | `.build-work/mac/app`, `.build-work/mac/cli` |
+| Linux | Docker sur le Mac (OrbStack), image `swift:6.1.2-jammy` + GTK 4, x86_64 et aarch64 : `Tools/Build/build-linux-docker.sh`. `IPPM_LINUX_BUILD=vm` reprend l'ancienne VM Fedora. | `.build-work/linux/<arch>`, `.build-work/linux-cli/<arch>` |
+| Windows | VM Parallels « Windows 11 » (aucune compilation fiable de WinUI depuis macOS) | `.build-work/windows/<arch>`, `.build-work/windows-cli/<arch>` |
 
-Ils appellent `Tools/Build/build.sh <os> --run`. La première fois, `build.sh` installe ce qui manque dans la VM :
-- **Fedora** : `swift-lang` (le Swift de Fedora : swiftly ne gère pas Fedora 44), `gtk4-devel`, `clang`, `rsync`.
-- **Windows** : Visual Studio 2022 (outils C++ ARM64), Swift, Git, le Windows App Runtime, et le mode développeur (liens symboliques). Windows demande des validations administrateur dans la VM.
+La première fois, `build.sh` installe ce qui manque dans la VM Windows : Visual Studio 2022 (outils C++ ARM64), Swift, Git, le Windows App Runtime, et le mode développeur (liens symboliques). Windows demande des validations administrateur dans la VM. Docker installe lui-même son image et le SDK Linux statique (une fois, en cache dans `.build-work/linux-docker/`).
 
 Autres usages :
 
 ```sh
-Tools/Build/build.sh                  # mac + linux + windows
-Tools/Build/build.sh mac linux        # seulement certaines cibles
+Tools/Build/build.sh                  # mac + linux + windows, puis Build/
+Tools/Build/build.sh mac linux        # seulement certaines cibles (Build/ garde la dernière version des autres)
+Tools/Build/build.sh --clean          # Build/ repart de zéro, iPod_Control et Persistent Data compris
 Tools/Build/build.sh --setup windows  # forcer la réinstallation des outils
 Tools/Build/run-mac.sh gtk            # rendu GTK sur le Mac, sans VM (brew install pkg-config gtk4)
 ```
 
 Comment ça marche :
-- Les VM lisent les sources et écrivent `Build/` par le dossier personnel du Mac partagé par Parallels, et compilent dans une copie locale (`~/dev/swiftcrossui`, `C:\dev\swiftcrossui`).
+- La VM Windows lit les sources et écrit `.build-work/` par le dossier personnel du Mac partagé par Parallels, et compile dans une copie locale (`C:\dev\swiftcrossui`).
 - Les iPods viennent de DeviceKit dans `Sources/`. Les VM copient le package racine et compilent l’application avec les modules partagés, sans second package ni variable `IPPM_CORE`.
 - Il faut une **session ouverte** dans chaque VM (`prlctl exec --current-user`).
-- Sous Windows, le build tourne détaché dans la VM (`prlctl` coupait les longues sessions) et écrit `Build/windows-vm.log` et `Build/windows-vm.exit`.
+- Sous Windows, le build tourne détaché dans la VM (`prlctl` coupait les longues sessions) et écrit `.build-work/windows-vm.log` et `.build-work/windows-vm.exit`.
 - Sous Linux, on force `SCUI_DEFAULT_BACKEND=GtkBackend` ; sous Windows, `WinUIBackend` (sinon SwiftPM compile aussi l'autre backend et échoue).
 - `Tools/Build/patch-dependencies.sh` corrige SwiftCrossUI avant chaque build (les 3 OS), en attendant que ce soit fait en amont :
   - GTK : réutilisation du contexte Pango ;
@@ -55,7 +54,7 @@ Comment ça marche :
 | `IPPM_LOG=<fichier>` | journal dans un fichier ; sous Windows, `%TEMP%\ippm.log` par défaut (une app lancée depuis l'Explorateur n'a pas de console) |
 
 ## Icône de l'app
-`iPod Pro Max/Resources/AppIcon.appiconset` est la seule source. `Tools/Build/make-icons.sh` (lancé par `build.sh`) en tire `Build/icons/AppIcon.icns` pour le bundle Mac et `Build/icons/AppIcon.ico` pour Windows (ressource de l'exécutable, compilée avec `rc.exe`, et icône de la fenêtre). Sous Linux, `build-linux.sh` installe les PNG dans le thème d'icônes de l'utilisateur, avec un fichier `.desktop` au nom de l'identifiant de l'app (`com.ipodpromax.proto`).
+`iPod Pro Max/Resources/AppIcon.appiconset` est la seule source. `Tools/Build/make-icons.sh` (lancé par `build.sh`) en tire `.build-work/icons/AppIcon.icns` pour le bundle Mac et `.build-work/icons/AppIcon.ico` pour Windows (ressource de l'exécutable, compilée avec `rc.exe`, et icône de la fenêtre). Sous Linux, `build-linux.sh` installe les PNG dans le thème d'icônes de l'utilisateur, avec un fichier `.desktop` au nom de l'identifiant de l'app (`com.ipodpromax.proto`).
 
 ## Fichiers
 | Fichier | Rôle |
@@ -69,8 +68,9 @@ Comment ça marche :
 | `Symbols.swift` | SF Symbols par plateforme ; `Tools/Build/match-glyph.swift` retrouve un glyphe de la police par sa forme |
 | `WindowChrome.swift` | modèle commun de la fenêtre sans barre et du glissement de la sidebar |
 | `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |
-| `Devices.swift` | iPods montés, par DeviceKit (`DeviceScanner`), mis à jour à chaque montage ou démontage (`VolumeWatcher`, sans polling) |
-| `DeviceView.swift` | page d'un iPod, copiée du `DeviceView` de l'app Mac : nom (renommable), modèle, contenu et espace lus sur l'iPod par iPodKit ; options de synchro gardées par la vue seulement ; Sync, Import et Forget affichés mais pas branchés (moteur partagé pas encore connecté à l’interface) ; Eject et « Show in Finder/Files/Explorer » fonctionnent |
+| `Devices.swift` | iPods montés, par DeviceKit (`DeviceScanner`), mis à jour à chaque montage ou démontage (`VolumeWatcher`, sans polling), plus l'iPod simulé d'où l'app est lancée |
+| `PortableRoot.swift` | racine de l'iPod d'où l'app est lancée : `--portable-root` (passé par LAUNCHER), `IPPM_PORTABLE_ROOT`, ou son propre emplacement sous `iPod Pro Max/Applications/` ; `Build/` y apparaît comme iPod simulé. `DeviceOptions` : le `device.json` de chaque iPod |
+| `DeviceView.swift` | page d'un iPod, copiée du `DeviceView` de l'app Mac : nom (renommable), modèle, contenu et espace lus sur l'iPod par iPodKit ; options de synchro enregistrées sur cet iPod (`Persistent Data/device.json`) ; Sync, Import et Forget affichés mais pas branchés (moteur partagé pas encore connecté à l’interface) ; Eject et « Show in Finder/Files/Explorer » fonctionnent |
 
 ## Organisation depuis la promotion
 

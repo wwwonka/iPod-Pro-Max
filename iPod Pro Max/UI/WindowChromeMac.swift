@@ -59,7 +59,7 @@
             toolbar.displayMode = .iconOnly
             toolbar.allowsUserCustomization = false
             window.toolbar = toolbar
-            window.toolbarStyle = .unified
+            if #available(macOS 11, *) { window.toolbarStyle = .unified }
             // Once SwiftCrossUI has put its split view in: open the sidebar at its width
             // (SwiftCrossUI's default is 200).
             DispatchQueue.main.async {
@@ -83,7 +83,7 @@
         {
             guard id == Self.toggleID else { return nil }
             let item = NSToolbarItem(itemIdentifier: id)
-            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Show or hide the sidebar")
+            item.image = systemSymbol("sidebar.left", description: "Show or hide the sidebar")
             item.label = "Sidebar"
             item.toolTip = "Hide or show the sidebar"
             item.isBordered = true
@@ -224,10 +224,10 @@
         let env = ProcessInfo.processInfo.environment
         guard let path = env["IPPM_SNAPSHOT"] else { return }
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
             if env["IPPM_SNAPSHOT_COLLAPSED"] != nil {
                 MacChrome.shared.toggleSidebar()
-                try? await Task.sleep(for: .seconds(0.6))
+                try? await Task.sleep(nanoseconds: 600_000_000)
             }
             guard let view = window.contentView?.superview,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)

@@ -13,6 +13,8 @@ import CoreMedia
 import VideoToolbox
 import iPodKit
 
+/// macOS 12 for AVAsset's `load`; older Macs convert with ffmpeg (MediaServices).
+@available(macOS 12, *)
 public enum VideoTranscoder {
     public static let maxWidth = IPodVideo.maxWidth
     public static let maxHeight = IPodVideo.maxHeight
@@ -41,6 +43,7 @@ public enum VideoTranscoder {
     }
 
     /// Produces a poster frame (JPEG data) about a second into the video.
+    @available(macOS 13, *)
     public static func posterFrame(for url: URL) async -> Data? {
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)

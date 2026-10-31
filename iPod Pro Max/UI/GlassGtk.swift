@@ -140,7 +140,7 @@
             guard !styleInstalled else { return }
             styleInstalled = true
             let provider = gtk_css_provider_new()!
-            gtk_css_provider_load_from_string(provider, """
+            loadCSS(provider, """
                 window.ippm-glass, window.ippm-glass > .ippm-content { background-color: transparent; }
                 window.ippm-glass .ippm-sidebar-pane { background-color: rgba(235, 235, 235, 0.6); }
                 window.ippm-glass.ippm-dark .ippm-sidebar-pane { background-color: rgba(44, 44, 44, 0.6); }

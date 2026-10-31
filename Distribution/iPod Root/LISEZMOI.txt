@@ -1,0 +1,19 @@
+iPod Pro Max
+===========
+
+L'application est sur cet iPod, pour macOS, Windows et Linux. Rien à installer.
+
+  macOS    double-cliquer LAUNCHER.command
+  Windows  double-cliquer LAUNCHER.cmd
+  Linux    dans un terminal : sh LAUNCHER.cmd
+
+Le lanceur copie l'application de votre système sur l'ordinateur, puis la lance : l'iPod reste
+éjectable pendant qu'elle tourne. Les réglages sont enregistrés sur l'iPod, dans
+« iPod Pro Max/Persistent Data », et vous suivent d'un ordinateur à l'autre.
+
+Ligne de commande : LAUNCHER cli <commande> (par exemple « sh LAUNCHER.cmd cli list »).
+
+macOS, premier lancement : si macOS refuse d'ouvrir l'application, aller dans Réglages Système ›
+Confidentialité et sécurité, puis cliquer « Ouvrir quand même ».
+
+Configuration minimale : macOS 10.15.4, Windows 10, Linux avec GTK 4 (Ubuntu 22.04 ou plus récent).

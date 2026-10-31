@@ -1,6 +1,7 @@
 # Generated output and local resources
 .DS_Store
 /Build/
+/.build-work/
 /iPod Pro Max/Resources/Local/
 /.scratch/
 /.build/

@@ -16,6 +16,15 @@ if grep -q "gtk_widget_create_pango_context(widget.widgetPointer)" "$file"; then
     echo "patch-dependencies: Pango context reuse applied"
 fi
 
+# jpeg (through swift-image-formats) imports Glibc on Linux; the command-line tool's static Linux
+# SDK has Musl instead.
+jpeg="$1/checkouts/jpeg/sources/jpeg/os.swift"
+if [ -f "$jpeg" ] && grep -q "#elseif os(Linux)" "$jpeg"; then
+    chmod u+w "$jpeg"
+    perl -0pi -e 's/#elseif os\(Linux\)\n    import Glibc/#elseif canImport(Glibc)\n    import Glibc\n#elseif canImport(Musl)\n    import Musl/' "$jpeg"
+    echo "patch-dependencies: jpeg imports Musl on the static Linux SDK"
+fi
+
 # Then every patch in patches/ (each says what it fixes), applied once. They must not touch the
 # same files: a patch that isn't applied yet starts from the pristine files it touches (an earlier
 # version of it may be there), with LF line endings like the patch (Git for Windows checks out CRLF).

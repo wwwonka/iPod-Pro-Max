@@ -1,25 +1,30 @@
 #!/bin/bash
-# Builds the application for every OS from the Mac, driving the Parallels VMs with prlctl.
+# Builds iPod Pro Max for every OS from the Mac, then lays Build/ out as the root of an iPod
+# (Tools/Build/assemble-ipod.sh). Windows and Linux are built in the Parallels VMs, driven by prlctl.
 #
-#   ./build.sh                 # mac + linux + windows
-#   ./build.sh mac linux       # only some targets
+#   ./build.sh                 # mac + linux + windows, then Build/
+#   ./build.sh mac linux       # only some targets (Build/ keeps what the others built last)
 #   ./build.sh --setup windows # force a toolchain install in the VM(s) (done automatically if missing)
-#   ./build.sh --run linux     # open the app once built (on the Mac, or in the VM's session)
+#   ./build.sh --run mac       # open the app once built, through Build/LAUNCHER (or in the VM's session)
+#   ./build.sh --clean         # also start Build/iPod_Control and Persistent Data over
 #
-# Output: Build/mac/iPod Pro Max.app, Build/linux/iPodProMaxApp, Build/windows/iPodProMaxApp.exe
-# The VMs read the sources and write Build/ through the Mac home folder shared by Parallels, and
-# compile in a local copy (~/dev/swiftcrossui, C:\dev\swiftcrossui) because building on the share is slow.
+# Each OS's build goes to .build-work/<os>/ first (with ffmpeg, the icons and the logs); Build/ only
+# holds what an iPod would. The VMs read the sources and write .build-work/ through the Mac home
+# folder shared by Parallels, and compile in a local copy (~/dev/swiftcrossui, C:\dev\swiftcrossui)
+# because building on the share is slow.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
+WORK="$ROOT/.build-work"
 
 LINUX_VM=${LINUX_VM:-"Fedora Linux"}
 WINDOWS_VM=${WINDOWS_VM:-"Windows 11"}
-SETUP=0; RUN=0; TARGETS=()
+SETUP=0; RUN=0; CLEAN=(); TARGETS=()
 for arg in "$@"; do
     case $arg in
         --setup) SETUP=1 ;;
         --run) RUN=1 ;;
+        --clean) CLEAN=(--clean) ;;
         mac|linux|windows) TARGETS+=("$arg") ;;
         *) echo "Unknown argument: $arg" >&2; exit 2 ;;
     esac
@@ -31,24 +36,53 @@ case $ROOT in
     *) echo "The repository must live under $HOME so the VMs can see it." >&2; exit 1 ;;
 esac
 LINUX_SRC="/media/psf/Home/$REL"
-# The app icon for each platform, from iPod Pro Max/Resources/AppIcon.appiconset (Build/icons, read by the VMs too).
+mkdir -p "$WORK"
+# The app icon for each platform, from iPod Pro Max/Resources/AppIcon.appiconset (.build-work/icons, read by the VMs too).
 Tools/Build/make-icons.sh
 WINDOWS_SRC='\\Mac\Home\'"${REL//\//\\}"
 
+# Universal (arm64 + x86_64) app and command-line tool for macOS 10.15.4 and later. One build per
+# architecture, then lipo: SwiftPM's multi-architecture build can't build SwiftCrossUI's macros.
 build_mac() {
     swift package resolve
     Tools/Build/patch-dependencies.sh .build
-    swift build -c release --product iPodProMaxApp
-    local bin app
-    bin=$(swift build -c release --show-bin-path)
-    app="Build/mac/iPod Pro Max.app"
+    local arch product
+    for arch in arm64 x86_64; do
+        for product in iPodProMaxApp ipodpromax; do
+            swift build -c release --triple "$arch-apple-macosx10.15.4" --product "$product"
+        done
+    done
+    universal() { # <product> <output>
+        lipo -create ".build/arm64-apple-macosx/release/$1" ".build/x86_64-apple-macosx/release/$1" -output "$2"
+    }
+    # Swift concurrency is in macOS 12 and later; before that it comes with the app (found through
+    # the executables' @loader_path rpath).
+    local concurrency
+    concurrency="$(dirname "$(xcrun --find swift)")/../lib/swift-5.5/macosx/libswift_Concurrency.dylib"
+    # The app's own ffmpeg (Tools/FFmpeg/build.sh), next to each executable where MediaKit looks.
+    local ffmpeg="$WORK/FFmpeg/macos-universal/ffmpeg"
+    [ -x "$ffmpeg" ] || echo "warning: ffmpeg not built (Tools/FFmpeg/build.sh)" >&2
+    extras() { # <folder>: the concurrency runtime and ffmpeg, signed
+        cp "$concurrency" "$1/"
+        [ -x "$ffmpeg" ] && cp "$ffmpeg" "$1/"
+        codesign --force --sign - "$1"/*.dylib
+        [ -f "$1/ffmpeg" ] && codesign --force --sign - "$1/ffmpeg"
+        return 0
+    }
+
+    local cli="$WORK/mac/cli"
+    rm -rf "$cli"
+    mkdir -p "$cli"
+    universal ipodpromax "$cli/ipodpromax"
+    extras "$cli"
+    codesign --force --sign - "$cli/ipodpromax"
+
+    local app="$WORK/mac/app/iPod Pro Max.app"
     rm -rf "$app"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    cp "$bin/iPodProMaxApp" "$app/Contents/MacOS/"
-    # The app's own ffmpeg (Tools/FFmpeg/build.sh), next to the executable where MediaKit looks.
-    local ffmpeg="$ROOT/Build/FFmpeg/macos-universal/ffmpeg"
-    if [ -x "$ffmpeg" ]; then cp "$ffmpeg" "$app/Contents/MacOS/"; else echo "warning: ffmpeg not built (Tools/FFmpeg/build.sh)" >&2; fi
-    cp Build/icons/AppIcon.icns "$app/Contents/Resources/"
+    universal iPodProMaxApp "$app/Contents/MacOS/iPodProMaxApp"
+    extras "$app/Contents/MacOS"
+    cp "$WORK/icons/AppIcon.icns" "$app/Contents/Resources/"
     cat > "$app/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,14 +94,13 @@ build_mac() {
     <key>CFBundleName</key><string>iPod Pro Max</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>
-    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSMinimumSystemVersion</key><string>10.15.4</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 EOF
     codesign --force --sign - "$app"
-    echo "OK: $ROOT/$app"
-    [ $RUN -eq 1 ] && open "$app"
+    echo "OK: $app, $cli"
     return 0
 }
 
@@ -87,7 +120,16 @@ ensure_vm() {
     return 1
 }
 
+# Linux builds in Docker on the Mac (x86_64 and aarch64). IPPM_LINUX_BUILD=vm builds the app in the
+# Fedora VM instead, as before (its own architecture only, no command-line tool).
 build_linux() {
+    if [ "${IPPM_LINUX_BUILD:-docker}" = vm ]; then build_linux_vm; return; fi
+    Tools/Build/build-linux-docker.sh
+    [ $RUN -eq 1 ] && echo "To try it: in a Linux session, sh <Build>/LAUNCHER.cmd (the VM sees Build/ in /media/psf/Home)."
+    return 0
+}
+
+build_linux_vm() {
     if prlctl list -i "$LINUX_VM" | grep -q "Host Shared Folders: (-)"; then
         echo "Sharing the Mac home folder with $LINUX_VM (/media/psf/Home)…"
         prlctl set "$LINUX_VM" --shf-host on --shf-host-defined home >/dev/null
@@ -122,8 +164,8 @@ build_windows() {
     [ $RUN -eq 1 ] && flags+=(-Run)
     # prlctl exec drops sessions that last as long as a first Windows build (it once reported
     # failure while swift-frontend kept compiling), so the build runs detached in the VM and
-    # writes its log and exit code to Build/; this waits for the exit code, two hours at most.
-    local out="$ROOT/Build/windows-vm.log" status="$ROOT/Build/windows-vm.exit"
+    # writes its log and exit code to .build-work/; this waits for the exit code, two hours at most.
+    local out="$WORK/windows-vm.log" status="$WORK/windows-vm.exit"
     rm -f "$out" "$status" "$status.tmp"
     local args="'-NoProfile','-ExecutionPolicy','Bypass','-File','$WINDOWS_SRC\\Tools\\Build\\build-windows-detached.ps1','-Source','$WINDOWS_SRC'"
     for f in ${flags[@]+"${flags[@]}"}; do args+=",'$f'"; done
@@ -158,13 +200,18 @@ for t in "${TARGETS[@]}"; do
     case $t in
         mac) build_mac 2>&1 | sed -u 's/^/[mac] /' ;;
         *)
-            mkdir -p Build
-            ( set -o pipefail; "build_$t" 2>&1 | sed -u "s/^/[$t] /" | tee "Build/$t.log" ) &
+            ( set -o pipefail; "build_$t" 2>&1 | sed -u "s/^/[$t] /" | tee "$WORK/$t.log" ) &
             pids+=($!); names+=("$t") ;;
     esac
 done
 status=0
 for ((i = 0; i < ${#names[@]}; i++)); do
-    if wait "${pids[$i]}"; then echo "[${names[$i]}] OK"; else echo "[${names[$i]}] FAILED (Build/${names[$i]}.log)"; status=1; fi
+    if wait "${pids[$i]}"; then echo "[${names[$i]}] OK"; else echo "[${names[$i]}] FAILED (.build-work/${names[$i]}.log)"; status=1; fi
 done
+
+# Build/ as an iPod root, with whatever each OS built (now or last time).
+Tools/Build/assemble-ipod.sh ${CLEAN[@]+"${CLEAN[@]}"}
+if [ $RUN -eq 1 ] && [[ " ${TARGETS[*]} " == *" mac "* ]]; then
+    open Build/LAUNCHER.command
+fi
 exit $status

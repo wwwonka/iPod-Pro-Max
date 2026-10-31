@@ -14,7 +14,7 @@ import PackageDescription
 
 let package = Package(
     name: "iPodProMax",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS("10.15.4")],
     products: [
         .executable(name: "iPodProMaxApp", targets: ["iPodProMaxApp"]),
         .library(name: "iPodKit", targets: ["iPodKit"]),

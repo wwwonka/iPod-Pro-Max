@@ -84,6 +84,15 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     import AppKit
     import AppKitBackend
 
+    /// An SF Symbol, at `pointSize` when given. Nil on macOS 10.15, which has no SF Symbols: the
+    /// app then shows no icon there.
+    func systemSymbol(_ name: String, description: String? = nil, pointSize: Double? = nil) -> NSImage? {
+        guard #available(macOS 11, *) else { return nil }
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: description)
+        guard let pointSize else { return image }
+        return image?.withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+    }
+
     struct Symbol: NSViewRepresentable {
         var name: String
         var size: Double = 16
@@ -97,8 +106,7 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         }
 
         func updateNSView(_ view: NSImageView, context: Context) {
-            view.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+            view.image = systemSymbol(name, pointSize: pointSize)
             view.contentTintColor =
                 switch tint {
                 case .accent: .controlAccentColor

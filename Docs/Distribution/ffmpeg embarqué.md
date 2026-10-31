@@ -21,7 +21,7 @@ Licence LGPL, sans aucune partie GPL ni non libre ; un `LICENSE.md` accompagne c
 `Tools/FFmpeg/check.sh <ffmpeg> …` vérifie un binaire sur tous les usages de MediaKit : FLAC → AAC, vidéo pour l'iPod avec progression, image d'aperçu, fusion de livre audio avec chapitres. Passé sur Mac et Linux le 2026-10-30. Sous Windows 11 ARM, sans aucun ffmpeg installé : sync FLAC → AAC et vidéo par Media Foundation (H.264 Baseline 320×180, AAC stéréo).
 
 ## Où il est rangé
-MediaKit (`FFmpeg.binaryPath()`) cherche, dans l'ordre : `IPODPROMAX_FFMPEG`, à côté de l'exécutable, `Tools/<OS>/` (la disposition sur l'iPod, voir [[Sur l'iPod]]), puis, pour le développement, `Tools/FFmpeg/dist/<os>-<arch>/` dans le repo.
+MediaKit (`FFmpeg.binaryPath()`) cherche, dans l'ordre : `IPODPROMAX_FFMPEG`, à côté de l'exécutable (là où le build le pose, pour l'app comme pour la CLI : voir [[Sur l'iPod]]), un dossier `Tools/<OS>/` proche, puis, pour le développement, `.build-work/FFmpeg/<os>-<arch>/` dans le repo (sortie de `Tools/FFmpeg/build.sh`). Le ffmpeg Mac vise macOS 10.15, comme l'app ; les ffmpeg Linux se compilent dans le conteneur Docker du build Linux.
 - **App Mac (Xcode)** : phase « Embed ffmpeg » qui copie le binaire universel dans `Contents/MacOS` ; Xcode le signe avec l'app.
 - **Prototype** : `build.sh` le pose à côté de l'exécutable sur les trois OS.
 - **CLI** : `ipodpromax info` affiche le ffmpeg utilisé.

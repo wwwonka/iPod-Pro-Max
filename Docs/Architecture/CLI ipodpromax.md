@@ -14,16 +14,16 @@ ipodpromax tags   <fichier>…            les tags tels qu'iPod Pro Max les lit
                   [--portable]          force le lecteur en Swift pur (sur Mac)
                   [--compare]           Mac : compare AVFoundation et le lecteur portable
 ipodpromax tags --bench <dossier>       chronomètre la lecture des tags (et compare, sur Mac)
-ipodpromax init-sim <dossier> [--model <numéro>]
+ipodpromax init-sim <dossier> [--model <numéro>] [--name <nom>]
                                         fait d'un dossier un iPod simulé, pour essayer
 ```
 
-`--ipod` prend le point de montage (`/Volumes/IPOD`, `/run/media/moi/IPOD`, `E:\`) ou un dossier créé par `init-sim`. Il est facultatif quand un seul iPod est monté.
+`--ipod` prend le point de montage (`/Volumes/IPOD`, `/run/media/moi/IPOD`, `E:\`) ou un dossier créé par `init-sim`. Il est facultatif quand un seul iPod est connu : les iPods montés, plus celui d'où `LAUNCHER cli` a lancé la CLI (`IPPM_PORTABLE_ROOT`, par exemple `Build/`). Sur l'iPod, la CLI se lance par `LAUNCHER.cmd cli <commande>` (Windows), `sh LAUNCHER.cmd cli <commande>` (macOS, Linux).
 
 ## Ce que fait `sync <dossier>`
 1. **Lit le dossier** en parallèle, un fichier par cœur (`FolderImporter`) : tags, durée, pochette (une seule fois par album, réencodée en JPEG de 600 px au plus). Les fichiers cachés sont ignorés.
 2. **Identifie chaque piste par son chemin relatif** au dossier (UUID dérivé d'un SHA-1). Le même dossier garde les mêmes identifiants d'une fois et d'un ordi à l'autre.
-3. **Relit le registre** de ce qu'il a mis sur cet iPod : `iPod Pro Max/Data/cli-sync.json`, sur l'iPod lui-même (voir [[Sur l'iPod]]). Écriture sûre avec génération précédente en `.bak`. C'est un précurseur du [[Manifeste et propriété des pistes]].
+3. **Relit le registre** de ce qu'il a mis sur cet iPod : `iPod Pro Max/Persistent Data/cli-sync.json`, sur l'iPod lui-même (voir [[Sur l'iPod]] ; l'ancien `Data/` est encore lu). Écriture sûre avec génération précédente en `.bak`. C'est un précurseur du [[Manifeste et propriété des pistes]].
 4. **Lance `SyncEngine`**, comme l'app : ajout de ce qui manque, retrait de ce qui a quitté le dossier, conversion de ce que l'iPod ne lit pas (FLAC, OGG… → AAC ; vidéo → H.264 Baseline), réécriture ID3 v2.3 pour les paroles, pochettes, livres audio, signature hash58 si le modèle l'exige.
 5. Les pistes présentes sur l'iPod mais **pas venues de ce dossier sont gardées**, sauf avec `--remove-unknown`.
 

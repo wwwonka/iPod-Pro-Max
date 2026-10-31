@@ -1,7 +1,7 @@
 # Started detached by ../build.sh: runs build-windows.ps1 with its arguments, writes everything it
-# prints to Build\windows-vm.log and its exit code to Build\windows-vm.exit, even when it throws.
+# prints to .build-work\windows-vm.log and its exit code to .build-work\windows-vm.exit, even when it throws.
 param([string]$Source, [switch]$Setup, [switch]$Run)
-$dist = Join-Path $Source "Build"
+$dist = Join-Path $Source ".build-work"
 $log = Join-Path $dist "windows-vm.log"
 $code = 1
 try {

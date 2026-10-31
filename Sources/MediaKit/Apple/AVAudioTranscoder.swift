@@ -10,6 +10,8 @@ import Foundation
 import AVFoundation
 import iPodKit
 
+/// macOS 15 for `AVAssetExportSession.export(to:as:)`; older Macs convert with ffmpeg (MediaServices).
+@available(macOS 15, *)
 public enum Transcoder {
     public static func transcodeToAAC(source: URL, destination: URL) async throws -> URL {
         let asset = AVURLAsset(url: source)

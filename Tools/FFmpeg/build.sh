@@ -5,7 +5,7 @@
 #   Tools/FFmpeg/build.sh            # this machine's OS and architecture
 #   Tools/FFmpeg/build.sh windows    # from Linux: Windows ARM64 and x64 with llvm-mingw
 #
-# Output: Build/FFmpeg/<os>-<arch>/ffmpeg[.exe] plus LICENSE.md (git-ignored; release builds
+# Output: .build-work/FFmpeg/<os>-<arch>/ffmpeg[.exe] plus LICENSE.md (git-ignored; release builds
 # copy it next to the app's executable, where MediaKit's FFmpeg.binaryPath() looks first).
 #
 # LGPL ffmpeg (no GPL parts). H.264: VideoToolbox on macOS, Media Foundation on Windows (both part
@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE=$(pwd)
-OUTPUT="$HERE/../../Build/FFmpeg"
+OUTPUT="$HERE/../../.build-work/FFmpeg"
 
 FFMPEG_VERSION=8.1
 FFMPEG_SHA256=b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
@@ -103,7 +103,7 @@ build_macos() {
         local cross=(); [ "$carch" != "$(uname -m)" ] && cross=(--enable-cross-compile --arch=$carch)
         (cd "$work/ffmpeg" && ./configure --prefix="$work/prefix" "${COMMON[@]}" ${cross[@]+"${cross[@]}"} --cc="clang -arch $carch" \
             --enable-videotoolbox --enable-audiotoolbox --enable-encoder=h264_videotoolbox,aac_at --enable-decoder=alac_at \
-            --extra-cflags=-mmacosx-version-min=13.0 --extra-ldflags=-mmacosx-version-min=13.0 >/dev/null \
+            --extra-cflags=-mmacosx-version-min=10.15 --extra-ldflags=-mmacosx-version-min=10.15 >/dev/null \
             && make -s -j"$JOBS" >/dev/null 2>&1)
         cp "$work/ffmpeg/ffmpeg" "$out/ffmpeg"
         strip "$out/ffmpeg"

@@ -23,7 +23,7 @@ USAGE
   ipodpromax eject  [--ipod <path>]       unmounts the iPod so it can be unplugged
   ipodpromax watch                        prints iPods as they are plugged in and removed (Ctrl-C to stop)
   ipodpromax tags   <file>…               tags as iPod Pro Max reads them
-  ipodpromax init-sim <folder> [--model <number>]
+  ipodpromax init-sim <folder> [--model <number>] [--name <iPod name>]
                                           makes <folder> look like an iPod, for trying things out
 
   --ipod <path>   the iPod's mount point (/Volumes/IPOD, /run/media/me/IPOD, E:\\) or a folder made by
@@ -37,7 +37,7 @@ struct Arguments {
 
     init(_ raw: [String]) {
         var i = 0
-        let valued: Set<String> = ["--ipod", "--model"]
+        let valued: Set<String> = ["--ipod", "--model", "--name"]
         while i < raw.count {
             let a = raw[i]
             if valued.contains(a), i + 1 < raw.count {
@@ -108,6 +108,21 @@ func supportText(_ level: IPodSupportLevel) -> String {
     }
 }
 
+/// The mounted iPods, plus the one this tool was started from by LAUNCHER.cmd (`IPPM_PORTABLE_ROOT`)
+/// when it isn't mounted: `Build/` on the development machine.
+func knownIPods() -> [IPodDevice] {
+    var devices = DeviceScanner.scan()
+    if let root = ProcessInfo.processInfo.environment["IPPM_PORTABLE_ROOT"], !root.isEmpty {
+        let url = URL(fileURLWithPath: root, isDirectory: true)
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        if !devices.contains(where: { $0.mountPoint.standardizedFileURL.resolvingSymlinksInPath().path == path }),
+           let device = IPodDevice.detect(volume: url, simulated: true) {
+            devices.append(device)
+        }
+    }
+    return devices
+}
+
 func resolveDevice(_ args: Arguments) -> IPodDevice {
     if let path = args.options["--ipod"] {
         guard let device = DeviceScanner.device(at: URL(fileURLWithPath: path, isDirectory: true)) else {
@@ -115,7 +130,7 @@ func resolveDevice(_ args: Arguments) -> IPodDevice {
         }
         return device
     }
-    let devices = DeviceScanner.scan()
+    let devices = knownIPods()
     switch devices.count {
     case 0: fail("no iPod found. Plug one in (and wait for it to mount), or pass --ipod <path>.")
     case 1: return devices[0]
@@ -135,7 +150,7 @@ func describe(_ d: IPodDevice) -> String {
 // MARK: - Commands
 
 func list() {
-    let devices = DeviceScanner.scan()
+    let devices = knownIPods()
     if devices.isEmpty {
         print("No iPod mounted.")
         return
@@ -364,7 +379,8 @@ func initSimulated(_ args: Arguments) {
     let folder = URL(fileURLWithPath: path, isDirectory: true)
     do {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try IPodDevice.createSimulatedIPod(at: folder, modelNumber: args.options["--model"] ?? "xA002", name: folder.lastPathComponent)
+        try IPodDevice.createSimulatedIPod(at: folder, modelNumber: args.options["--model"] ?? "xA002",
+                                           name: args.options["--name"] ?? folder.lastPathComponent)
         print("\(FileOps.nativePath(folder)) is now a simulated iPod. Try: ipodpromax sync <music folder> --ipod \"\(FileOps.nativePath(folder))\"")
     } catch {
         fail(error.localizedDescription)
