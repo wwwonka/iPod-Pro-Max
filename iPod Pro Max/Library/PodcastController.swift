@@ -27,12 +27,36 @@ final class PodcastController {
     /// The cover file of a show, nil until it has been downloaded.
     func artworkURL(for show: PodcastShow) -> URL? {
         guard let key = show.artworkKey, let store else { return nil }
-        let url = store.artwork.appendingPathComponent("\(key).jpg")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        return store.artwork.appendingPathComponent("\(key).jpg")
     }
 
     func show(id: UUID) -> PodcastShow? { shows.first { $0.id == id } }
     func isDownloading(_ episodeID: UUID) -> Bool { downloads[episodeID] != nil }
+
+    private var countRevision = -1
+    private var downloadedCounts: [UUID: Int] = [:]
+    private var wantedEpisodes: [UUID: [PodcastEpisode]] = [:]
+
+    private func validateCounts() {
+        guard countRevision != contentRevision else { return }
+        countRevision = contentRevision
+        downloadedCounts.removeAll(keepingCapacity: true)
+        wantedEpisodes.removeAll(keepingCapacity: true)
+    }
+    func downloadedCount(for show: PodcastShow) -> Int {
+        validateCounts()
+        if let count = downloadedCounts[show.id] { return count }
+        let count = show.episodes.reduce(0) { $0 + ($1.isDownloaded ? 1 : 0) }
+        downloadedCounts[show.id] = count
+        return count
+    }
+    func pendingDownloadCount(for show: PodcastShow) -> Int {
+        validateCounts()
+        let episodes: [PodcastEpisode]
+        if let cached = wantedEpisodes[show.id] { episodes = cached }
+        else { episodes = show.episodesToSync(); wantedEpisodes[show.id] = episodes }
+        return episodes.reduce(0) { $0 + (!$1.isDownloaded && downloads[$1.id] == nil ? 1 : 0) }
+    }
 
     /// Episodes the sync rules want that aren't on this computer yet.
     var pendingDownloads: [(show: PodcastShow, episode: PodcastEpisode)] {

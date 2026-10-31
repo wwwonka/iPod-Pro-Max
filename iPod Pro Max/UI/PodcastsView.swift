@@ -17,29 +17,32 @@ struct PodcastShowList: View {
 
     private var controller: PodcastController { .shared }
 
+    @State private var cache = PodcastShowListCache()
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(controller.shows) { show in
-                    let downloaded = show.episodes.filter(\.isDownloaded).count
-                    HStack(spacing: 8) {
-                        Cover(url: controller.artworkURL(for: show), size: 40)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(show.title).lineLimit(1)
-                            Text("\(show.episodes.count) episodes · \(downloaded) downloaded")
-                                .font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
-                        }
-                        Spacer()
-                        if controller.refreshing.contains(show.id) { Text("…").foregroundColor(.gray) }
-                        else if !show.syncEnabled { Text("paused").font(.system(size: 11)).foregroundColor(.gray) }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(selectedID == show.id ? sidebarSelection : Color(white: 0.5, opacity: 0.001))
-                    .onTapGesture { selectedID = show.id }
-                }
-            }
+        ArtistList(artists: cache.groups(controller), tracksByArtist: [:], multipleSelection: false,
+            selection: Binding(get: { Set(selectedID.map { [$0.uuidString] } ?? []) },
+                               set: { selectedID = $0.first.flatMap(UUID.init(uuidString:)) }))
+    }
+}
+
+/// Progress notifications don't rebuild the subscription model or decode its covers again.
+@MainActor final class PodcastShowListCache: SwiftCrossUI.ObservableObject {
+    private var revision = -1
+    private var refreshing: Set<UUID> = []
+    private var cached: [NamedGroup] = []
+    func groups(_ controller: PodcastController) -> [NamedGroup] {
+        guard revision != controller.contentRevision || refreshing != controller.refreshing else { return cached }
+        revision = controller.contentRevision
+        refreshing = controller.refreshing
+        cached = controller.shows.map { show in
+            let status = refreshing.contains(show.id) ? " · refreshing…" : (show.syncEnabled ? "" : " · paused")
+            return NamedGroup(id: show.id.uuidString, count: show.episodes.count,
+                displayName: show.title,
+                subtitle: "\(show.episodes.count) episodes · \(controller.downloadedCount(for: show)) downloaded" + status,
+                cover: controller.artworkURL(for: show), photo: controller.artworkURL(for: show))
         }
+        return cached
     }
 }
 
@@ -79,7 +82,7 @@ struct PodcastShowHeader: View {
                 Spacer()
                 Button("Refresh") { Task { await controller.refresh(showID: show.id) } }
                     .disabled(controller.refreshing.contains(show.id))
-                let pending = controller.pendingDownloads.filter { $0.show.id == show.id }.count
+                let pending = controller.pendingDownloadCount(for: show)
                 Button(pending > 0 ? "Download \(pending) New" : "Download New") {
                     Task { await controller.downloadPending(showID: show.id) }
                 }
@@ -190,7 +193,7 @@ enum KeepRule: Int, CaseIterable, CustomStringConvertible {
 
 /// The episodes of one show as rows of the track table. The same array comes back while nothing visible
 /// changed (download progress, for one, doesn't), so the table doesn't reload and lose its selection.
-final class PodcastRowsCache {
+final class PodcastRowsCache: SwiftCrossUI.ObservableObject {
     private var showID: UUID?
     private var revision = -1
     private var rows: [TrackRow] = []
@@ -235,7 +238,7 @@ struct Cover: View {
         ZStack {
             RoundedRectangle(cornerRadius: size / 8).fill(Color(white: 0.5, opacity: 0.15))
             if let url {
-                Image(url).resizable().frame(width: size, height: size)
+                Thumbnail(url: url, pixels: Int(size * 2)).frame(width: size, height: size)
             } else {
                 Symbol(name: symbol, size: size / 2, pointSize: size / 3, tint: .secondary)
             }

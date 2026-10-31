@@ -31,6 +31,7 @@ extension Array {
     struct TrackTable: NSViewRepresentable {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
+        var isActive = true
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -59,6 +60,7 @@ extension Array {
 
         func updateNSView(_ scroll: NSScrollView, context: Context) {
             let coordinator = context.coordinator
+            coordinator.setActive(isActive, in: scroll)
             // Same array storage means same rows: skip the reload on unrelated redraws.
             guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
             coordinator.rows = rows
@@ -68,10 +70,21 @@ extension Array {
         @MainActor
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var rows: [TrackRow] = []
+            var isActive = true
+            func setActive(_ active: Bool, in scroll: NSScrollView) {
+                if isActive && !active {
+                    dragPayload = nil
+                    TrackDrag.end()
+                }
+                isActive = active
+                scroll.isHidden = !active
+                scroll.setAccessibilityHidden(!active)
+            }
             private let cellID = NSUserInterfaceItemIdentifier("cell")
 
             private var dragPayload: String?
             func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+                guard isActive else { return nil }
                 if dragPayload == nil {
                     let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
                     let ids = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
@@ -143,6 +156,7 @@ extension Array {
     struct TrackTable: GtkWidgetRepresentable {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
+        var isActive = true
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -188,6 +202,11 @@ extension Array {
         }
 
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
+            let coordinator = context.coordinator
+            if coordinator.isActive && !isActive { TrackDrag.end() }
+            coordinator.isActive = isActive
+            gtk_widget_set_visible(widget.widgetPointer, isActive ? 1 : 0)
+            gtk_widget_set_sensitive(widget.widgetPointer, isActive ? 1 : 0)
             // Same rows: keep the model, and with it the selection and scroll position.
             guard let rows, !context.coordinator.rows.sameStorage(as: rows) else { return }
             context.coordinator.show(rows)
@@ -196,6 +215,7 @@ extension Array {
         final class Coordinator {
             let model = gtk_string_list_new(nil)!
             var selection: OpaquePointer?
+            var isActive = true
             var rows: [TrackRow] = []
 
             /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
@@ -232,7 +252,7 @@ extension Array {
         guard let data else { return nil }
         return MainActor.assumeIsolated { () -> UnsafeMutablePointer<GdkContentProvider>? in
             let c = Unmanaged<TrackTable.Coordinator>.fromOpaque(data).takeUnretainedValue()
-            guard let selection = c.selection else { return nil }
+            guard c.isActive, let selection = c.selection else { return nil }
             let ids = c.rows.indices.filter { gtk_selection_model_is_selected(selection, UInt32($0)) != 0 }.map { c.rows[$0].id }
             guard let text = TrackDrag.begin(ids) else { return nil }
             var value = GValue()
@@ -283,6 +303,7 @@ extension Array {
     struct TrackTable: WinUIElementRepresentable {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
+        var isActive = true
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -307,6 +328,7 @@ extension Array {
             list.dragItemsStarting.addHandler { [weak coordinator, weak list] _, args in
                 guard let coordinator, let list, let args else { return }
                 MainActor.assumeIsolated {
+                    guard coordinator.isActive else { args.cancel = true; return }
                     var ids: [String] = []
                     for index in 0..<list.selectedRanges.size {
                         guard let range = list.selectedRanges.getAt(index), range.firstIndex >= 0,
@@ -335,6 +357,10 @@ extension Array {
 
         func updateWinUIElement(_ root: WinUI.Grid, context: Context) {
             let coordinator = context.coordinator
+            if coordinator.isActive && !isActive { TrackDrag.end() }
+            coordinator.isActive = isActive
+            root.visibility = isActive ? .visible : .collapsed
+            root.isHitTestVisible = isActive
             guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
             coordinator.rows = rows
             // itemsSource rejects the Swift-backed vector (XAML wants a bindable collection), so
@@ -370,6 +396,7 @@ extension Array {
         final class Coordinator {
             var rows: [TrackRow] = []
             var list: WinUI.ListView?
+            var isActive = true
         }
     }
 
@@ -377,6 +404,7 @@ extension Array {
     struct TrackTable: View {
         /// Not kept when nil yet: the generic Table rebuilds anyway.
         var rows: [TrackRow]?
+        var isActive = true
 
         var body: some View {
             Table(rows ?? []) {

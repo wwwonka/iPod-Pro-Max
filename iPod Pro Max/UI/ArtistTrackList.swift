@@ -70,7 +70,6 @@ struct ArtistTrackList: NSViewRepresentable {
         var devices: [String] = []
         var busyDevices: Set<String> = []
         var onSend: ([String], String) -> Void = { _, _ in }
-        private let images = NSCache<NSURL, NSImage>()
         private var loading: Set<URL> = []
 
         func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
@@ -109,7 +108,7 @@ struct ArtistTrackList: NSViewRepresentable {
                 let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? AlbumCell) ?? AlbumCell()
                 cell.identifier = id
                 cell.title.stringValue = album.title
-                cell.subtitle.stringValue = [album.genre, album.year.isEmpty ? nil : album.year,
+                cell.subtitle.stringValue = [album.rows.first?.artist, album.genre, album.year.isEmpty ? nil : album.year,
                     "\(songCount(album.rows.count)) · \(album.durationMs / 60_000) min"].compactMap { $0 }.joined(separator: " · ")
                 cell.configureSend(devices: devices, busy: busyDevices) { [weak self] device in
                     self?.onSend(album.rows.map(\.id), device)
@@ -117,7 +116,7 @@ struct ArtistTrackList: NSViewRepresentable {
                 cell.cover.image = nil
                 if let key = album.artworkKey, let folder = artworkFolder {
                     let url = folder.appendingPathComponent(key + ".jpg")
-                    cell.cover.image = images.object(forKey: url as NSURL)
+                    cell.cover.image = ThumbnailStore.shared.cached(url, pixels: 160)
                     if cell.cover.image == nil { loadCover(url, table: tableView) }
                 }
                 return cell
@@ -134,20 +133,11 @@ struct ArtistTrackList: NSViewRepresentable {
         private func loadCover(_ url: URL, table: NSTableView) {
             guard loading.insert(url).inserted else { return }
             Task { [weak self, weak table] in
-                let image = await Task.detached(priority: .utility) { () -> CGImage? in
-                    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-                    return CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceThumbnailMaxPixelSize: 160,
-                        kCGImageSourceCreateThumbnailWithTransform: true,
-                        kCGImageSourceShouldCacheImmediately: true
-                    ] as CFDictionary)
-                }.value
+                let image = await ThumbnailStore.shared.image(url, pixels: 160)
                 guard let self else { return }
                 // Keep failed URLs in the set: missing artwork must not trigger repeated I/O.
                 guard let image else { return }
                 self.loading.remove(url)
-                self.images.setObject(NSImage(cgImage: image, size: .zero), forKey: url as NSURL)
                 // The artist may have changed while decoding. Update visible rows only, using
                 // their current keys rather than reloading/resetting the user's selection.
                 guard let table else { return }
@@ -157,7 +147,7 @@ struct ArtistTrackList: NSViewRepresentable {
                           let key = album.artworkKey,
                           self.artworkFolder?.appendingPathComponent(key + ".jpg") == url,
                           let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? AlbumCell else { continue }
-                    cell.cover.image = self.images.object(forKey: url as NSURL)
+                    cell.cover.image = image
                 }
             }
         }

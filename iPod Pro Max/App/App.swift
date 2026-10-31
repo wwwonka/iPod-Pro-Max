@@ -54,7 +54,7 @@ struct ContentView: View {
         .task {
             if ProcessInfo.processInfo.environment["IPPM_CHECK_INTERACTIONS"] != nil {
                 #if canImport(AppKitBackend)
-                checkNativeMusicInteractions()
+                await checkNativeMusicInteractions()
                 exit(0)
                 #endif
             }
@@ -95,7 +95,10 @@ struct ContentView: View {
                 }
                 return true
             }
-            if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil {
+            if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] != nil {
+                await loadPortable(refresh: false)
+                await benchLoadedViews()
+            } else if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil {
                 library = await Library.load(arguments: CommandLine.arguments)
                 await benchSidebar()
             } else {
@@ -204,7 +207,7 @@ struct ContentView: View {
     /// until the main thread is free again, then quits.
     private func benchSidebar() async {
         let rounds = Int(ProcessInfo.processInfo.environment["IPPM_BENCH"] ?? "") ?? 1
-        let steps: [SidebarItem] = Array(repeating: [.podcasts, .music, .videos, .music, .audiobooks, .music], count: rounds).flatMap { $0 }
+        let steps: [SidebarItem] = Array(repeating: [.podcasts, .music, .videos, .music, .audiobooks, .music, .photos, .music], count: rounds).flatMap { $0 }
         for item in steps {
             let start = Date()
             selection = item
@@ -215,16 +218,57 @@ struct ContentView: View {
         selection = .music
         for artist in library?.artists.prefix(8) ?? [] {
             let start = Date()
-            selectedArtist = artist.id
+            selectedArtists = [artist.id]
             let idle = await mainThreadIdle()
             log("[bench] artist \(artist.id): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
         }
+        if let ids = library?.artists.prefix(3).map(\.id), !ids.isEmpty {
+            let start = Date()
+            selectedArtists = Set(ids)
+            let idle = await mainThreadIdle()
+            log("[bench] 3 artists: \(Int(idle.timeIntervalSince(start) * 1000)) ms")
+        }
+        for playlist in library?.playlists.prefix(3) ?? [] {
+            let start = Date()
+            selection = .playlist(playlist.id)
+            let idle = await mainThreadIdle()
+            log("[bench] playlist \(playlist.name): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
+        }
+        selection = .music
+        _ = await mainThreadIdle()
         // The chrome logs how many frames each slide drew ([bench] sidebar ...).
         for _ in 0..<4 {
             toggleSidebar()
             try? await Task.sleep(nanoseconds: UInt64((SidebarSlide.duration + 0.55) * 1e9))
         }
         exit(0)
+    }
+
+    /// Populated-view benchmark against the launching simulated iPod, without scanning music,
+    /// fetching artwork or transferring media. Includes repeat-visit cache evidence.
+    private func benchLoadedViews() async {
+        guard let library, let loaded = portableLibrary else { log("FAIL: views benchmark needs a portable root"); exit(1) }
+        mode = .allSongs
+        if !ipods.isEmpty { await DevicePageCache.shared.prefetch(ipods) }
+        let reads = DevicePageCache.shared.readCount
+        let photoStart = Date()
+        _ = await PhotoInventory.shared.load(loaded.store)
+        log("[bench] photos inventory first load: \(Int(Date().timeIntervalSince(photoStart) * 1000)) ms")
+        let scans = PhotoInventory.shared.scanCount
+        var steps: [SidebarItem] = [.music, .podcasts, .audiobooks, .photos, .videos]
+        steps += library.playlists.prefix(3).map { .playlist($0.id) }
+        steps += ipods.map { .device($0.id) }
+        for round in 1...3 {
+            for item in steps {
+                let start = Date()
+                selection = item
+                let idle = await mainThreadIdle()
+                log("[bench] views round \(round) \(item.title): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
+            }
+        }
+        log("[bench] repeat navigation: additional device reads \(DevicePageCache.shared.readCount - reads), photo scans \(PhotoInventory.shared.scanCount - scans)")
+        log("[bench] populated library: \(library.allRows.count) songs, \(PodcastController.shared.shows.count) podcast shows, \(audiobookRows.count) audiobook chapters")
+        await benchSidebar()
     }
 
     private var deviceBenchmarkReady: Bool {
@@ -252,7 +296,8 @@ struct ContentView: View {
 
     @State var mode: MusicMode? = .allSongs
     @State var search = ""
-    @State var selectedArtist: String?
+    @State var selectedArtists: Set<String> = []
+    @State var artistSelection = ArtistSelectionCache()
 
     private func configureMusic() async {
         guard !scanning else { return }
@@ -265,12 +310,6 @@ struct ContentView: View {
     private var currentShow: PodcastShow? {
         let controller = PodcastController.shared
         return selectedShowID.flatMap { controller.show(id: $0) } ?? controller.shows.first
-    }
-
-    private var audiobooksFolderPath: String? {
-        guard let store = portableLibrary?.store else { return nil }
-        return store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == store.hostID }?
-            .sources.first { $0.kind == .audiobooks }?.path
     }
 
     private func configureAudiobooks() async {
@@ -293,7 +332,9 @@ struct ContentView: View {
             portableLibrary = loaded; library = indexed
             await ArtistPhotoController.shared.load(store: loaded.store)
             applyArtistPhotos()
-            ArtistPhotoController.shared.fetchMissing(indexed.artists.map(\.id))
+            if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] == nil {
+                ArtistPhotoController.shared.fetchMissing(indexed.artists.map(\.id))
+            }
             let books = await Task.detached(priority: .userInitiated) {
                 AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook))
             }.value
@@ -328,7 +369,7 @@ struct ContentView: View {
                 header(library)
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
-                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtist)
+                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtists)
                             .frame(width: 250)
                         Divider()
                     }
@@ -351,29 +392,32 @@ struct ContentView: View {
                     // The cover only hides the table: over the artist list, it would swallow the
                     // clicks that pick an artist.
                     ZStack {
-                        TrackTable(rows: tableRows(library))
-                        if case .device(let id) = selection, let device = ipod(named: id) {
+                        TrackTable(rows: tableRows(library), isActive: trackTableActive(library))
+                        ForEach(ipods, id: \.id) { device in
+                            RetainedPage(active: selection == .device(device.id)) {
                             DeviceView(device: device, library: library, revision: contentRevision, isBusy: busyDevices.contains(device.id),
                                 onEject: { eject(.device(device.id)) }, onRename: { name in
                                     ConnectedDeviceTitles.names[device.id] = name
                                     contentRevision += 1
                                 })
                                 .background(WindowBackground())
+                            }
                         }
-                        if selection == .music && mode == .byArtist, let name = selectedArtist,
-                           let artist = library.artists.first(where: { $0.id == name }) {
-                            ArtistDetail(artist: artist, albums: library.albumsByArtist[name] ?? [], artworkFolder: library.artworkFolder,
+                        if selection == .music && mode == .byArtist,
+                           let group = artistSelection.group(library, selected: selectedArtists) {
+                            ArtistDetail(artist: group.artist, albums: group.albums, artworkFolder: library.artworkFolder,
                                 devices: ipods.map(\.id), isBusy: { busyDevices.contains($0) },
                                 onSend: { ids, device in _ = MusicTransfer.shared.onDrop(ids, device) },
                                 onChoosePhoto: {
                                     Task {
+                                        guard let name = group.photoArtist else { return }
                                         guard let file = await chooseFile(title: "Choose a Photo of \(name)", defaultButtonLabel: "Use Photo",
                                             allowSelectingFiles: true, allowSelectingDirectories: false) else { return }
                                         if !(await ArtistPhotoController.shared.setCustomPhoto(file, for: name)) {
                                             transferStatus = "That picture couldn't be used."
                                         }
                                     }
-                                }, query: search.trimmingCharacters(in: .whitespaces))
+                                }, query: search.trimmingCharacters(in: .whitespaces), allowsPhotoSelection: group.photoArtist != nil)
                                 .background(WindowBackground())
                         }
                         if selection == .photos {
@@ -465,6 +509,17 @@ struct ContentView: View {
         }
     }
 
+    /// Keeping native rows for reuse must never keep an obscured table interactive.
+    private func trackTableActive(_ library: Library) -> Bool {
+        switch selection {
+        case .music: return mode != .byArtist && !library.allRows.isEmpty
+        case .podcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
+        case .audiobooks: return !audiobookRows.isEmpty
+        case .playlist: return true
+        default: return false
+        }
+    }
+
     /// The rows the table shows; nil for sections without a table, which keeps the last rows so
     /// the table underneath doesn't reload for nothing.
     private func tableRows(_ library: Library) -> [TrackRow]? {
@@ -475,6 +530,8 @@ struct ContentView: View {
             return filtered(library.allRows)
         case .playlist(let id):
             return library.rowsByPlaylist[id] ?? []
+        case .podcasts where addingPodcast:
+            return nil
         case .podcasts:
             return filtered(podcastRows.rows(for: currentShow, revision: PodcastController.shared.contentRevision))
         case .audiobooks:
@@ -490,7 +547,7 @@ struct ContentView: View {
         case .music where library.allRows.isEmpty:
             return EmptyState(icon: "music.note", title: "No Music Yet",
                               message: "Add MP3, AAC, Apple Lossless, WAV or AIFF files, or import your Music app library. FLAC and other formats are converted to AAC when syncing.")
-        case .music where mode == .byArtist && selectedArtist == nil:
+        case .music where mode == .byArtist && artistSelection.group(library, selected: selectedArtists) == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
                               message: "Pick an artist in the list to see their songs.")
         case .podcasts where PodcastController.shared.shows.isEmpty && !addingPodcast:
@@ -520,7 +577,7 @@ struct ContentView: View {
 /// Plain substring search over title, artist and album, recomputed only when the rows or the
 /// query change: the same array comes back otherwise, so the table doesn't reload on unrelated
 /// redraws (sidebar slide, color scheme).
-final class SearchCache {
+final class SearchCache: SwiftCrossUI.ObservableObject {
     private var source: [TrackRow] = []
     private var query = ""
     private var result: [TrackRow] = []

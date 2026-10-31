@@ -14,7 +14,8 @@ import SwiftCrossUI
     struct ArtistList: NSViewRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        @Binding var selection: String?
+        var multipleSelection = true
+        @Binding var selection: Set<String>
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -23,6 +24,7 @@ import SwiftCrossUI
             if #available(macOS 11, *) { table.style = .plain }
             table.headerView = nil
             table.rowHeight = 46
+            table.allowsMultipleSelection = multipleSelection
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("artist")))
             table.dataSource = context.coordinator
             table.delegate = context.coordinator
@@ -46,10 +48,10 @@ import SwiftCrossUI
                 table.reloadData()
                 coordinator.isSyncing = false
             }
-            let row = selection.flatMap { name in artists.firstIndex { $0.id == name } } ?? -1
-            if table.selectedRow != row {
+            let indexes = IndexSet(artists.indices.filter { selection.contains(artists[$0].id) })
+            if table.selectedRowIndexes != indexes {
                 coordinator.isSyncing = true
-                if row >= 0 { table.selectRowIndexes([row], byExtendingSelection: false) } else { table.deselectAll(nil) }
+                table.selectRowIndexes(indexes, byExtendingSelection: false)
                 coordinator.isSyncing = false
             }
         }
@@ -61,29 +63,16 @@ import SwiftCrossUI
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
-                var onSelect: (String?) -> Void = { _ in }
+                var onSelect: (Set<String>) -> Void = { _ in }
             var isSyncing = false
-            private let thumbnails = NSCache<NSString, NSImage>()
-
-            /// A 68 px round-ready thumbnail of the cover, decoded once.
-            private func thumbnail(_ photo: URL?) -> NSImage? {
-                guard let photo else { return nil }
-                let key = photo.path
-                if let cached = thumbnails.object(forKey: key as NSString) { return cached }
-                let url = photo as CFURL
-                guard let source = CGImageSourceCreateWithURL(url, nil),
-                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 68,
-                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return nil }
-                let result = NSImage(cgImage: image, size: NSSize(width: 34, height: 34))
-                thumbnails.setObject(result, forKey: key as NSString)
-                return result
-            }
-
             private var dragPayload: String?
             func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
                 guard artists.indices.contains(row) else { return nil }
-                if dragPayload == nil { dragPayload = TrackDrag.begin((tracksByArtist[artists[row].id] ?? []).map(\.id)) }
+                if dragPayload == nil {
+                    let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
+                    let ids = indexes.flatMap { index in (tracksByArtist[artists[index].id] ?? []).map(\.id) }
+                    dragPayload = TrackDrag.begin(ids)
+                }
                 guard let dragPayload else { return nil }
                 let item = NSPasteboardItem()
                 item.setString(dragPayload, forType: .string)
@@ -100,16 +89,15 @@ import SwiftCrossUI
                 let id = NSUserInterfaceItemIdentifier("artistCell")
                 let cell = tableView.makeView(withIdentifier: id, owner: nil) as? ArtistCell ?? ArtistCell(id: id)
                 let artist = artists[row]
-                cell.name.stringValue = artist.id
-                cell.count.stringValue = "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
-                cell.photo.image = thumbnail(artist.photo)
-                cell.placeholder.isHidden = cell.photo.image != nil
+                cell.name.stringValue = artist.displayName ?? artist.id
+                cell.count.stringValue = artist.subtitle ?? "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
+                cell.showPhoto(artist.photo)
                 return cell
             }
 
             func tableViewSelectionDidChange(_ notification: Notification) {
                 guard !isSyncing, let table = notification.object as? NSTableView else { return }
-                onSelect(table.selectedRow >= 0 ? artists[table.selectedRow].id : nil)
+                onSelect(Set(table.selectedRowIndexes.compactMap { artists.indices.contains($0) ? artists[$0].id : nil }))
             }
         }
 
@@ -119,6 +107,22 @@ import SwiftCrossUI
             let placeholder = NSImageView()
             let name = NSTextField(labelWithString: "")
             let count = NSTextField(labelWithString: "")
+            private var photoURL: URL?
+            private var photoTask: Task<Void, Never>?
+            func showPhoto(_ url: URL?) {
+                guard photoURL != url else { return }
+                photoURL = url
+                photoTask?.cancel()
+                photo.image = url.flatMap { ThumbnailStore.shared.cached($0, pixels: 68) }
+                placeholder.isHidden = photo.image != nil
+                guard let url, photo.image == nil else { return }
+                photoTask = Task { [weak self] in
+                    let image = await ThumbnailStore.shared.image(url, pixels: 68)
+                    guard !Task.isCancelled, self?.photoURL == url else { return }
+                    self?.photo.image = image
+                    self?.placeholder.isHidden = image != nil
+                }
+            }
 
             init(id: NSUserInterfaceItemIdentifier) {
                 super.init(frame: .zero)
@@ -174,7 +178,8 @@ import SwiftCrossUI
     struct ArtistList: GtkWidgetRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        @Binding var selection: String?
+        var multipleSelection = true
+        @Binding var selection: Set<String>
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -182,13 +187,17 @@ import SwiftCrossUI
             let coordinator = context.coordinator
             // The selection takes the model's reference (transfer full): give it one of its own.
             g_object_ref(cast(coordinator.model))
-            let selectionModel = gtk_single_selection_new(cast(coordinator.model))!
-            gtk_single_selection_set_autoselect(selectionModel, 0)
-            gtk_single_selection_set_can_unselect(selectionModel, 1)
+            let selectionModel: OpaquePointer
+            if multipleSelection { selectionModel = gtk_multi_selection_new(cast(coordinator.model))! }
+            else {
+                selectionModel = gtk_single_selection_new(cast(coordinator.model))!
+                gtk_single_selection_set_autoselect(selectionModel, 0)
+                gtk_single_selection_set_can_unselect(selectionModel, 1)
+            }
             coordinator.selectionModel = selectionModel
             // Each handler owns a weak reference to the coordinator; GLib releases it with the handler,
             // so a signal after the view is gone finds nothing rather than a freed object.
-            g_signal_connect_data(cast(selectionModel), "notify::selected", unsafeBitCast(artistSelected, to: GCallback.self),
+            g_signal_connect_data(cast(selectionModel), "selection-changed", unsafeBitCast(artistSelected, to: GCallback.self),
                                   ArtistBinding.retained(coordinator), releaseArtistBinding, GConnectFlags(rawValue: 0))
             let factory = gtk_signal_list_item_factory_new()
             g_signal_connect_data(cast(factory), "setup", unsafeBitCast(setupArtist, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
@@ -213,11 +222,15 @@ import SwiftCrossUI
             coordinator.onSelect = { selection = $0 }
             coordinator.tracksByArtist = tracksByArtist
             coordinator.show(artists)
-            let position = selection.flatMap { name in artists.firstIndex { $0.id == name } }.map(UInt32.init)
-                ?? UInt32.max  // GTK_INVALID_LIST_POSITION
-            if let model = coordinator.selectionModel, gtk_single_selection_get_selected(model) != position {
+            if let model = coordinator.selectionModel {
                 coordinator.isSyncing = true
-                gtk_single_selection_set_selected(model, position)
+                for index in artists.indices {
+                    let selected = selection.contains(artists[index].id)
+                    if (gtk_selection_model_is_selected(cast(model), UInt32(index)) != 0) != selected {
+                        if selected { gtk_selection_model_select_item(cast(model), UInt32(index), 0) }
+                        else { gtk_selection_model_unselect_item(cast(model), UInt32(index)) }
+                    }
+                }
                 coordinator.isSyncing = false
             }
         }
@@ -232,7 +245,7 @@ import SwiftCrossUI
             var selectionModel: OpaquePointer?
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
-                var onSelect: (String?) -> Void = { _ in }
+                var onSelect: (Set<String>) -> Void = { _ in }
             var isSyncing = false
 
             func show(_ newArtists: [NamedGroup]) {
@@ -252,8 +265,7 @@ import SwiftCrossUI
 
             fileprivate func selectionChanged() {
                 guard !isSyncing, let selectionModel else { return }
-                let position = Int(gtk_single_selection_get_selected(selectionModel))
-                onSelect(position < artists.count ? artists[position].id : nil)
+                onSelect(Set(artists.indices.filter { gtk_selection_model_is_selected(cast(selectionModel), UInt32($0)) != 0 }.map { artists[$0].id }))
             }
 
             deinit {
@@ -326,13 +338,9 @@ import SwiftCrossUI
             guard let coordinator = Unmanaged<ArtistBinding>.fromOpaque(data).takeUnretainedValue().coordinator,
                   position < coordinator.artists.count else { return }
             let artist = coordinator.artists[position]
-            gtk_label_set_text(cast(name), artist.id)
-            gtk_label_set_text(cast(count), "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")")
-            if let file = artist.photo {
-                gtk_image_set_from_file(cast(photo), file.path)
-            } else {
-                gtk_image_clear(cast(photo))
-            }
+            gtk_label_set_text(cast(name), artist.displayName ?? artist.id)
+            gtk_label_set_text(cast(count), artist.subtitle ?? "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")")
+            setGtkThumbnail(photo, url: artist.photo, pixels: 68)
         }
     }
 
@@ -341,9 +349,9 @@ import SwiftCrossUI
         return MainActor.assumeIsolated {
             guard let c = Unmanaged<ArtistBinding>.fromOpaque(data).takeUnretainedValue().coordinator,
                   let model = c.selectionModel else { return nil }
-            let row = Int(gtk_single_selection_get_selected(model))
-            guard c.artists.indices.contains(row),
-                  let payload = TrackDrag.begin((c.tracksByArtist[c.artists[row].id] ?? []).map(\.id)) else { return nil }
+            let ids = c.artists.indices.filter { gtk_selection_model_is_selected(cast(model), UInt32($0)) != 0 }
+                .flatMap { (c.tracksByArtist[c.artists[$0].id] ?? []).map(\.id) }
+            guard let payload = TrackDrag.begin(ids) else { return nil }
             var value = GValue()
             g_value_init(&value, g_type_from_name("gchararray"))
             g_value_set_string(&value, payload)
@@ -358,7 +366,7 @@ import SwiftCrossUI
         MainActor.assumeIsolated { TrackDrag.end() }
     }
 
-    private let artistSelected: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, data in
+    private let artistSelected: @convention(c) (OpaquePointer?, UInt32, UInt32, gpointer?) -> Void = { _, _, _, data in
         guard let data else { return }
         MainActor.assumeIsolated {
             Unmanaged<ArtistBinding>.fromOpaque(data).takeUnretainedValue().coordinator?.selectionChanged()
@@ -374,21 +382,20 @@ import SwiftCrossUI
     struct ArtistList: WinUIElementRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        @SwiftCrossUI.Binding var selection: String?
+        var multipleSelection = true
+        @SwiftCrossUI.Binding var selection: Set<String>
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
         func makeWinUIElement(context: Context) -> ListView {
             let list = ListView()
-            list.selectionMode = .single
+            list.selectionMode = multipleSelection ? .extended : .single
             list.canDragItems = true
             list.dragItemsStarting.addHandler { [weak coordinator = context.coordinator, weak list] _, args in
                 guard let coordinator, let list, let args else { return }
                 MainActor.assumeIsolated {
-                    let row = Int(list.selectedIndex)
-                    guard coordinator.artists.indices.contains(row),
-                          let payload = TrackDrag.begin((coordinator.tracksByArtist[coordinator.artists[row].id] ?? []).map(\.id))
-                    else { args.cancel = true; return }
+                    let ids = coordinator.selectedIndexes(list).flatMap { (coordinator.tracksByArtist[coordinator.artists[$0].id] ?? []).map(\.id) }
+                    guard let payload = TrackDrag.begin(ids) else { args.cancel = true; return }
                     do { try args.data.setText(payload) } catch { TrackDrag.end(); args.cancel = true; return }
                     args.data.requestedOperation = .copy
                     args.data.properties.title = "\(TrackDrag.ids.count) songs"
@@ -397,7 +404,7 @@ import SwiftCrossUI
             list.dragItemsCompleted.addHandler { _, _ in MainActor.assumeIsolated { TrackDrag.end() } }
             list.selectionChanged.addHandler { [weak coordinator = context.coordinator, weak list] _, _ in
                 guard let list else { return }
-                MainActor.assumeIsolated { coordinator?.selectionChanged(Int(list.selectedIndex)) }
+                MainActor.assumeIsolated { coordinator?.selectionChanged(list) }
             }
             return list
         }
@@ -413,10 +420,13 @@ import SwiftCrossUI
                 for artist in artists { list.items.append(Self.row(artist)) }
                 coordinator.isSyncing = false
             }
-            let index = Int32(selection.flatMap { name in artists.firstIndex { $0.id == name } } ?? -1)
-            if list.selectedIndex != index {
+            let indexes = Set(artists.indices.filter { selection.contains(artists[$0].id) })
+            if Set(coordinator.selectedIndexes(list)) != indexes {
                 coordinator.isSyncing = true
-                list.selectedIndex = index
+                list.selectedItems.clear()
+                if multipleSelection {
+                    for index in indexes.sorted() { try? list.selectRange(ItemIndexRange(Int32(index), 1)) }
+                } else { list.selectedIndex = Int32(indexes.first ?? -1) }
                 coordinator.isSyncing = false
             }
         }
@@ -452,10 +462,10 @@ import SwiftCrossUI
             let text = StackPanel()
             text.verticalAlignment = .center
             let name = TextBlock()
-            name.text = artist.id
+            name.text = artist.displayName ?? artist.id
             name.textTrimming = .characterEllipsis
             let count = TextBlock()
-            count.text = "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
+            count.text = artist.subtitle ?? "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
             count.fontSize = 11
             count.opacity = 0.55
             count.textTrimming = .characterEllipsis
@@ -474,12 +484,21 @@ import SwiftCrossUI
         final class Coordinator {
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
-            var onSelect: (String?) -> Void = { _ in }
+            var onSelect: (Set<String>) -> Void = { _ in }
             var isSyncing = false
 
-            func selectionChanged(_ index: Int) {
+            func selectedIndexes(_ list: ListView) -> [Int] {
+                var indexes: [Int] = []
+                for i in 0..<list.selectedRanges.size {
+                    guard let range = list.selectedRanges.getAt(i), range.firstIndex >= 0 else { continue }
+                    let first = Int(range.firstIndex), last = min(Int(range.lastIndex), artists.count - 1)
+                    if first <= last { indexes.append(contentsOf: first...last) }
+                }
+                return indexes
+            }
+            func selectionChanged(_ list: ListView) {
                 guard !isSyncing else { return }
-                onSelect(index >= 0 && index < artists.count ? artists[index].id : nil)
+                onSelect(Set(selectedIndexes(list).map { artists[$0].id }))
             }
         }
     }

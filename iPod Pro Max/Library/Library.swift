@@ -43,6 +43,9 @@ struct NamedGroup: Identifiable {
     var id: String
     var count: Int
     var albumCount = 0
+    /// Optional presentation for other native list clients (podcast subscriptions).
+    var displayName: String?
+    var subtitle: String?
     var artworkKey: String?
     /// The first album's cover, when there is one.
     var cover: URL?

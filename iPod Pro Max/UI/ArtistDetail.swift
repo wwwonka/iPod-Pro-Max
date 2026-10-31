@@ -22,6 +22,7 @@ struct ArtistDetail: View {
     var onSend: ([String], String) -> Void
     var onChoosePhoto: () -> Void
     var query: String
+    var allowsPhotoSelection = true
 
     @State private var rowsCache = ArtistRowsCache()
 
@@ -51,7 +52,7 @@ struct ArtistDetail: View {
                     .foregroundColor(MacColor.secondaryText)
             }
             Spacer()
-            Button("Choose Photo…") { onChoosePhoto() }
+            if allowsPhotoSelection { Button("Choose Photo…") { onChoosePhoto() } }
             SendButtons(devices: devices, isBusy: isBusy, onSend: { onSend(allIDs, $0) })
         }
         .padding(18)
@@ -73,7 +74,7 @@ private struct ArtistPhoto: View {
         ZStack {
             Circle().fill(Color(white: 0.5, opacity: 0.18))
             if let url {
-                Image(url).resizable().frame(width: size, height: size)
+                Thumbnail(url: url, pixels: Int(size * 2)).frame(width: size, height: size)
             } else {
                 Symbol(name: "music.mic", size: size / 2, pointSize: size / 3, tint: .secondary)
             }
