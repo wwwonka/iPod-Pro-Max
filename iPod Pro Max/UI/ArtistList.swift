@@ -1,3 +1,4 @@
+import Foundation
 import SwiftCrossUI
 
 // The "By Artist" list: a native, virtualized list on each platform, like the track table.
@@ -8,10 +9,12 @@ import SwiftCrossUI
 #if canImport(AppKitBackend)
     import AppKit
     import AppKitBackend
+    import ImageIO
 
     struct ArtistList: NSViewRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
+        var artworkFolder: URL?
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -20,7 +23,7 @@ import SwiftCrossUI
             let table = NSTableView()
             if #available(macOS 11, *) { table.style = .plain }
             table.headerView = nil
-            table.rowHeight = 24
+            table.rowHeight = 46
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("artist")))
             table.dataSource = context.coordinator
             table.delegate = context.coordinator
@@ -37,6 +40,7 @@ import SwiftCrossUI
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.tracksByArtist = tracksByArtist
+            coordinator.artworkFolder = artworkFolder
             if !coordinator.artists.sameStorage(as: artists) {
                 coordinator.artists = artists
                 table.reloadData()
@@ -56,8 +60,24 @@ import SwiftCrossUI
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
+            var artworkFolder: URL?
             var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
+            private let thumbnails = NSCache<NSString, NSImage>()
+
+            /// A 68 px round-ready thumbnail of the cover, decoded once.
+            private func thumbnail(_ key: String?) -> NSImage? {
+                guard let key, let artworkFolder else { return nil }
+                if let cached = thumbnails.object(forKey: key as NSString) { return cached }
+                let url = artworkFolder.appendingPathComponent("\(key).jpg") as CFURL
+                guard let source = CGImageSourceCreateWithURL(url, nil),
+                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 68,
+                        kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) else { return nil }
+                let result = NSImage(cgImage: image, size: NSSize(width: 34, height: 34))
+                thumbnails.setObject(result, forKey: key as NSString)
+                return result
+            }
 
             private var dragPayload: String?
             func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
@@ -78,8 +98,11 @@ import SwiftCrossUI
             func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
                 let id = NSUserInterfaceItemIdentifier("artistCell")
                 let cell = tableView.makeView(withIdentifier: id, owner: nil) as? ArtistCell ?? ArtistCell(id: id)
-                cell.name.stringValue = artists[row].id
-                cell.count.stringValue = "\(artists[row].count)"
+                let artist = artists[row]
+                cell.name.stringValue = artist.id
+                cell.count.stringValue = "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
+                cell.photo.image = thumbnail(artist.artworkKey)
+                cell.placeholder.isHidden = cell.photo.image != nil
                 return cell
             }
 
@@ -89,27 +112,52 @@ import SwiftCrossUI
             }
         }
 
-        /// The artist's name, and its song count in gray at the right.
+        /// A round cover, the artist's name, and "N albums · M songs" in gray under it.
         final class ArtistCell: NSTableCellView {
+            let photo = NSImageView()
+            let placeholder = NSImageView()
             let name = NSTextField(labelWithString: "")
             let count = NSTextField(labelWithString: "")
 
             init(id: NSUserInterfaceItemIdentifier) {
                 super.init(frame: .zero)
                 identifier = id
+                for view in [photo, placeholder] {
+                    view.wantsLayer = true
+                    view.layer?.cornerRadius = 17
+                    view.layer?.masksToBounds = true
+                    view.translatesAutoresizingMaskIntoConstraints = false
+                    addSubview(view)
+                }
+                photo.imageScaling = .scaleProportionallyUpOrDown
+                placeholder.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+                if #available(macOS 11, *) {
+                    placeholder.image = NSImage(systemSymbolName: "music.mic", accessibilityDescription: nil)
+                    placeholder.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+                }
+                placeholder.contentTintColor = .secondaryLabelColor
                 name.lineBreakMode = .byTruncatingTail
+                count.lineBreakMode = .byTruncatingTail
+                count.font = .systemFont(ofSize: 11)
                 count.textColor = .secondaryLabelColor
                 for field in [name, count] {
                     field.translatesAutoresizingMaskIntoConstraints = false
                     addSubview(field)
+                    field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 }
-                name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 NSLayoutConstraint.activate([
-                    name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-                    name.centerYAnchor.constraint(equalTo: centerYAnchor),
-                    count.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 8),
+                    photo.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                    photo.centerYAnchor.constraint(equalTo: centerYAnchor),
+                    photo.widthAnchor.constraint(equalToConstant: 34), photo.heightAnchor.constraint(equalToConstant: 34),
+                    placeholder.leadingAnchor.constraint(equalTo: photo.leadingAnchor),
+                    placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
+                    placeholder.widthAnchor.constraint(equalToConstant: 34), placeholder.heightAnchor.constraint(equalToConstant: 34),
+                    name.leadingAnchor.constraint(equalTo: photo.trailingAnchor, constant: 10),
+                    name.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+                    name.bottomAnchor.constraint(equalTo: centerYAnchor, constant: 1),
+                    count.leadingAnchor.constraint(equalTo: name.leadingAnchor),
                     count.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-                    count.centerYAnchor.constraint(equalTo: centerYAnchor),
+                    count.topAnchor.constraint(equalTo: centerYAnchor, constant: 1),
                 ])
             }
 
@@ -125,6 +173,7 @@ import SwiftCrossUI
     struct ArtistList: GtkWidgetRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
+        var artworkFolder: URL?
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -163,6 +212,7 @@ import SwiftCrossUI
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.tracksByArtist = tracksByArtist
+            coordinator.artworkFolder = artworkFolder
             coordinator.show(artists)
             let position = selection.flatMap { name in artists.firstIndex { $0.id == name } }.map(UInt32.init)
                 ?? UInt32.max  // GTK_INVALID_LIST_POSITION
@@ -183,6 +233,7 @@ import SwiftCrossUI
             var selectionModel: OpaquePointer?
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
+            var artworkFolder: URL?
             var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
 
@@ -229,29 +280,61 @@ import SwiftCrossUI
     }
 
     private let setupArtist: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, _ in
-        let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8)!
+        installArtistCSS()
+        let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)!
         gtk_widget_set_margin_start(box, 8)
         gtk_widget_set_margin_end(box, 8)
+        gtk_widget_set_margin_top(box, 4)
+        gtk_widget_set_margin_bottom(box, 4)
+        // The round cover; a gray disc when the artist has none.
+        let photo = gtk_image_new()!
+        gtk_image_set_pixel_size(cast(photo), 34)
+        gtk_widget_set_size_request(photo, 34, 34)
+        gtk_widget_set_overflow(photo, GTK_OVERFLOW_HIDDEN)
+        gtk_widget_add_css_class(photo, "ippm-artist-photo")
+        let text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1)!
+        gtk_widget_set_valign(text, GTK_ALIGN_CENTER)
+        gtk_widget_set_hexpand(text, 1)
         let name = gtk_label_new(nil)!
         gtk_label_set_xalign(cast(name), 0)
         gtk_label_set_ellipsize(cast(name), PANGO_ELLIPSIZE_END)
-        gtk_widget_set_hexpand(name, 1)
         let count = gtk_label_new(nil)!
+        gtk_label_set_xalign(cast(count), 0)
+        gtk_label_set_ellipsize(cast(count), PANGO_ELLIPSIZE_END)
         gtk_widget_add_css_class(count, "dim-label")
-        gtk_box_append(cast(box), name)
-        gtk_box_append(cast(box), count)
+        gtk_widget_add_css_class(count, "caption")
+        gtk_box_append(cast(text), name)
+        gtk_box_append(cast(text), count)
+        gtk_box_append(cast(box), photo)
+        gtk_box_append(cast(box), text)
         gtk_list_item_set_child(cast(item), box)
+    }
+
+    @MainActor private var artistCSSInstalled = false
+    @MainActor private func installArtistCSS() {
+        guard !artistCSSInstalled else { return }
+        artistCSSInstalled = true
+        let provider = gtk_css_provider_new()!
+        loadCSS(provider, ".ippm-artist-photo { border-radius: 17px; background-color: alpha(currentColor, 0.12); }")
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
     }
 
     private let bindArtist: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, data in
         guard let data, let box = gtk_list_item_get_child(cast(item)),
-              let name = gtk_widget_get_first_child(box), let count = gtk_widget_get_next_sibling(name) else { return }
+              let photo = gtk_widget_get_first_child(box), let text = gtk_widget_get_next_sibling(photo),
+              let name = gtk_widget_get_first_child(text), let count = gtk_widget_get_next_sibling(name) else { return }
         let position = Int(gtk_list_item_get_position(cast(item)))
         MainActor.assumeIsolated {
             guard let coordinator = Unmanaged<ArtistBinding>.fromOpaque(data).takeUnretainedValue().coordinator,
                   position < coordinator.artists.count else { return }
-            gtk_label_set_text(cast(name), coordinator.artists[position].id)
-            gtk_label_set_text(cast(count), "\(coordinator.artists[position].count)")
+            let artist = coordinator.artists[position]
+            gtk_label_set_text(cast(name), artist.id)
+            gtk_label_set_text(cast(count), "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")")
+            if let key = artist.artworkKey, let folder = coordinator.artworkFolder {
+                gtk_image_set_from_file(cast(photo), folder.appendingPathComponent("\(key).jpg").path)
+            } else {
+                gtk_image_clear(cast(photo))
+            }
         }
     }
 
@@ -285,6 +368,7 @@ import SwiftCrossUI
     }
 #elseif canImport(WinUIBackend)
     import UWP
+    import WindowsFoundation
     import WinUI
     import WinUIBackend
 
@@ -292,6 +376,7 @@ import SwiftCrossUI
     struct ArtistList: WinUIElementRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
+        var artworkFolder: URL?
         @SwiftCrossUI.Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -328,7 +413,7 @@ import SwiftCrossUI
                 coordinator.artists = artists
                 coordinator.isSyncing = true
                 list.items.clear()
-                for artist in artists { list.items.append(Self.row(artist)) }
+                for artist in artists { list.items.append(Self.row(artist, artworkFolder: artworkFolder)) }
                 coordinator.isSyncing = false
             }
             let index = Int32(selection.flatMap { name in artists.firstIndex { $0.id == name } } ?? -1)
@@ -343,22 +428,45 @@ import SwiftCrossUI
             ViewSize(proposal.width ?? 250, proposal.height ?? 400)
         }
 
-        private static func row(_ artist: NamedGroup) -> ListViewItem {
+        private static func row(_ artist: NamedGroup, artworkFolder: URL?) -> ListViewItem {
             let grid = WinUI.Grid()
-            for width in [GridLength(value: 1, gridUnitType: .star), GridLength(value: 1, gridUnitType: .auto)] {
+            for width in [GridLength(value: 34, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star)] {
                 let column = ColumnDefinition()
                 column.width = width
                 grid.columnDefinitions.append(column)
             }
+            grid.columnSpacing = 10
+            grid.padding = Thickness(left: 0, top: 4, right: 0, bottom: 4)
+            // The round cover, over a gray disc.
+            let photo = Border()
+            photo.width = 34
+            photo.height = 34
+            photo.cornerRadius = CornerRadius(topLeft: 17, topRight: 17, bottomRight: 17, bottomLeft: 17)
+            photo.background = SolidColorBrush(UWP.Color(a: 40, r: 128, g: 128, b: 128))
+            if let key = artist.artworkKey, let artworkFolder {
+                let image = WinUI.Image()
+                image.stretch = .uniformToFill
+                let bitmap = BitmapImage(WindowsFoundation.Uri(artworkFolder.appendingPathComponent("\(key).jpg").absoluteString))
+                bitmap.decodePixelWidth = 68
+                image.source = bitmap
+                photo.child = image
+            }
+            WinUI.Grid.setColumn(photo, 0)
+            let text = StackPanel()
+            text.verticalAlignment = .center
             let name = TextBlock()
             name.text = artist.id
             name.textTrimming = .characterEllipsis
             let count = TextBlock()
-            count.text = "\(artist.count)"
-            count.opacity = 0.5
-            WinUI.Grid.setColumn(count, 1)
-            grid.children.append(name)
-            grid.children.append(count)
+            count.text = "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
+            count.fontSize = 11
+            count.opacity = 0.55
+            count.textTrimming = .characterEllipsis
+            text.children.append(name)
+            text.children.append(count)
+            WinUI.Grid.setColumn(text, 1)
+            grid.children.append(photo)
+            grid.children.append(text)
             let item = ListViewItem()
             item.content = grid
             item.horizontalContentAlignment = .stretch

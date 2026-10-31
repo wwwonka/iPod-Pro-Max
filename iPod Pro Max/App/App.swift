@@ -269,7 +269,7 @@ struct ContentView: View {
                 configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             }
             let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh)
-            let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path) }.value
+            let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
             let books = await Task.detached(priority: .userInitiated) {
                 AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook))
@@ -305,7 +305,7 @@ struct ContentView: View {
                 header(library)
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
-                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtist)
+                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, artworkFolder: library.artworkFolder, selection: $selectedArtist)
                             .frame(width: 250)
                         Divider()
                     }
@@ -335,6 +335,13 @@ struct ContentView: View {
                                     ConnectedDeviceTitles.names[device.id] = name
                                     contentRevision += 1
                                 })
+                                .background(WindowBackground())
+                        }
+                        if selection == .music && mode == .byArtist, let name = selectedArtist,
+                           let artist = library.artists.first(where: { $0.id == name }) {
+                            ArtistDetail(artist: artist, albums: library.albumsByArtist[name] ?? [], artworkFolder: library.artworkFolder,
+                                devices: ipods.map(\.id), isBusy: { busyDevices.contains($0) },
+                                onSend: { ids, device in _ = MusicTransfer.shared.onDrop(ids, device) })
                                 .background(WindowBackground())
                         }
                         if selection == .photos {

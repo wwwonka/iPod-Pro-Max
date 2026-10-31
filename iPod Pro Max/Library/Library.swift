@@ -13,6 +13,8 @@ struct Track: Decodable {
     var trackNumber: Int?
     var discNumber: Int?
     var durationMs: Int?
+    var genre: String?
+    var artworkKey: String?
 }
 
 struct Playlist: Decodable, Identifiable, Equatable {
@@ -40,6 +42,20 @@ struct TrackRow: Equatable {
 struct NamedGroup: Identifiable {
     var id: String
     var count: Int
+    var albumCount = 0
+    var artworkKey: String?
+}
+
+/// One album of an artist, with its songs in disc and track order.
+struct AlbumInfo: Identifiable {
+    var id: String
+    var title: String
+    /// "" when unknown.
+    var year: String
+    var genre: String?
+    var artworkKey: String?
+    var rows: [TrackRow]
+    var durationMs: Int
 }
 
 /// Everything the views need, computed once off the main thread so a render never regroups.
@@ -48,19 +64,24 @@ struct Library {
     var allRows: [TrackRow]
     var artists: [NamedGroup]
     var rowsByArtist: [String: [TrackRow]]
+    var albumsByArtist: [String: [AlbumInfo]]
+    /// Where the covers are kept (`<key>.jpg`); nil for a library without any.
+    var artworkFolder: URL?
     var playlists: [Playlist]
     var rowsByPlaylist: [String: [TrackRow]]
     var loadMs: Int
     var indexMs: Int
 
-    static func portable(_ cache: PortableLibraryCache, source: String) -> Library {
+    static func portable(_ cache: PortableLibraryCache, source: String, artworkFolder: URL? = nil) -> Library {
         let tracks = cache.tracks.filter { $0.kind == nil || $0.kind == .song }.map {
             Track(id: $0.id.uuidString, title: $0.title, artist: $0.artist, album: $0.album,
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
-                  discNumber: $0.discNumber, durationMs: $0.durationMs)
+                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey)
         }
         let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
-        return index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
+        var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
+        library.artworkFolder = artworkFolder
+        return library
     }
 
     static func load(arguments: [String]) async -> Library {
@@ -122,6 +143,7 @@ struct Library {
         var all: [TrackRow] = []
         all.reserveCapacity(sorted.count)
         var byArtist: [String: [TrackRow]] = [:]
+        var tracksByArtist: [String: [Track]] = [:]
         var byID: [String: TrackRow] = [:]
         byID.reserveCapacity(sorted.count)
         for t in sorted {
@@ -135,6 +157,7 @@ struct Library {
             )
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
+            tracksByArtist[t.albumArtist ?? row.artist, default: []].append(t)
             byID[t.id] = row
         }
         let playlists = document.playlists ?? []
@@ -142,14 +165,47 @@ struct Library {
         for p in playlists {
             byPlaylist[p.id] = p.trackIDs.compactMap { byID[$0] }
         }
+        let albums = tracksByArtist.mapValues(albumInfos)
         func groups(_ d: [String: [TrackRow]]) -> [NamedGroup] {
-            d.map { NamedGroup(id: $0.key, count: $0.value.count) }
-                .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
+            d.map { name, rows in
+                let list = albums[name] ?? []
+                return NamedGroup(id: name, count: rows.count, albumCount: list.count, artworkKey: list.first { $0.artworkKey != nil }?.artworkKey)
+            }
+            .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
         }
         return Library(source: source, allRows: all,
                        artists: groups(byArtist), rowsByArtist: byArtist,
+                       albumsByArtist: albums, artworkFolder: nil,
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
+    }
+
+    /// An artist's albums, newest first like the iPod's own list; the songs arrive in album order.
+    private static func albumInfos(_ tracks: [Track]) -> [AlbumInfo] {
+        var order: [String] = []
+        var byAlbum: [String: [Track]] = [:]
+        for t in tracks {
+            let name = t.album ?? ""
+            if byAlbum[name] == nil { order.append(name) }
+            byAlbum[name, default: []].append(t)
+        }
+        let albums = order.map { name -> AlbumInfo in
+            let songs = byAlbum[name] ?? []
+            let year = songs.compactMap(\.year).first { $0 > 0 }
+            return AlbumInfo(
+                id: name, title: name.isEmpty ? "Unknown Album" : name, year: year.map(String.init) ?? "",
+                genre: songs.compactMap(\.genre).first { !$0.isEmpty },
+                artworkKey: songs.compactMap(\.artworkKey).first,
+                rows: songs.map { t in
+                    TrackRow(id: t.id, title: t.title, artist: t.artist ?? "Unknown Artist", album: t.album ?? "Unknown Album",
+                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0))
+                },
+                durationMs: songs.reduce(0) { $0 + ($1.durationMs ?? 0) })
+        }
+        return albums.sorted { a, b in
+            if a.year != b.year { return (Int(a.year) ?? 0) > (Int(b.year) ?? 0) }
+            return a.title.localizedStandardCompare(b.title) == .orderedAscending
+        }
     }
 
     private static func synthetic(count: Int) -> LibraryDocument {
