@@ -50,6 +50,21 @@ public enum ImageLoading {
         return pixels(from: data)
     }
 
+    /// A picture file as an upright JPEG of at most `maxDimension` px. On the Mac the camera's orientation
+    /// is applied (ImageIO); elsewhere the pixels are taken as stored.
+    public static func photoJPEG(from url: URL, maxDimension: Int, quality: Double) -> Data? {
+        #if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: maxDimension, kCGImageSourceShouldCache: false]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return jpegData(from: image, maxDimension: maxDimension, quality: quality)
+        #else
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return jpegData(from: data, maxDimension: maxDimension, quality: quality)
+        #endif
+    }
+
     /// Re-encodes image data as JPEG, downscaling so the longest side is at most `maxDimension`.
     public static func jpegData(from data: Data, maxDimension: Int = 600, quality: Double = 0.85) -> Data? {
         #if canImport(ImageIO)

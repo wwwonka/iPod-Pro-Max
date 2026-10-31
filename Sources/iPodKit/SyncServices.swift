@@ -64,6 +64,12 @@ public protocol PhotoLibrarySource: Sendable {
     func estimatedCount(selection: PhotoSelection) -> Int
     func export(selection: PhotoSelection, cacheDir: URL, progress: @escaping (Int, Int) -> Void) throws -> PhotoExport
     func pruneCache(_ cacheDir: URL, keep: Set<String>)
+    /// True for a source whose content is fixed by its own settings (chosen folders), not by `PhotoSelection`.
+    var exportsWithoutSelection: Bool { get }
+}
+
+public extension PhotoLibrarySource {
+    var exportsWithoutSelection: Bool { false }
 }
 
 /// Limits of the video the click-wheel iPods play: H.264 Baseline up to 320×240, AAC-LC stereo.

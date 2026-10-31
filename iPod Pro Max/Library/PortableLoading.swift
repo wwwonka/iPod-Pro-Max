@@ -60,7 +60,8 @@ enum PortableLoading {
                         return track
                     }
                     let scanned = await FolderImporter.scan(folder: URL(fileURLWithPath: source.path), artworkDir: store.artwork,
-                        cached: relocated, namespace: source.id.uuidString, musicOnly: true)
+                        cached: relocated, namespace: source.id.uuidString, musicOnly: true,
+                        excluding: host.sources.filter { $0.kind == .audiobooks }.map { URL(fileURLWithPath: $0.path) })
                     tracks.append(contentsOf: scanned.tracks)
                 }
                 cache.tracks = tracks + books

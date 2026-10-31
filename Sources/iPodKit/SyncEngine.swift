@@ -232,7 +232,7 @@ public final class SyncEngine: @unchecked Sendable {
         let stats = device.volumeStats()
         let bytesFreed = removals.reduce(Int64(0)) { $0 + Int64($1.fileSize) }
         var bytesNeeded = adds.reduce(Int64(0)) { $0 + $1.estimatedSize }
-        let wantPhotos = request.photoLibrary != nil && request.options.syncPhotos && record.photosEnabled && device.generation.supportsPhotos && !request.photoSelection.isEmpty
+        let wantPhotos = request.photoLibrary != nil && request.options.syncPhotos && record.photosEnabled && device.generation.supportsPhotos && (!request.photoSelection.isEmpty || request.photoLibrary?.exportsWithoutSelection == true)
         if wantPhotos {
             let perPhoto = device.generation.photoFormats.reduce(0) { $0 + $1.bytesPerImage }
             bytesNeeded += Int64(perPhoto) * Int64(estimatedPhotoCount())
@@ -387,7 +387,7 @@ public final class SyncEngine: @unchecked Sendable {
                 note("Photos failed: \(error.localizedDescription)")
                 result.failed.append("Photos: \(error.localizedDescription)")
             }
-        } else if request.options.syncPhotos && record.photosEnabled && device.generation.supportsPhotos && request.photoSelection.isEmpty {
+        } else if request.options.syncPhotos && record.photosEnabled && device.generation.supportsPhotos && request.photoSelection.isEmpty && request.photoLibrary?.exportsWithoutSelection != true {
             // Nothing selected: leave whatever photos are on the iPod alone.
         }
 

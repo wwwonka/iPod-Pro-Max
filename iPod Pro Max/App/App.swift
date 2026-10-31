@@ -160,6 +160,7 @@ struct ContentView: View {
         }
         try await PortablePreferences.shared.flush()
         try await PodcastController.shared.flush()
+        await PhotoChoices.shared.flush()
         try await DevicePageCache.shared.flushAll()
     }
 
@@ -277,6 +278,8 @@ struct ContentView: View {
             audiobookRows = AudiobookEntry.rows(books)
             if !podcastsLoaded {
                 podcastsLoaded = true
+                await PhotoChoices.shared.load(store: loaded.store)
+                PhotoChoices.shared.onError = { transferStatus = $0 }
                 await PodcastController.shared.load(store: loaded.store)
             }
             if !settingsLoaded {
@@ -331,6 +334,15 @@ struct ContentView: View {
                                 onEject: { eject(.device(device.id)) }, onRename: { name in
                                     ConnectedDeviceTitles.names[device.id] = name
                                     contentRevision += 1
+                                })
+                                .background(WindowBackground())
+                        }
+                        if selection == .photos {
+                            PhotosView(store: portableLibrary?.store, devices: ipods.filter(\.generation.supportsPhotos).map(\.id),
+                                isBusy: { busyDevices.contains($0) },
+                                onSync: { name in
+                                    guard let device = ipod(named: name), let loaded = portableLibrary else { return }
+                                    MusicTransfer.shared.enqueuePhotos(device: device, loaded: loaded, selection: PhotoChoices.shared.selection)
                                 })
                                 .background(WindowBackground())
                         }
@@ -448,7 +460,7 @@ struct ContentView: View {
         case .audiobooks where audiobookRows.isEmpty:
             return EmptyState(icon: "book", title: scanning ? "Scanning…" : "No Audiobooks Yet",
                               message: "Choose a folder with + . A subfolder with several files becomes a book with chapters, merged into a single file with chapter marks on the iPod; a single file becomes a one-part book. Drag chapters onto an iPod in the sidebar.")
-        case .music, .playlist, .podcasts, .audiobooks:
+        case .music, .playlist, .podcasts, .audiobooks, .photos:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).

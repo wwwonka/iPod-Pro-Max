@@ -46,8 +46,10 @@ public enum FolderImporter {
     /// Reads every media file of `folder`. Track ids are derived from the path relative to `folder`,
     /// so the same folder keeps the same ids from one run (and one computer) to the next.
     /// `progress(done, total)` is called from worker threads.
-    public static func scan(folder: URL, artworkDir: URL, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }, cached: [LibraryTrack] = [], namespace: String? = nil, musicOnly: Bool = false) async -> FolderImport {
-        let files = mediaFiles(in: folder).filter { !musicOnly || (MetadataExtractor.isAudioFile($0) && !["m4b", "aa"].contains($0.pathExtension.lowercased())) }
+    public static func scan(folder: URL, artworkDir: URL, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }, cached: [LibraryTrack] = [], namespace: String? = nil, musicOnly: Bool = false, excluding: [URL] = []) async -> FolderImport {
+        // Folders that belong to another section (the audiobooks folder inside the music folder).
+        let skipped = excluding.map { $0.standardizedFileURL.path + "/" }
+        let files = mediaFiles(in: folder).filter { file in !skipped.contains { file.standardizedFileURL.path.hasPrefix($0) } }.filter { !musicOnly || (MetadataExtractor.isAudioFile($0) && !["m4b", "aa"].contains($0.pathExtension.lowercased())) }
         try? FileManager.default.createDirectory(at: artworkDir, withIntermediateDirectories: true)
         let artwork = ArtworkStore(directory: artworkDir)
         let base = folder.standardizedFileURL.path

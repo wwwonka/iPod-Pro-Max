@@ -160,3 +160,18 @@ final class AudiobookMergeTests: XCTestCase {
         XCTAssertEqual(again.reused, 1)
     }
 }
+
+final class MusicScanExclusionTests: XCTestCase {
+    func testAudiobooksFolderInsideMusicFolderIsNotScannedAsMusic() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("music-excl-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let books = root.appendingPathComponent("Audiobooks")
+        try FileManager.default.createDirectory(at: books, withIntermediateDirectories: true)
+        try AudioFixtures.threeSecondMP3.write(to: root.appendingPathComponent("Song.mp3"))
+        try AudioFixtures.twoSecondMP3.write(to: books.appendingPathComponent("Chapter.mp3"))
+        let both = await FolderImporter.scan(folder: root, artworkDir: root.appendingPathComponent("art"), musicOnly: true)
+        XCTAssertEqual(both.tracks.count, 2)
+        let music = await FolderImporter.scan(folder: root, artworkDir: root.appendingPathComponent("art"), musicOnly: true, excluding: [books])
+        XCTAssertEqual(music.tracks.map(\.title), ["Song"])
+    }
+}

@@ -22,6 +22,7 @@ final class MusicTransfer {
     func endEject(_ device: IPodDevice) { ejecting.remove(device.id) }
     private var queues: [String: [UUID: LibraryTrack]] = [:]
     private var loadedByDevice: [String: LoadedPortableLibrary] = [:]
+    private var photoJobs: [String: (PhotoSelection, LoadedPortableLibrary)] = [:]
     private var podcastJobs: [String: ([PodcastShow], LoadedPortableLibrary)] = [:]
     var onPodcastResult: (SyncResult) -> Void = { _ in }
     private var tasks: [String: Task<Void, Never>] = [:]
@@ -68,12 +69,29 @@ final class MusicTransfer {
         start(device)
     }
 
+    /// This computer's chosen photos (folders, and the Photos app on a Mac) become the iPod's Photos menu.
+    func enqueuePhotos(device: IPodDevice, loaded: LoadedPortableLibrary, selection: PhotoSelection) {
+        guard acceptingDrops else { onStatus("Finishing current operations before closing…"); return }
+        guard device.supportLevel != .unsupported else {
+            onStatus("This iPod's database signature is not supported yet.")
+            return
+        }
+        guard device.generation.supportsPhotos else { onStatus("This iPod has no color screen for photos."); return }
+        guard !ejecting.contains(device.id) else { onStatus("This iPod is being ejected."); return }
+        if DeviceDataFolder(mountPoint: device.mountPoint).read(DeviceOptions.self, from: DeviceOptions.fileName)?.syncPhotos == false {
+            onStatus("Photos are turned off for this iPod (iPod page › Sync photos).")
+            return
+        }
+        photoJobs[device.id] = (selection, loaded)
+        start(device)
+    }
+
     private func start(_ device: IPodDevice) {
         guard tasks[device.id] == nil else { return }
         cancelled.remove(device.id)
         tasks[device.id] = Task {
             var changed = false
-            defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; podcastJobs[device.id] = nil; onActivityChanged(runningDeviceIDs); if changed { onDeviceFinished(device) }; onFinished() }
+            defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil; onActivityChanged(runningDeviceIDs); if changed { onDeviceFinished(device) }; onFinished() }
             while !Task.isCancelled {
                 do {
                     if let pending = queues.removeValue(forKey: device.id), !pending.isEmpty {
@@ -93,10 +111,16 @@ final class MusicTransfer {
                             changed = changed || result.added > 0
                             onPodcastResult(result)
                         }
+                    } else if let (selection, loaded) = photoJobs.removeValue(forKey: device.id) {
+                        onStatus("Preparing photos…")
+                        if let result = try await transfer(device, prepare: {
+                            try PortablePhotoTransfer.prepare(device: device, store: loaded.store,
+                                library: PortablePhotoTransfer.library(store: loaded.store), selection: selection)
+                        }) { changed = changed || result.photosWritten > 0 }
                     } else { break }
                 } catch {
                     onStatus(Task.isCancelled || cancelled.contains(device.id) ? "Transfer cancelled" : "Transfer failed: \(error.localizedDescription)")
-                    queues[device.id] = nil; podcastJobs[device.id] = nil
+                    queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil
                     break
                 }
             }
@@ -110,7 +134,7 @@ final class MusicTransfer {
         let preparation = Task.detached(priority: .userInitiated) { try await prepare() }
         let prepared = try await withTaskCancellationHandler(operation: { try await preparation.value }, onCancel: { preparation.cancel() })
         guard !Task.isCancelled else { throw CancellationError() }
-        if prepared.request.tracks.isEmpty && prepared.request.shows.allSatisfy({ $0.episodes.isEmpty }) {
+        if !prepared.alwaysRuns && prepared.request.tracks.isEmpty && prepared.request.shows.allSatisfy({ $0.episodes.isEmpty }) {
             onStatus("\(prepared.reused) already on iPod")
             return nil
         }
@@ -132,6 +156,10 @@ final class MusicTransfer {
             manifest.tracks.removeAll { !valid.contains($0.dbid) }
             try DeviceDataFolder(mountPoint: device.mountPoint).write(manifest, to: "manifest.json")
         }.value
+        if prepared.alwaysRuns {
+            onStatus("\(result.photosWritten) photos on the iPod\(result.failed.isEmpty ? "" : " · " + result.failed.joined(separator: "; "))")
+            return result
+        }
         onStatus("\(result.added) added · \(prepared.reused) already on iPod\(result.failed.isEmpty ? "" : " · \(result.failed.count) failed: \(result.failed.joined(separator: "; "))")")
         return result
     }

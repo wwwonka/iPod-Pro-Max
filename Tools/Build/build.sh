@@ -96,6 +96,7 @@ build_mac() {
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>LSMinimumSystemVersion</key><string>10.15.4</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSPhotoLibraryUsageDescription</key><string>iPod Pro Max copies the albums you choose from Photos to your iPod.</string>
 </dict>
 </plist>
 EOF

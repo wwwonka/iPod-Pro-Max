@@ -6,6 +6,8 @@ public enum PortableMusicTransfer {
         public var request: SyncRequest
         public var manifest: TransferManifest
         public var reused: Int
+        /// Runs the engine even with no song or episode to copy (photos).
+        public var alwaysRuns = false
     }
     public static func prepare(tracks allTracks: [LibraryTrack], device: IPodDevice, store: PortableLibraryStore, albumArtistGrouping: Bool = true) async throws -> Prepared {
         // A multi-file audiobook reaches the iPod as one merged file under its first chapter: that chapter
