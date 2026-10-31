@@ -310,6 +310,7 @@ public final class SyncEngine: @unchecked Sendable {
                     trackIDByDBID[track.dbid] = t.id
                 } else if let (show, ep) = add.episode {
                     track = makeTrack(show: show, episode: ep, ipodPath: ipodPath, fileSize: UInt32(clamping: realSize), extOnDevice: ext)
+                    if request.options.additiveOnly, let reserved = record.episodeDBIDs[ep.id] { track.dbid = reserved }
                     record.episodeDBIDs[ep.id] = track.dbid
                     episodeIDByDBID[track.dbid] = ep.id
                 } else { continue }
@@ -364,6 +365,9 @@ public final class SyncEngine: @unchecked Sendable {
         report("Playlists", "Rebuilding playlists…")
         if !request.options.additiveOnly {
             rebuildPlaylists(db: &db, record: &record, trackIDByDBID: trackIDByDBID, episodeIDByDBID: episodeIDByDBID)
+        } else if request.options.syncPodcasts {
+            // Additive: nothing else is touched, but the Podcasts menu reads this playlist.
+            refreshPodcastsPlaylist(db: &db)
         }
 
         // 9. Artwork.
@@ -736,20 +740,30 @@ public final class SyncEngine: @unchecked Sendable {
         record.playlistIDs = newPlaylistIDs
 
         // Podcasts playlist: newest first, grouped by show.
-        let podcastTracks = db.tracks.filter { $0.isPodcast }
-        if !podcastTracks.isEmpty {
-            var pp = existingPodcastPL ?? IPodPlaylist(name: "Podcasts")
-            pp.isPodcasts = true
-            pp.isSmart = false
-            pp.sortOrder = 1
-            let sorted = podcastTracks.sorted { a, b in
-                if a.album != b.album { return (a.album ?? "") < (b.album ?? "") }
-                return (a.timeReleased ?? .distantPast) > (b.timeReleased ?? .distantPast)
-            }
-            pp.memberDBIDs = sorted.map(\.dbid)
-            kept.append(pp)
-        }
+        if let pp = Self.podcastsPlaylist(for: db.tracks, existing: existingPodcastPL) { kept.append(pp) }
         db.playlists = kept
+    }
+
+    /// Only the Podcasts playlist, replaced in place (additive syncs leave every other playlist alone).
+    private func refreshPodcastsPlaylist(db: inout ITunesDatabase) {
+        let existing = db.playlists.first { $0.isPodcasts }
+        guard let pp = Self.podcastsPlaylist(for: db.tracks, existing: existing) else { return }
+        if let i = db.playlists.firstIndex(where: { $0.isPodcasts }) { db.playlists[i] = pp } else { db.playlists.append(pp) }
+    }
+
+    private static func podcastsPlaylist(for tracks: [IPodTrack], existing: IPodPlaylist?) -> IPodPlaylist? {
+        let podcastTracks = tracks.filter { $0.isPodcast }
+        guard !podcastTracks.isEmpty else { return nil }
+        var pp = existing ?? IPodPlaylist(name: "Podcasts")
+        pp.isPodcasts = true
+        pp.isSmart = false
+        pp.sortOrder = 1
+        let sorted = podcastTracks.sorted { a, b in
+            if a.album != b.album { return (a.album ?? "") < (b.album ?? "") }
+            return (a.timeReleased ?? .distantPast) > (b.timeReleased ?? .distantPast)
+        }
+        pp.memberDBIDs = sorted.map(\.dbid)
+        return pp
     }
 
     // MARK: - Artwork

@@ -22,6 +22,8 @@ struct ContentView: View {
     @State var settingsLoaded = false
     @State var didBenchDevices = false
     @State var contentRevision = 0
+    @State var podcastRevision = 0
+    @State var podcastsLoaded = false
     @State var library: Library?
     @State var ipods: [IPodDevice] = []
     /// The iPods' names, for the sidebar.
@@ -61,6 +63,9 @@ struct ContentView: View {
                 try await flushPreferences()
             }
             MusicTransfer.shared.beforeTransfer = { _ in try await flushPreferences() }
+            MusicTransfer.shared.onPodcastResult = { PodcastController.shared.apply($0) }
+            PodcastController.shared.onChange = { podcastRevision += 1 }
+            PodcastController.shared.onError = { transferStatus = $0 }
             MusicTransfer.shared.onActivityChanged = { busyDevices = $0 }
             MusicTransfer.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onDeviceFinished = { device in
@@ -137,6 +142,7 @@ struct ContentView: View {
             PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
         }
         try await PortablePreferences.shared.flush()
+        try await PodcastController.shared.flush()
         try await DevicePageCache.shared.flushAll()
     }
 
@@ -229,6 +235,10 @@ struct ContentView: View {
             let loaded = try await PortableLoading.load(folder: configuredFolder, refresh: refresh)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path) }.value
             portableLibrary = loaded; library = indexed
+            if !podcastsLoaded {
+                podcastsLoaded = true
+                await PodcastController.shared.load(store: loaded.store)
+            }
             if !settingsLoaded {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
@@ -268,6 +278,15 @@ struct ContentView: View {
                                 })
                                 .background(WindowBackground())
                         }
+                        if selection == .podcasts {
+                            PodcastsView(revision: podcastRevision, devices: ipods.filter(\.supportsPodcasts).map(\.id),
+                                onSync: { name in
+                                    guard let device = ipod(named: name), let loaded = portableLibrary else { return }
+                                    MusicTransfer.shared.enqueuePodcasts(shows: PodcastController.shared.shows, device: device, loaded: loaded)
+                                },
+                                isBusy: { busyDevices.contains($0) })
+                                .background(WindowBackground())
+                        }
                         if case .device = selection {
                             if case .device(let id) = selection, ipod(named: id) == nil, let cover = cover(library) {
                                 cover.background(WindowBackground())
@@ -303,6 +322,10 @@ struct ContentView: View {
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
             subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+        case .podcasts:
+            title = "Podcasts"
+            let count = PodcastController.shared.shows.count
+            subtitle = count == 0 ? "" : "\(count) podcast\(count == 1 ? "" : "s")"
         default:
             title = selection.title
             subtitle = ""
@@ -351,7 +374,7 @@ struct ContentView: View {
         case .music where mode == .byArtist && selectedArtist == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
                               message: "Pick an artist in the list to see their songs.")
-        case .music, .playlist:
+        case .music, .playlist, .podcasts:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).
