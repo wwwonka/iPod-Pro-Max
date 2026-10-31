@@ -234,7 +234,12 @@ struct ContentView: View {
             let idle = await mainThreadIdle()
             log("[bench] playlist \(playlist.name): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
         }
-        selection = .music
+        if ProcessInfo.processInfo.environment["IPPM_BENCH_DEVICE_SIDEBAR"] != nil,
+           let device = ipods.first {
+            selection = .device(device.id)
+        } else {
+            selection = .music
+        }
         _ = await mainThreadIdle()
         // The chrome logs how many frames each slide drew ([bench] sidebar ...).
         for _ in 0..<4 {

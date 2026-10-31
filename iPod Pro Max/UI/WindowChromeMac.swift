@@ -44,6 +44,14 @@
         private var expandedWidth = sidebarWidth
         private var slide: SidebarSlide?
         private var timer: Timer?
+        /// A sidebar slide resizes the complete detail hierarchy.  Keeping this at the standard
+        /// 60 Hz avoids spending every ProMotion (120 Hz) tick relaying out controls on the iPod
+        /// page, while remaining display-smooth and leaving the main run loop responsive.
+        private let sidebarSlideFrameInterval = 1.0 / 60.0
+        /// The iPod page has many controls and a complete layout can take longer than a display
+        /// frame.  A short native slide limits that transient work to a few frames; an explicit
+        /// diagnostic duration still wins when `IPPM_SLIDE_SECONDS` is set.
+        private let sidebarSlideDuration = ProcessInfo.processInfo.environment["IPPM_SLIDE_SECONDS"] == nil ? 0.16 : SidebarSlide.duration
         private static let toggleID = NSToolbarItem.Identifier("toggleSidebar")
 
         func install(on window: NSWindow) {
@@ -131,12 +139,16 @@
             let closing = from > 0
             if closing { expandedWidth = from }
             collapsibleDelegate(for: split).allowsCollapse = true
-            slide = SidebarSlide(from: from, to: closing ? 0 : expandedWidth)
+            slide = SidebarSlide(from: from, to: closing ? 0 : expandedWidth, duration: sidebarSlideDuration)
             pinnedSidebarContentWidth = slide?.openWidth
             let start = CACurrentMediaTime()
-            timer = Timer.scheduledTimer(withTimeInterval: 1 / 120, repeats: true) { _ in
+            let timer = Timer(timeInterval: sidebarSlideFrameInterval, repeats: true) { _ in
                 MainActor.assumeIsolated { MacChrome.shared.tick(elapsed: CACurrentMediaTime() - start) }
             }
+            // Keep the animation moving while AppKit is in an event-tracking run-loop mode, but
+            // never keep a timer alive once the short slide has finished.
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
         }
 
         private func tick(elapsed: Double) {
@@ -217,7 +229,10 @@
         func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
             // Closed: keep the sidebar at zero when the window resizes.
             if allowsCollapse && splitView.subviews[0].frame.width < 1 {
-                splitView.adjustSubviews()
+                // `adjustSubviews()` asks SwiftCrossUI for its minimum sidebar width first, then
+                // the following call collapses it again.  A zoom/double-click therefore visibly
+                // flashed the sidebar open for one layout pass.  `setPosition` both lays out the
+                // detail and preserves the already-collapsed leading pane in one pass.
                 splitView.setPosition(0, ofDividerAt: 0)
                 return
             }

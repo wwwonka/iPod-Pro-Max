@@ -56,20 +56,22 @@ struct SidebarSlide {
 
     let from: Double
     let to: Double
+    let duration: Double
     /// Width the sidebar's rows keep during the slide.
     var openWidth: Double { max(from, to) }
     private(set) var frames = 0
     private var layoutTime = 0.0
     private var slowestLayout = 0.0
 
-    init(from: Double, to: Double) {
+    init(from: Double, to: Double, duration: Double = Self.duration) {
         self.from = from
         self.to = to
+        self.duration = duration
     }
 
     /// The sidebar's width `elapsed` seconds in, and whether the slide is over.
     func width(after elapsed: Double) -> (width: Double, done: Bool) {
-        let t = min(1, elapsed / Self.duration)
+        let t = min(1, elapsed / duration)
         let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
         return ((from + (to - from) * eased).rounded(), t >= 1)
     }
