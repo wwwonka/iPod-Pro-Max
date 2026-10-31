@@ -1,6 +1,8 @@
 import DefaultBackend
+import DeviceKit
 import Foundation
 import SwiftCrossUI
+import iPodKit
 #if os(Windows)
     import WinSDK
 #endif
@@ -10,7 +12,10 @@ import SwiftCrossUI
 
 struct ContentView: View {
     @State var library: Library?
+    @State var ipods: [IPodDevice] = []
+    /// The iPods' names, for the sidebar.
     @State var devices: [String] = []
+    @State var ejectError: String?
     @State var selection: SidebarItem = .music
     /// Followed from the system on Linux (GTK doesn't tell SwiftCrossUI); AppKit handles macOS.
     @State var colorScheme: ColorScheme = .light
@@ -18,7 +23,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             NavigationSplitView {
-                Sidebar(devices: $devices, library: $library, selection: $selection)
+                Sidebar(devices: $devices, library: $library, selection: $selection, onEject: eject)
             } detail: {
                 detail
             }
@@ -40,10 +45,36 @@ struct ContentView: View {
         }
         .task {
             await watchIPods { found in
-                if found != devices { log("[proto] iPods: \(found.isEmpty ? "none" : found.joined(separator: ", "))") }
-                devices = found
-                // The selected iPod was unplugged.
-                if case .device(let name) = selection, !found.contains(name) { selection = .music }
+                let names = found.map(\.displayName)
+                if names != devices { log("[proto] iPods: \(names.isEmpty ? "none" : names.joined(separator: ", "))") }
+                // As in the app: show an iPod as it's plugged in; back to Music when the shown one leaves.
+                let added = found.first { d in !ipods.contains { $0.id == d.id && $0.mountPoint == d.mountPoint } }
+                ipods = found
+                devices = names
+                if let added {
+                    selection = .device(added.displayName)
+                } else if case .device(let name) = selection, !names.contains(name) {
+                    selection = .music
+                }
+            }
+        }
+        .alert($ejectError) {}
+    }
+
+    private func ipod(named name: String) -> IPodDevice? {
+        ipods.first { $0.displayName == name }
+    }
+
+    /// The sidebar's eject buttons and the iPod page's Eject. The volume watcher then removes the
+    /// iPod from the sidebar.
+    private func eject(_ item: SidebarItem) {
+        guard case .device(let name) = item, let device = ipod(named: name) else { return }
+        log("[proto] ejecting \(name)")
+        Task {
+            do {
+                try await Ejector.eject(device)
+            } catch {
+                ejectError = "Couldn't eject \(name): \(error.localizedDescription)"
             }
         }
     }
@@ -90,7 +121,10 @@ struct ContentView: View {
                     // clicks that pick an artist.
                     ZStack {
                         TrackTable(rows: tableRows(library))
-                        if let cover = cover(library) {
+                        if case .device(let name) = selection, let device = ipod(named: name) {
+                            DeviceView(device: device, library: library, onEject: { eject(.device(name)) })
+                                .background(WindowBackground())
+                        } else if let cover = cover(library) {
                             cover.background(WindowBackground())
                         }
                     }
@@ -155,8 +189,8 @@ struct ContentView: View {
         case .music, .playlist:
             return nil
         case .device:
-            return EmptyState(icon: "ipod", title: "Not in the Prototype",
-                              message: "The iPod tab isn't in the prototype yet.")
+            // The iPod is gone (its page is drawn before the cover).
+            return EmptyState(icon: "ipod", title: "No iPod", message: "This iPod is no longer connected.")
         default:
             return EmptyState(icon: selection.icon, title: "Not in the Prototype",
                               message: "\(selection.title) isn't in the prototype yet.")

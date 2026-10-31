@@ -21,6 +21,7 @@
         @SwiftCrossUI.Binding var devices: [String]
         @SwiftCrossUI.Binding var library: Library?
         @SwiftCrossUI.Binding var selection: SidebarItem
+        var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
 
@@ -43,6 +44,7 @@
         func updateWinUIElement(_ root: WinUI.Grid, context: Context) {
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
+            coordinator.onEject = onEject
             let dark = context.environment.colorScheme == .dark
             let key = devices + ["|"] + playlists.map { $0.id + $0.name } + [dark ? "dark" : "light"]
             if key != coordinator.key {
@@ -61,8 +63,9 @@
             var content: StackPanel?
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
+            var onEject: (SidebarItem) -> Void = { _ in }
 
-            fileprivate typealias Cell = (cell: WinUI.Grid, glyph: TextBlock, label: TextBlock, row: SidebarSection.Row)
+            fileprivate typealias Cell = (cell: WinUI.Grid, glyph: TextBlock, label: TextBlock, eject: EjectButton?, row: SidebarSection.Row)
 
             fileprivate final class Section {
                 let title: String
@@ -158,9 +161,9 @@
                 hideWinUISelection(list)
                 var cells: [Cell] = []
                 for row in model.rows {
-                    let (item, cell, glyph, label) = makeRow(row)
+                    let (item, cell, glyph, label, eject) = makeRow(row)
                     list.items.append(item)
-                    cells.append((cell, glyph, label, row))
+                    cells.append((cell, glyph, label, eject, row))
                 }
                 list.height = Double(model.rows.count) * M.rowHeight
 
@@ -203,14 +206,15 @@
             }
 
             /// Icon and title in a cell inset like the source list's selection.
-            private func makeRow(_ row: SidebarSection.Row) -> (ListViewItem, WinUI.Grid, TextBlock, TextBlock) {
+            private func makeRow(_ row: SidebarSection.Row) -> (ListViewItem, WinUI.Grid, TextBlock, TextBlock, EjectButton?) {
                 typealias M = SidebarMetrics
                 let cell = WinUI.Grid()
                 cell.margin = Thickness(left: M.selectionInset, top: 0, right: M.selectionInset, bottom: 0)
                 cell.padding = Thickness(left: M.iconX - M.selectionInset, top: 0, right: 4, bottom: 0)
                 cell.cornerRadius = CornerRadius(topLeft: M.selectionRadius, topRight: M.selectionRadius,
                                                  bottomRight: M.selectionRadius, bottomLeft: M.selectionRadius)
-                for width in [GridLength(value: M.textX - M.iconX, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star)] {
+                for width in [GridLength(value: M.textX - M.iconX, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star),
+                              GridLength(value: 1, gridUnitType: .auto)] {
                     let column = ColumnDefinition()
                     column.width = width
                     cell.columnDefinitions.append(column)
@@ -228,6 +232,13 @@
                 WinUI.Grid.setColumn(label, 1)
                 cell.children.append(glyph)
                 cell.children.append(label)
+                var eject: EjectButton?
+                if row.ejectable, let sidebarItem = row.item {
+                    let button = EjectButton(dark: dark) { [weak self] in self?.onEject(sidebarItem) }
+                    WinUI.Grid.setColumn(button, 2)
+                    cell.children.append(button)
+                    eject = button
+                }
 
                 let item = ListViewItem()
                 item.content = cell
@@ -239,7 +250,7 @@
                 item.verticalContentAlignment = .stretch
                 item.useSystemFocusVisuals = false
                 if row.item == nil { item.isEnabled = false }
-                return (item, cell, glyph, label)
+                return (item, cell, glyph, label, eject)
             }
 
             /// WinUI's own row backgrounds and selection pill, made transparent: the cells draw the
@@ -298,6 +309,7 @@
                         showSymbol(entry.row.icon, in: entry.glyph, pointSize: 13,
                                    tint: emphasized ? .primary : entry.row.item == nil ? .secondary : .accent,
                                    dark: emphasized || dark)
+                        entry.eject?.behind = emphasized ? .accent : isSelected ? .selected : .plain
                     }
                 }
             }
@@ -379,6 +391,84 @@
                 transition.duration = TimeSpan(duration: Int64(seconds * 10_000_000))
                 return transition
             }
+        }
+    }
+
+    /// The Finder's eject button: `eject.fill`, dim at rest, brighter under the pointer, white while
+    /// held down (`ejectButtonRGB`). Ejects when released over it; the press never reaches the row,
+    /// so it isn't selected.
+    final class EjectButton: WinUI.Grid {
+        var behind = EjectButtonBackground.plain { didSet { if behind != oldValue { paint() } } }
+        private let glyph = TextBlock()
+        private let dark: Bool
+        private let action: () -> Void
+        private var state = EjectButtonState.normal
+
+        init(dark: Bool, action: @escaping () -> Void) {
+            self.dark = dark
+            self.action = action
+            super.init()
+            width = SidebarMetrics.ejectSize
+            height = SidebarMetrics.ejectSize
+            margin = Thickness(left: 2, top: 0, right: SidebarMetrics.ejectTrailing - 4, bottom: 0)
+            verticalAlignment = .center
+            // Transparent rather than none, so the whole square gets the pointer.
+            let clear = SolidColorBrush()
+            clear.color = UWP.Color(a: 0, r: 0, g: 0, b: 0)
+            background = clear
+            glyph.horizontalAlignment = .center
+            glyph.verticalAlignment = .center
+            children.append(glyph)
+            ToolTipService.setToolTip(self, "Eject")
+            paint()
+            pointerEntered.addHandler { [weak self] _, _ in self?.set(.hover) }
+            pointerExited.addHandler { [weak self] _, _ in
+                guard let self, self.state != .pressed else { return }
+                self.set(.normal)
+            }
+            pointerPressed.addHandler { [weak self] _, args in
+                guard let self, let args else { return }
+                _ = try? self.capturePointer(args.pointer)
+                self.set(.pressed)
+                args.handled = true
+            }
+            pointerReleased.addHandler { [weak self] _, args in
+                guard let self, let args else { return }
+                let wasPressed = self.state == .pressed
+                var inside = false
+                if let point = try? args.getCurrentPoint(self) {
+                    inside = point.position.x >= 0 && point.position.y >= 0
+                        && Double(point.position.x) <= self.actualWidth && Double(point.position.y) <= self.actualHeight
+                }
+                try? self.releasePointerCaptures()
+                self.set(inside ? .hover : .normal)
+                args.handled = true
+                if wasPressed && inside { self.action() }
+            }
+            pointerCaptureLost.addHandler { [weak self] _, _ in
+                guard let self, self.state == .pressed else { return }
+                self.set(.normal)
+            }
+            tapped.addHandler { _, args in args?.handled = true }
+        }
+
+        private func set(_ newState: EjectButtonState) {
+            guard newState != state else { return }
+            state = newState
+            paint()
+        }
+
+        private func paint() {
+            let symbol = symbolCodepoints["eject.fill"].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? ""
+            if glyph.text != symbol {
+                glyph.fontFamily = FontFamily("SF-Symbols")
+                glyph.text = symbol
+                glyph.fontSize = SidebarMetrics.ejectPointSize
+            }
+            let rgb = ejectButtonRGB(state, dark: dark, on: behind)
+            let brush = SolidColorBrush()
+            brush.color = UWP.Color(a: 255, r: rgb.r, g: rgb.g, b: rgb.b)
+            glyph.foreground = brush
         }
     }
 #endif

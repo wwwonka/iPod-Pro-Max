@@ -15,6 +15,7 @@
         @Binding var devices: [String]
         @Binding var library: Library?
         @Binding var selection: SidebarItem
+        var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
 
@@ -49,6 +50,7 @@
                   let outline = scroll.documentView as? NSOutlineView else { return }
             let coordinator = context.coordinator
             coordinator.onSelect = { item in selection = item }
+            coordinator.onEject = onEject
             let key = devices + ["|"] + playlists.map { $0.id + $0.name }
             if key != coordinator.key {
                 coordinator.key = key
@@ -67,7 +69,7 @@
         /// and the section slides closed or open.
         private static func sections(devices: [String], playlists: [Playlist]) -> [Node] {
             sidebarSections(devices: devices, playlists: playlists).map { section in
-                Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item) })
+                Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item, ejectable: $0.ejectable) })
             }
         }
 
@@ -95,12 +97,14 @@
             let title: String
             let icon: String?
             let item: SidebarItem?
+            let ejectable: Bool
             let children: [Node]
 
-            init(title: String, icon: String? = nil, item: SidebarItem? = nil, children: [Node] = []) {
+            init(title: String, icon: String? = nil, item: SidebarItem? = nil, ejectable: Bool = false, children: [Node] = []) {
                 self.title = title
                 self.icon = icon
                 self.item = item
+                self.ejectable = ejectable
                 self.children = children
             }
 
@@ -111,9 +115,14 @@
         /// sidebar `Label` does.
         final class SidebarCell: NSTableCellView {
             var dimmed = false { didSet { updateTint() } }
+            /// iPod rows only.
+            var ejectButton: EjectButton?
 
             override var backgroundStyle: NSView.BackgroundStyle {
-                didSet { updateTint() }
+                didSet {
+                    updateTint()
+                    ejectButton?.onAccent = backgroundStyle == .emphasized
+                }
             }
 
             private func updateTint() {
@@ -128,6 +137,7 @@
             var sections: [Node] = []
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
+            var onEject: (SidebarItem) -> Void = { _ in }
             private var isSyncingSelection = false
 
             func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -152,9 +162,12 @@
 
             func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
                 guard let node = item as? Node else { return nil }
-                let id = NSUserInterfaceItemIdentifier(node.isGroup ? "HeaderCell" : "DataCell")
+                let id = NSUserInterfaceItemIdentifier(node.isGroup ? "HeaderCell" : node.ejectable ? "DeviceCell" : "DataCell")
                 let cell = outlineView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView
-                    ?? Self.makeCell(id, group: node.isGroup)
+                    ?? Self.makeCell(id, group: node.isGroup, ejectable: node.ejectable)
+                if let eject = (cell as? SidebarCell)?.ejectButton, let item = node.item {
+                    eject.action = { [weak self] in self?.onEject(item) }
+                }
                 cell.textField?.stringValue = node.title
                 if let icon = node.icon {
                     cell.imageView?.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
@@ -182,7 +195,7 @@
             }
 
             /// Source-list cells: NSTableCellView sizes the text and icon for the row size style.
-            private static func makeCell(_ id: NSUserInterfaceItemIdentifier, group: Bool) -> NSTableCellView {
+            private static func makeCell(_ id: NSUserInterfaceItemIdentifier, group: Bool, ejectable: Bool) -> NSTableCellView {
                 let cell = SidebarCell()
                 cell.identifier = id
                 let text = NSTextField(labelWithString: "")
@@ -190,10 +203,23 @@
                 text.translatesAutoresizingMaskIntoConstraints = false
                 cell.addSubview(text)
                 cell.textField = text
-                var constraints = [
-                    text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                    text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
-                ]
+                var constraints = [text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)]
+                if ejectable {
+                    let eject = EjectButton()
+                    eject.translatesAutoresizingMaskIntoConstraints = false
+                    cell.addSubview(eject)
+                    cell.ejectButton = eject
+                    typealias M = SidebarMetrics
+                    constraints += [
+                        eject.widthAnchor.constraint(equalToConstant: M.ejectSize),
+                        eject.heightAnchor.constraint(equalToConstant: M.ejectSize),
+                        eject.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        eject.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -M.ejectTrailing),
+                        text.trailingAnchor.constraint(lessThanOrEqualTo: eject.leadingAnchor, constant: -2),
+                    ]
+                } else {
+                    constraints.append(text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4))
+                }
                 if group {
                     constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2))
                 } else {
@@ -213,6 +239,73 @@
                 NSLayoutConstraint.activate(constraints)
                 return cell
             }
+        }
+    }
+
+    /// The Finder's eject button: `eject.fill`, dim at rest, brighter under the pointer, white while
+    /// held down. Ejects on release inside, like a button; the row isn't selected.
+    final class EjectButton: NSView {
+        var action: () -> Void = {}
+        var onAccent = false { didSet { updateTint() } }
+        private let image = NSImageView()
+        private var hovering = false
+        private var pressed = false
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            image.image = NSImage(systemSymbolName: "eject.fill", accessibilityDescription: "Eject")?
+                .withSymbolConfiguration(.init(pointSize: SidebarMetrics.ejectPointSize, weight: .regular))
+            image.imageScaling = .scaleNone
+            image.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(image)
+            NSLayoutConstraint.activate([
+                image.centerXAnchor.constraint(equalTo: centerXAnchor),
+                image.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+            toolTip = "Eject"
+            updateTint()
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                           owner: self, userInfo: nil))
+        }
+
+        override func mouseEntered(with event: NSEvent) { hovering = true; updateTint() }
+        override func mouseExited(with event: NSEvent) { hovering = false; updateTint() }
+
+        /// Tracks the press here, so the outline view doesn't select the row.
+        override func mouseDown(with event: NSEvent) {
+            pressed = true
+            updateTint()
+            while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+                let inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                if next.type == .leftMouseUp {
+                    pressed = false
+                    hovering = inside
+                    updateTint()
+                    if inside { action() }
+                    return
+                }
+                if pressed != inside {
+                    pressed = inside
+                    updateTint()
+                }
+            }
+        }
+
+        /// The Finder's own colors: translucent label colors, which take on the sidebar's material
+        /// (#494949 at rest and #9FA4B9 under the pointer, measured in dark mode), then the text color.
+        private func updateTint() {
+            image.contentTintColor =
+                onAccent ? (pressed || hovering ? .white : .alternateSelectedControlTextColor.withAlphaComponent(0.85))
+                : pressed ? .labelColor
+                : hovering ? .secondaryLabelColor
+                : .tertiaryLabelColor
         }
     }
 #endif

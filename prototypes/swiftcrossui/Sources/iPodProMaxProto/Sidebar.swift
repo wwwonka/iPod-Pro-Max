@@ -45,6 +45,8 @@ struct SidebarSection {
         var icon: String
         /// nil for placeholders ("No iPod connected", "New Playlist…"): dimmed, not selectable.
         var item: SidebarItem?
+        /// iPods: an eject button at the row's right, as in the Finder.
+        var ejectable = false
     }
 }
 
@@ -55,7 +57,7 @@ func sidebarSections(devices: [String], playlists: [Playlist]) -> [SidebarSectio
             title: "iPods",
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
-                : devices.map { .init(title: $0, icon: "ipod", item: .device($0)) }),
+                : devices.map { .init(title: $0, icon: "ipod", item: .device($0), ejectable: true) }),
         SidebarSection(title: "Library", rows: SidebarItem.library.map { .init(title: $0.title, icon: $0.icon, item: $0) }),
         SidebarSection(
             title: "Playlists",
@@ -87,6 +89,10 @@ enum SidebarMetrics {
     static let selectionRadius = 6.0
     /// Expand and collapse.
     static let collapseDuration = 0.25
+    /// The eject button: glyph size, square hit area, and its distance from the selection's edge.
+    static let ejectPointSize = 12.0
+    static let ejectSize = 20.0
+    static let ejectTrailing = 4.0
 }
 
 /// Selected row: `selectedContentBackgroundColor` while the sidebar has focus,

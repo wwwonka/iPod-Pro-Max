@@ -27,6 +27,7 @@ let package = Package(
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "DeviceKit", package: "iPodProMax"),
+                .product(name: "iPodKit", package: "iPodProMax"),
             ]
         ),
     ],

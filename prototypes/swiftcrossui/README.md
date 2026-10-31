@@ -64,9 +64,10 @@ Comment ça marche :
 | `Library.swift` | lecture et indexation de `library.json` hors du thread principal |
 | `ArtistList.swift` | liste « By Artist » native : `NSTableView`, `GtkListView`, `ListView` WinUI |
 | `TrackTable.swift` | tableau virtualisé : `NSTableView`, `GtkColumnView`, `ListView` WinUI |
-| `Sidebar.swift`, `SidebarMac.swift`, `SidebarGtk.swift`, `SidebarWinUI.swift` | éléments de la sidebar ; sidebar native Mac, GTK et WinUI |
+| `Sidebar.swift`, `SidebarMac.swift`, `SidebarGtk.swift`, `SidebarWinUI.swift` | éléments de la sidebar ; sidebar native Mac, GTK et WinUI ; bouton d'éjection des iPods comme dans le Finder (couleurs système sur Mac, `ejectButtonRGB` ailleurs) |
 | `Sidebar.swift` | sections de la sidebar et mesures du Mac (`SidebarMetrics`), partagées par les 3 OS |
 | `Symbols.swift` | SF Symbols par plateforme ; `scripts/match-glyph.swift` retrouve un glyphe de la police par sa forme |
 | `WindowChrome.swift` | modèle commun de la fenêtre sans barre et du glissement de la sidebar |
 | `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |
 | `Devices.swift` | iPods montés, par DeviceKit (`DeviceScanner`), mis à jour à chaque montage ou démontage (`VolumeWatcher`, sans polling) |
+| `DeviceView.swift` | page d'un iPod, copiée du `DeviceView` de l'app Mac : nom (renommable), modèle, contenu et espace lus sur l'iPod par iPodKit ; options de synchro gardées par la vue seulement ; Sync, Import et Forget affichés mais pas branchés (pas de moteur de synchro dans le prototype) ; Eject et « Show in Finder/Files/Explorer » fonctionnent |

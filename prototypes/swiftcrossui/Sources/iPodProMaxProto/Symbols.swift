@@ -7,7 +7,35 @@ import SwiftCrossUI
 // are empty boxes of the right size.
 
 enum SymbolTint: Hashable {
-    case accent, primary, secondary
+    case accent, primary, secondary, tertiary
+    /// Any color, light and dark: the iPod page's banners and buttons.
+    case color(SystemColor)
+}
+
+/// A color as sRGB 0xRRGGBB values for light and dark mode, usable as a SwiftCrossUI `Color` and
+/// as a symbol tint (font glyphs take plain RGB).
+struct SystemColor: Hashable, Sendable {
+    var light: UInt32
+    var dark: UInt32
+
+    init(light: UInt32, dark: UInt32) {
+        self.light = light
+        self.dark = dark
+    }
+
+    init(_ both: UInt32) { self.init(light: both, dark: both) }
+
+    func rgb(dark isDark: Bool) -> (r: UInt8, g: UInt8, b: UInt8) {
+        let v = isDark ? dark : light
+        return (UInt8(v >> 16 & 0xFF), UInt8(v >> 8 & 0xFF), UInt8(v & 0xFF))
+    }
+
+    var color: SwiftCrossUI.Color {
+        func make(_ v: UInt32) -> SwiftCrossUI.Color {
+            SwiftCrossUI.Color(red: Double(v >> 16 & 0xFF) / 255, green: Double(v >> 8 & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
+        }
+        return SwiftCrossUI.Color.adaptive(light: make(light), dark: make(dark))
+    }
 }
 
 /// The font numbers its glyphs from U+E900 without names. These were matched by shape against
@@ -26,6 +54,16 @@ let symbolCodepoints: [String: UInt32] = [
     "film": 0xEDF5,  // landscape, as in SF Symbols 4
     "sidebar.left": 0xED77,
     "chevron.right": 0xEBCC,
+    "eject.fill": 0xF1E7,
+    "eject": 0xF1E8,
+    "pencil": 0xF2F8,
+    "folder": 0xF2D9,
+    "xmark.octagon.fill": 0xEBDA,
+    "arrow.triangle.2.circlepath": 0xEB43,
+    "checkmark.circle.fill": 0xEBB7,
+    "exclamationmark.triangle": 0xF05B,
+    "exclamationmark.triangle.fill": 0xF05A,
+    // flask.fill (the experimental banner) came with SF Symbols 5: the font doesn't have it.
     // The traffic lights' glyphs (the font's minus is a long bar: the lights use U+2212).
     "xmark": 0xEBE5,
     "arrow.up.left.and.arrow.down.right": 0xEB46,
@@ -37,6 +75,8 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     case .accent: dark ? (0x0A, 0x84, 0xFF) : (0x00, 0x7A, 0xFF)
     case .primary: nil
     case .secondary: dark ? (0x98, 0x98, 0x9D) : (0x8A, 0x8A, 0x8E)
+    case .tertiary: dark ? (0x5A, 0x5A, 0x5E) : (0xC4, 0xC4, 0xC6)
+    case .color(let color): color.rgb(dark: dark)
     }
 }
 
@@ -64,6 +104,13 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
                 case .accent: .controlAccentColor
                 case .primary: .labelColor
                 case .secondary: .secondaryLabelColor
+                case .tertiary: .tertiaryLabelColor
+                case .color(let color):
+                    {
+                        let dark = view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                        let c = color.rgb(dark: dark)
+                        return NSColor(srgbRed: CGFloat(c.r) / 255, green: CGFloat(c.g) / 255, blue: CGFloat(c.b) / 255, alpha: 1)
+                    }()
                 }
         }
 

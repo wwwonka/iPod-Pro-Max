@@ -18,6 +18,7 @@
         @Binding var devices: [String]
         @Binding var library: Library?
         @Binding var selection: SidebarItem
+        var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
 
@@ -46,6 +47,7 @@
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
+            coordinator.onEject = onEject
             let key = devices + ["|"] + playlists.map { $0.id + $0.name }
             if key != coordinator.key {
                 coordinator.key = key
@@ -63,6 +65,9 @@
             var content: UnsafeMutablePointer<GtkWidget>?
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
+            var onEject: (SidebarItem) -> Void = { _ in }
+            /// The item each eject button ejects.
+            private var ejectButtons: [OpaquePointer: SidebarItem] = [:]
 
             private struct Section {
                 var title: String
@@ -84,6 +89,7 @@
                 isSyncingSelection = true
                 defer { isSyncingSelection = false }
                 while let child = gtk_widget_get_first_child(content) { gtk_box_remove(cast(content), child) }
+                ejectButtons = [:]
                 sections = model.enumerated().map { index, section in makeSection(section, first: index == 0) }
                 for section in sections {
                     gtk_box_append(cast(content), section.header)
@@ -117,7 +123,7 @@
                                       me, nil, GConnectFlags(rawValue: 0))
                 g_signal_connect_data(cast(list), "keynav-failed", unsafeBitCast(keynavFailed, to: GCallback.self),
                                       me, nil, GConnectFlags(rawValue: 0))
-                for row in section.rows { gtk_list_box_append(cast(list), Self.makeRow(row)) }
+                for row in section.rows { gtk_list_box_append(cast(list), makeRow(row)) }
 
                 let revealer = gtk_revealer_new()!
                 gtk_revealer_set_transition_type(cast(revealer), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN)
@@ -129,7 +135,7 @@
             }
 
             /// Icon and title in a cell inset like the source list's selection.
-            private static func makeRow(_ row: SidebarSection.Row) -> UnsafeMutablePointer<GtkWidget> {
+            private func makeRow(_ row: SidebarSection.Row) -> UnsafeMutablePointer<GtkWidget> {
                 let cell = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, Int32(SidebarMetrics.textX - SidebarMetrics.iconX - SidebarMetrics.iconWidth))!
                 gtk_widget_add_css_class(cell, "ippm-cell")
                 if row.item == nil { gtk_widget_add_css_class(cell, "ippm-dim") }
@@ -141,8 +147,24 @@
                 gtk_widget_add_css_class(label, "ippm-text")
                 gtk_label_set_xalign(cast(label), 0)
                 gtk_label_set_ellipsize(cast(label), PANGO_ELLIPSIZE_END)
+                gtk_widget_set_hexpand(label, 1)
                 gtk_box_append(cast(cell), glyph)
                 gtk_box_append(cast(cell), label)
+                if row.ejectable, let item = row.item {
+                    // Its color comes from CSS (.ippm-eject), which follows hover and press.
+                    let eject = gtk_button_new()!
+                    gtk_widget_add_css_class(eject, "ippm-eject")
+                    gtk_widget_set_tooltip_text(eject, "Eject")
+                    gtk_widget_set_focusable(eject, 0)
+                    gtk_widget_set_valign(eject, GTK_ALIGN_CENTER)
+                    let glyph = gtk_label_new(nil)!
+                    gtk_label_set_markup(cast(glyph), symbolMarkup("eject.fill", pointSize: SidebarMetrics.ejectPointSize, tint: nil, dark: false))
+                    gtk_button_set_child(cast(eject), glyph)
+                    g_signal_connect_data(cast(eject), "clicked", unsafeBitCast(ejectClicked, to: GCallback.self),
+                                          Unmanaged.passUnretained(self).toOpaque(), nil, GConnectFlags(rawValue: 0))
+                    ejectButtons[OpaquePointer(eject)] = item
+                    gtk_box_append(cast(cell), eject)
+                }
                 let listRow = gtk_list_box_row_new()!
                 gtk_list_box_row_set_child(cast(listRow), cell)
                 gtk_list_box_row_set_selectable(cast(listRow), row.item == nil ? 0 : 1)
@@ -187,6 +209,11 @@
                     return true
                 }
                 return false
+            }
+
+            fileprivate func eject(button: OpaquePointer?) {
+                guard let button, let item = ejectButtons[button] else { return }
+                onEject(item)
             }
 
             fileprivate func toggle(chevron: OpaquePointer?) {
@@ -241,6 +268,22 @@
             .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: false))); color: white; }
             .ippm-dark .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: true))); }
             .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-icon { color: white; }
+            .ippm-eject { min-width: \(Int(M.ejectSize))px; min-height: \(Int(M.ejectSize))px; padding: 0;
+                border: none; background: none; box-shadow: none; outline: none; color: \(css(ejectButtonRGB(.normal, dark: false))); }
+            .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: false))); }
+            .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: false))); }
+            .ippm-dark .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true))); }
+            .ippm-dark .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: true))); }
+            .ippm-dark .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: true))); }
+            .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: false, on: .selected))); }
+            .ippm-list > row:selected .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: false, on: .selected))); }
+            .ippm-list > row:selected .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: false, on: .selected))); }
+            .ippm-dark .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true, on: .selected))); }
+            .ippm-dark .ippm-list > row:selected .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: true, on: .selected))); }
+            .ippm-dark .ippm-list > row:selected .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: true, on: .selected))); }
+            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true, on: .accent))); }
+            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject:hover,
+            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject:active { color: white; }
             """)
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
     }
@@ -266,6 +309,12 @@
         guard let data, direction == GTK_DIR_DOWN || direction == GTK_DIR_UP else { return 0 }
         let coordinator = Unmanaged<Sidebar.Coordinator>.fromOpaque(data).takeUnretainedValue()
         return MainActor.assumeIsolated { coordinator.leaveList(list, down: direction == GTK_DIR_DOWN) } ? 1 : 0
+    }
+
+    private let ejectClicked: @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, data in
+        guard let data else { return }
+        let coordinator = Unmanaged<Sidebar.Coordinator>.fromOpaque(data).takeUnretainedValue()
+        MainActor.assumeIsolated { coordinator.eject(button: button) }
     }
 
     private let chevronClicked: @convention(c) (OpaquePointer?, gpointer?) -> Void = { button, data in
