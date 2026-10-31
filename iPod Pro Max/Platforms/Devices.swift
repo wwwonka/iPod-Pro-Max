@@ -2,10 +2,13 @@ import DeviceKit
 import Foundation
 import iPodKit
 
-/// The mounted iPods, from DeviceKit (the same detection as the CLI). Touches the disk: call it
-/// off the main thread.
+/// The mounted iPods, from DeviceKit (the same detection as the CLI), plus the folder the app was
+/// started from when it looks like one (`Build/`, see PortableRoot). Touches the disk: call it off
+/// the main thread.
 func connectedIPods() -> [IPodDevice] {
-    DeviceScanner.scan().sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    var found = DeviceScanner.scan()
+    if let simulated = PortableRoot.simulatedIPod(besides: found) { found.append(simulated) }
+    return found.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 }
 
 /// Calls `update` with the mounted iPods now, then each time a volume is mounted, unmounted or

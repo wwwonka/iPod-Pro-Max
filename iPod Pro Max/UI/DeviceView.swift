@@ -28,6 +28,9 @@ struct DeviceView: View {
     @State var syncPhotos = true
     @State var removeUnknownTracks = false
     @State var albumArtistGrouping = true
+    /// The options as last read from or written to the iPod's `device.json`; nil until read, so the
+    /// defaults never overwrite the saved choices.
+    @State var savedOptions: DeviceOptions?
 
     struct DeviceContents {
         var songs = 0
@@ -70,6 +73,40 @@ struct DeviceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: device.id) { await loadContents() }
+        .task(id: options) { await saveOptions() }
+    }
+
+    /// The sync options as stored on the iPod.
+    private var options: DeviceOptions {
+        DeviceOptions(syncAllMusic: musicChoice != .selectedPlaylists, selectedPlaylistIDs: selectedPlaylists.sorted(),
+                      syncPodcasts: syncPodcasts, syncVideos: syncVideos, syncAudiobooks: syncAudiobooks,
+                      syncPhotos: syncPhotos, removeUnknownTracks: removeUnknownTracks,
+                      useAlbumArtistForGrouping: albumArtistGrouping)
+    }
+
+    private func apply(_ o: DeviceOptions) {
+        musicChoice = o.syncAllMusic ? .entireLibrary : .selectedPlaylists
+        selectedPlaylists = Set(o.selectedPlaylistIDs)
+        syncPodcasts = o.syncPodcasts
+        syncVideos = o.syncVideos
+        syncAudiobooks = o.syncAudiobooks
+        syncPhotos = o.syncPhotos
+        removeUnknownTracks = o.removeUnknownTracks
+        albumArtistGrouping = o.useAlbumArtistForGrouping
+    }
+
+    /// Writes the options to the iPod 2 s after the last change: the task restarts on each change,
+    /// so a burst of clicks wakes the iPod's disk once.
+    private func saveOptions() async {
+        let current = options
+        guard let saved = savedOptions, saved != current else { return }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled else { return }
+        let folder = DeviceDataFolder(mountPoint: device.mountPoint)
+        let written = await Task.detached(priority: .utility) { () -> Bool in
+            (try? folder.write(current, to: DeviceOptions.fileName)) != nil
+        }.value
+        if written { savedOptions = current } else { log("[app] couldn't save \(DeviceOptions.fileName) on \(device.displayName)") }
     }
 
     private var displayName: String {
@@ -290,7 +327,14 @@ struct DeviceView: View {
 
     private func loadContents() async {
         let dev = device
-        contents = await Task.detached(priority: .utility) { Self.readContents(of: dev) }.value
+        savedOptions = nil
+        let (read, stored) = await Task.detached(priority: .utility) {
+            (Self.readContents(of: dev), DeviceDataFolder(mountPoint: dev.mountPoint).read(DeviceOptions.self, from: DeviceOptions.fileName))
+        }.value
+        contents = read
+        let loaded = stored ?? DeviceOptions()
+        apply(loaded)
+        savedOptions = loaded
     }
 
     /// The same reading as the app's `DeviceView.loadContents`, plus the volume's space.

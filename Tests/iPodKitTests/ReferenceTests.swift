@@ -213,6 +213,18 @@ final class ReferenceTests: XCTestCase {
         XCTAssertEqual(folder.read(DeviceSyncRecord.self, from: "r.json")?.deviceName, "Test")
     }
 
+    func testDataFolderReadsLegacyFolder() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ipodkit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let legacy = DeviceDataFolder(url: dir.appendingPathComponent("iPod Pro Max/Data", isDirectory: true))
+        try legacy.write(DeviceSyncRecord(deviceID: "x", deviceName: "Old"), to: "r.json")
+        let folder = DeviceDataFolder(mountPoint: dir)
+        XCTAssertEqual(folder.url.lastPathComponent, "Persistent Data")
+        XCTAssertEqual(folder.read(DeviceSyncRecord.self, from: "r.json")?.deviceName, "Old")
+        try folder.write(DeviceSyncRecord(deviceID: "x", deviceName: "New"), to: "r.json")
+        XCTAssertEqual(folder.read(DeviceSyncRecord.self, from: "r.json")?.deviceName, "New")
+    }
+
     /// Recorded on macOS. `IPODKIT_PRINT_REFERENCES=1 swift test --filter testPrintReferences` prints the
     /// current values (only update them for an intended change of output).
     static let expected: [String: String] = [

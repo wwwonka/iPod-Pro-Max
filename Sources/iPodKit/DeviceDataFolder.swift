@@ -2,9 +2,10 @@
 //  DeviceDataFolder.swift
 //  iPod Pro Max
 //
-//  The `iPod Pro Max/Data/` folder on the iPod, where what belongs to the iPod travels with it
-//  (Docs/Données/Sur l'iPod.md). Small JSON files, written safely: FAT32 has no journal, so each file
-//  is written aside, flushed and renamed, and the previous generation is kept as `.bak`.
+//  The `iPod Pro Max/Persistent Data/` folder on the iPod, where what belongs to the iPod travels with
+//  it (Docs/Données/Sur l'iPod.md): the app's settings shared by every OS, the CLI's sync record.
+//  Small JSON files, written safely: FAT32 has no journal, so each file is written aside, flushed and
+//  renamed, and the previous generation is kept as `.bak`.
 //
 
 import Foundation
@@ -12,19 +13,33 @@ import Foundation
 /// Dates use the default (exact) encoding: an ISO 8601 string drops the fractions of a second that
 /// change detection compares.
 public struct DeviceDataFolder: Sendable {
+    public static let folderName = "Persistent Data"
     public let url: URL
+    /// `iPod Pro Max/Data/`, the folder's name until 2026-10-31: still read, never written.
+    let legacyURL: URL?
 
     public init(mountPoint: URL) {
-        url = mountPoint.appendingPathComponent("iPod Pro Max", isDirectory: true).appendingPathComponent("Data", isDirectory: true)
+        let app = mountPoint.appendingPathComponent("iPod Pro Max", isDirectory: true)
+        url = app.appendingPathComponent(Self.folderName, isDirectory: true)
+        legacyURL = app.appendingPathComponent("Data", isDirectory: true)
     }
 
-    /// Decodes `name`, falling back to `name.bak` when the current file is unreadable.
+    /// Any folder of small JSON files written the same safe way.
+    public init(url: URL) {
+        self.url = url
+        legacyURL = nil
+    }
+
+    /// Decodes `name`, falling back to `name.bak` when the current file is unreadable, then to the
+    /// legacy `Data/` folder.
     public func read<T: Decodable>(_ type: T.Type, from name: String) -> T? {
         let decoder = JSONDecoder()
-        for candidate in [name, name + ".bak"] {
-            if let data = try? Data(contentsOf: url.appendingPathComponent(candidate)),
-               let value = try? decoder.decode(T.self, from: data) {
-                return value
+        for folder in [url] + (legacyURL.map { [$0] } ?? []) {
+            for candidate in [name, name + ".bak"] {
+                if let data = try? Data(contentsOf: folder.appendingPathComponent(candidate)),
+                   let value = try? decoder.decode(T.self, from: data) {
+                    return value
+                }
             }
         }
         return nil
