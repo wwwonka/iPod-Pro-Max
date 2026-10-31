@@ -46,7 +46,7 @@ struct ArtistDetail: View {
 
     private var header: some View {
         let duration = albums.reduce(0) { $0 + $1.durationMs }
-        let cover = coverURL(artist.artworkKey)
+        let cover = artist.photo
         return HStack(spacing: 18) {
             ArtistPhoto(url: cover, size: 96)
             VStack(alignment: .leading, spacing: 4) {

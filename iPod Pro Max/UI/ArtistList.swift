@@ -66,10 +66,11 @@ import SwiftCrossUI
             private let thumbnails = NSCache<NSString, NSImage>()
 
             /// A 68 px round-ready thumbnail of the cover, decoded once.
-            private func thumbnail(_ key: String?) -> NSImage? {
-                guard let key, let artworkFolder else { return nil }
+            private func thumbnail(_ photo: URL?) -> NSImage? {
+                guard let photo else { return nil }
+                let key = photo.path
                 if let cached = thumbnails.object(forKey: key as NSString) { return cached }
-                let url = artworkFolder.appendingPathComponent("\(key).jpg") as CFURL
+                let url = photo as CFURL
                 guard let source = CGImageSourceCreateWithURL(url, nil),
                       let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                         kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 68,
@@ -101,7 +102,7 @@ import SwiftCrossUI
                 let artist = artists[row]
                 cell.name.stringValue = artist.id
                 cell.count.stringValue = "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")"
-                cell.photo.image = thumbnail(artist.artworkKey)
+                cell.photo.image = thumbnail(artist.photo)
                 cell.placeholder.isHidden = cell.photo.image != nil
                 return cell
             }
@@ -280,7 +281,7 @@ import SwiftCrossUI
     }
 
     private let setupArtist: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, _ in
-        installArtistCSS()
+        MainActor.assumeIsolated { installArtistCSS() }
         let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)!
         gtk_widget_set_margin_start(box, 8)
         gtk_widget_set_margin_end(box, 8)
@@ -330,8 +331,8 @@ import SwiftCrossUI
             let artist = coordinator.artists[position]
             gtk_label_set_text(cast(name), artist.id)
             gtk_label_set_text(cast(count), "\(artist.albumCount) album\(artist.albumCount == 1 ? "" : "s") · \(artist.count) song\(artist.count == 1 ? "" : "s")")
-            if let key = artist.artworkKey, let folder = coordinator.artworkFolder {
-                gtk_image_set_from_file(cast(photo), folder.appendingPathComponent("\(key).jpg").path)
+            if let file = artist.photo {
+                gtk_image_set_from_file(cast(photo), file.path)
             } else {
                 gtk_image_clear(cast(photo))
             }
@@ -443,10 +444,10 @@ import SwiftCrossUI
             photo.height = 34
             photo.cornerRadius = CornerRadius(topLeft: 17, topRight: 17, bottomRight: 17, bottomLeft: 17)
             photo.background = SolidColorBrush(UWP.Color(a: 40, r: 128, g: 128, b: 128))
-            if let key = artist.artworkKey, let artworkFolder {
+            if let file = artist.photo {
                 let image = WinUI.Image()
                 image.stretch = .uniformToFill
-                let bitmap = BitmapImage(WindowsFoundation.Uri(artworkFolder.appendingPathComponent("\(key).jpg").absoluteString))
+                let bitmap = BitmapImage(WindowsFoundation.Uri(file.absoluteString))
                 bitmap.decodePixelWidth = 68
                 image.source = bitmap
                 photo.child = image

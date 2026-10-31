@@ -44,6 +44,10 @@ struct NamedGroup: Identifiable {
     var count: Int
     var albumCount = 0
     var artworkKey: String?
+    /// The first album's cover, when there is one.
+    var cover: URL?
+    /// What the lists and the page show: the artist's Deezer photo, else the cover.
+    var photo: URL?
 }
 
 /// One album of an artist, with its songs in disc and track order.
@@ -81,6 +85,16 @@ struct Library {
         let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
         library.artworkFolder = artworkFolder
+        if let artworkFolder {
+            library.artists = library.artists.map { artist in
+                var artist = artist
+                if let key = artist.artworkKey {
+                    let url = artworkFolder.appendingPathComponent("\(key).jpg")
+                    if FileManager.default.fileExists(atPath: url.path) { artist.cover = url; artist.photo = url }
+                }
+                return artist
+            }
+        }
         return library
     }
 

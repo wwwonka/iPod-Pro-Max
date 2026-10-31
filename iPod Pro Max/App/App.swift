@@ -70,6 +70,7 @@ struct ContentView: View {
             MusicTransfer.shared.beforeTransfer = { _ in try await flushPreferences() }
             MusicTransfer.shared.onPodcastResult = { PodcastController.shared.apply($0) }
             PodcastController.shared.onChange = { podcastRevision += 1 }
+            ArtistPhotoController.shared.onChange = { applyArtistPhotos() }
             PodcastController.shared.onError = { transferStatus = $0 }
             PodcastController.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onActivityChanged = { busyDevices = $0 }
@@ -162,6 +163,17 @@ struct ContentView: View {
         try await PodcastController.shared.flush()
         await PhotoChoices.shared.flush()
         try await DevicePageCache.shared.flushAll()
+    }
+
+    /// Puts the Deezer photos on the artists: a new array, so the artist list reloads.
+    private func applyArtistPhotos() {
+        guard var current = library else { return }
+        current.artists = current.artists.map { artist in
+            var artist = artist
+            artist.photo = ArtistPhotoController.shared.url(for: artist.id) ?? artist.cover
+            return artist
+        }
+        library = current
     }
 
     private func ipod(named name: String) -> IPodDevice? {
@@ -271,6 +283,9 @@ struct ContentView: View {
             let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
+            await ArtistPhotoController.shared.load(store: loaded.store)
+            applyArtistPhotos()
+            ArtistPhotoController.shared.fetchMissing(indexed.artists.map(\.id))
             let books = await Task.detached(priority: .userInitiated) {
                 AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook))
             }.value
