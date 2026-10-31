@@ -13,4 +13,4 @@ La page créait une arborescence SwiftCrossUI pour chaque chanson et chaque albu
 
 Le contrôle `IPPM_CHECK_INTERACTIONS=1` vérifie notamment une sélection de trois chansons entre deux albums et le contenu du presse-papiers privé de drag. Il n’effectue aucune écriture musicale. Les builds macOS universel, Linux x86_64/aarch64 et Windows ARM64 passent, ainsi que les 51 tests du noyau. La vérification manuelle du nouveau build avec l’outil de contrôle de l’écran n’a pas pu être terminée (expiration de l’outil); elle ne fait pas partie de ces preuves.
 
-Les mesures précèdent l’ajout du menu natif d’envoi d’album et du filtrage par recherche. Aucun de ces contrôles ne crée de widgets pour les lignes hors écran.
+Une seconde mesure sur la version finale, recherche et menu d’envoi d’album inclus, donne une médiane de **37,5 ms** (premier artiste 144 ms, suivants 37–44 ms), soit environ **7× plus rapide** que la version initiale. Le layout de l’animation reste à 23–24 ms par image. Aucun de ces contrôles ne crée de widgets pour les lignes hors écran.
