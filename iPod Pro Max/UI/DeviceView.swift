@@ -78,7 +78,7 @@ struct DeviceView: View {
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .task(id: device.id + "-\(revision)") { await loadContents() }
     }

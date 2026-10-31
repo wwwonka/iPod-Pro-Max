@@ -61,6 +61,7 @@ func checkNativeMusicInteractions() {
     let outline = MusicDropOutlineView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
     outline.addTableColumn(NSTableColumn(identifier: .init("sidebar")))
     outline.headerView = nil
+    outline.draggingDestinationFeedbackStyle = .none
     let destination = Sidebar.Coordinator()
     let target = Sidebar.Node(title: "Test iPod", icon: "ipod", item: .device("test-device"), ejectable: true)
     let music = Sidebar.Node(title: "Music", icon: "music.note", item: .music)

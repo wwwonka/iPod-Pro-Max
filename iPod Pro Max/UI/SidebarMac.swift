@@ -26,6 +26,9 @@
             let outline = MusicDropOutlineView()
             if #available(macOS 11, *) { outline.style = .sourceList }
             outline.headerView = nil
+            // The outline view's own drop frame (a rounded rectangle around the whole row, larger than
+            // the highlight) would show underneath: the row draws the one and only feedback, in the accent color.
+            outline.draggingDestinationFeedbackStyle = .none
             outline.floatsGroupRows = false
             outline.rowSizeStyle = .default
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
