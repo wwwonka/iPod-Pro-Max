@@ -83,7 +83,7 @@ public struct PortableLibraryStore: Sendable {
     public init(root: URL, hostID: String) {
         data = DeviceDataFolder(mountPoint: root); self.hostID = hostID
     }
-    public func register(name: String, musicFolder: URL? = nil) throws -> KnownHost {
+    public func register(name: String, musicFolder: URL? = nil, audiobooksFolder: URL? = nil) throws -> KnownHost {
         try data.requireAvailableStorage()
         var registry = try data.readChecked(KnownHosts.self, from: "known_hosts.json") ?? KnownHosts()
         guard registry.version == 1 else { throw IPodDBError.unsupported("Unsupported known_hosts.json version") }
@@ -92,6 +92,10 @@ public struct PortableLibraryStore: Sendable {
         if let musicFolder {
             if let i = host.sources.firstIndex(where: { $0.kind == .music }) { host.sources[i].path = musicFolder.path }
             else { host.sources.append(KnownSource(path: musicFolder.path)) }
+        }
+        if let audiobooksFolder {
+            if let i = host.sources.firstIndex(where: { $0.kind == .audiobooks }) { host.sources[i].path = audiobooksFolder.path }
+            else { host.sources.append(KnownSource(kind: .audiobooks, path: audiobooksFolder.path)) }
         }
         registry.hosts.removeAll { $0.id == hostID }; registry.hosts.append(host)
         let previous = data.read(KnownHosts.self, from: "known_hosts.json")

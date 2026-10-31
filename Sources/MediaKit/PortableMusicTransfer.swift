@@ -7,7 +7,17 @@ public enum PortableMusicTransfer {
         public var manifest: TransferManifest
         public var reused: Int
     }
-    public static func prepare(tracks: [LibraryTrack], device: IPodDevice, store: PortableLibraryStore, albumArtistGrouping: Bool = true) async throws -> Prepared {
+    public static func prepare(tracks allTracks: [LibraryTrack], device: IPodDevice, store: PortableLibraryStore, albumArtistGrouping: Bool = true) async throws -> Prepared {
+        // A multi-file audiobook reaches the iPod as one merged file under its first chapter: that chapter
+        // stands for the book here, and the others only follow it (they are not fingerprinted, which
+        // would read gigabytes for nothing).
+        var followers: [UUID: [LibraryTrack]] = [:]
+        var followerIDs = Set<UUID>()
+        for book in AudiobookScanner.bookGroups(allTracks) where book.count > 1 {
+            followers[book[0].id] = Array(book.dropFirst())
+            followerIDs.formUnion(book.dropFirst().map(\.id))
+        }
+        let tracks = allTracks.filter { !followerIDs.contains($0.id) }
         let folder = DeviceDataFolder(mountPoint: device.mountPoint)
         try folder.requireAvailableStorage()
         var manifest = try folder.readChecked(TransferManifest.self, from: "manifest.json") ?? TransferManifest()
@@ -48,7 +58,7 @@ public enum PortableMusicTransfer {
                 manifest.tracks.append(.init(dbid: dbid, owner: store.hostID, sourceID: track.id, fingerprint: hash, references: [reference], relativePath: relative, sourceRootID: source?.id))
                 record.trackDBIDs[track.id] = dbid
             }
-            if let dbid = record.trackDBIDs[track.id], scheduled.insert(dbid).inserted { additions.append(track) }
+            if let dbid = record.trackDBIDs[track.id], scheduled.insert(dbid).inserted { additions.append(track); additions.append(contentsOf: followers[track.id] ?? []) }
             else { reused += 1 }
         }
         // Durable intent makes a crash between iTunesDB publication and manifest publication recoverable.

@@ -44,7 +44,7 @@ final class MusicTransfer {
         guard !ejecting.contains(device.id) else { onStatus("This iPod is being ejected."); return }
         let selected = Set(ids)
         loadedByDevice[device.id] = loaded
-        for track in loaded.cache.tracks where selected.contains(track.id) && (track.kind == nil || track.kind == .song) {
+        for track in loaded.cache.tracks where selected.contains(track.id) && track.kind != .video {
             queues[device.id, default: [:]][track.id] = track
         }
         start(device)

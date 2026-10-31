@@ -24,6 +24,7 @@ struct ContentView: View {
     @State var contentRevision = 0
     @State var podcastRevision = 0
     @State var podcastsLoaded = false
+    @State var audiobooks: [AudiobookEntry] = []
     @State var library: Library?
     @State var ipods: [IPodDevice] = []
     /// The iPods' names, for the sidebar.
@@ -223,7 +224,19 @@ struct ContentView: View {
         await loadPortable(folder: folder, refresh: true)
     }
 
-    private func loadPortable(folder: URL? = nil, refresh: Bool) async {
+    private var audiobooksFolderPath: String? {
+        guard let store = portableLibrary?.store else { return nil }
+        return store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == store.hostID }?
+            .sources.first { $0.kind == .audiobooks }?.path
+    }
+
+    private func configureAudiobooks() async {
+        guard let folder = await chooseFile(title: "Choose Audiobooks Folder", defaultButtonLabel: "Use Folder",
+            allowSelectingFiles: false, allowSelectingDirectories: true) else { return }
+        await loadPortable(audiobooksFolder: folder, refresh: true)
+    }
+
+    private func loadPortable(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool) async {
         guard !scanning else { return }
         scanning = true
         defer { scanning = false }
@@ -232,9 +245,12 @@ struct ContentView: View {
             if configuredFolder == nil, let i = CommandLine.arguments.firstIndex(of: "--music-folder"), i + 1 < CommandLine.arguments.count {
                 configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             }
-            let loaded = try await PortableLoading.load(folder: configuredFolder, refresh: refresh)
+            let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path) }.value
             portableLibrary = loaded; library = indexed
+            audiobooks = await Task.detached(priority: .userInitiated) {
+                AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook), artwork: loaded.store.artwork)
+            }.value
             if !podcastsLoaded {
                 podcastsLoaded = true
                 await PodcastController.shared.load(store: loaded.store)
@@ -287,6 +303,17 @@ struct ContentView: View {
                                 isBusy: { busyDevices.contains($0) })
                                 .background(WindowBackground())
                         }
+                        if selection == .audiobooks {
+                            AudiobooksView(books: audiobooks, folderPath: audiobooksFolderPath, scanning: scanning,
+                                devices: ipods.map(\.id), isBusy: { busyDevices.contains($0) },
+                                onChooseFolder: { Task { await configureAudiobooks() } },
+                                onRescan: { Task { await loadPortable(refresh: true) } },
+                                onSync: { ids, name in
+                                    guard let device = ipod(named: name), let loaded = portableLibrary else { return }
+                                    MusicTransfer.shared.enqueue(ids: ids, device: device, loaded: loaded)
+                                })
+                                .background(WindowBackground())
+                        }
                         if case .device = selection {
                             if case .device(let id) = selection, ipod(named: id) == nil, let cover = cover(library) {
                                 cover.background(WindowBackground())
@@ -322,6 +349,10 @@ struct ContentView: View {
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
             subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+        case .audiobooks:
+            title = "Audiobooks"
+            let count = audiobooks.count
+            subtitle = count == 0 ? "" : "\(count) book\(count == 1 ? "" : "s")"
         case .podcasts:
             title = "Podcasts"
             let count = PodcastController.shared.shows.count
@@ -374,7 +405,7 @@ struct ContentView: View {
         case .music where mode == .byArtist && selectedArtist == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
                               message: "Pick an artist in the list to see their songs.")
-        case .music, .playlist, .podcasts:
+        case .music, .playlist, .podcasts, .audiobooks:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).

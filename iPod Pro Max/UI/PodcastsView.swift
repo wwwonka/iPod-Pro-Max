@@ -302,6 +302,7 @@ struct EpisodeRow: View {
 struct Cover: View {
     var url: URL?
     var size: Double
+    var symbol = "antenna.radiowaves.left.and.right"
 
     var body: some View {
         ZStack {
@@ -309,7 +310,7 @@ struct Cover: View {
             if let url {
                 Image(url).resizable().frame(width: size, height: size)
             } else {
-                Symbol(name: "antenna.radiowaves.left.and.right", size: size / 2, pointSize: size / 3, tint: .secondary)
+                Symbol(name: symbol, size: size / 2, pointSize: size / 3, tint: .secondary)
             }
         }
         .frame(width: size, height: size)

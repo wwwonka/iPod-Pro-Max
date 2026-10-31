@@ -7,10 +7,11 @@ struct LoadedPortableLibrary {
     var store: PortableLibraryStore
     var cache: PortableLibraryCache
     var configured: Bool
+    var audiobooksConfigured = false
 }
 
 enum PortableLoading {
-    static func load(folder: URL? = nil, refresh: Bool = false, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
+    static func load(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool = false, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
         try await Task.detached(priority: .userInitiated) {
             guard let root = overrideRoot ?? PortableRoot.url else { throw LoadingError.noRoot }
             guard let hostID = HostIdentity.current() else { throw LoadingError.noIdentity }
@@ -34,9 +35,20 @@ enum PortableLoading {
                 }
             }
             #endif
-            let host = try store.register(name: ProcessInfo.processInfo.hostName, musicFolder: selectedFolder)
+            let host = try store.register(name: ProcessInfo.processInfo.hostName, musicFolder: selectedFolder, audiobooksFolder: audiobooksFolder)
             if try store.data.readChecked(PortableSettings.self, from: "settings.json") == nil { try store.data.write(PortableSettings(), to: "settings.json") }
+            let scanBooks = refresh || audiobooksFolder != nil
+            if scanBooks, host.sources.contains(where: { $0.kind == .audiobooks }) {
+                var books: [LibraryTrack] = []
+                for source in host.sources where source.kind == .audiobooks {
+                    let scanned = await AudiobookScanner.scan(folder: URL(fileURLWithPath: source.path), artworkDir: store.artwork,
+                        cached: cache.tracks.filter(\.isAudiobook), namespace: source.id.uuidString)
+                    books.append(contentsOf: scanned.tracks)
+                }
+                cache.tracks = cache.tracks.filter { !$0.isAudiobook } + books
+            }
             if (refresh || folder != nil), host.sources.contains(where: { $0.kind == .music }) {
+                let books = cache.tracks.filter(\.isAudiobook)
                 var tracks: [LibraryTrack] = []
                 for source in host.sources where source.kind == .music {
                     let previousRoot = cache.sourcePaths?[source.id.uuidString]
@@ -51,7 +63,7 @@ enum PortableLoading {
                         cached: relocated, namespace: source.id.uuidString, musicOnly: true)
                     tracks.append(contentsOf: scanned.tracks)
                 }
-                cache.tracks = tracks
+                cache.tracks = tracks + books
                 cache.sourcePaths = Dictionary(host.sources.map { ($0.id.uuidString, $0.path) }, uniquingKeysWith: { a, _ in a })
             } else {
                 cache.tracks.removeAll { !FileManager.default.isReadableFile(atPath: $0.path) }
@@ -59,7 +71,8 @@ enum PortableLoading {
             // Playlist membership is a saved choice. Missing tracks have no visible rows,
             // but keep their IDs so a reconnected source can populate the playlist again.
             if cache != originalCache { try store.save(cache) }
-            return LoadedPortableLibrary(store: store, cache: cache, configured: host.sources.contains { $0.kind == .music })
+            return LoadedPortableLibrary(store: store, cache: cache, configured: host.sources.contains { $0.kind == .music },
+                                         audiobooksConfigured: host.sources.contains { $0.kind == .audiobooks })
         }.value
     }
     enum LoadingError: LocalizedError {
