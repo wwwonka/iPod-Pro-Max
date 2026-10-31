@@ -14,6 +14,7 @@ final class PodcastController {
     private(set) var progress: [UUID: Double] = [:]
     var onChange: () -> Void = {}
     var onError: (String) -> Void = { _ in }
+    var onStatus: (String) -> Void = { _ in }
 
     private var store: PortableLibraryStore?
     private var downloads: [UUID: Task<Void, Never>] = [:]
@@ -159,8 +160,8 @@ final class PodcastController {
         await task.value
     }
 
-    func downloadPending() async {
-        let pending = pendingDownloads
+    func downloadPending(showID: UUID? = nil) async {
+        let pending = pendingDownloads.filter { showID == nil || $0.show.id == showID }
         await withTaskGroup(of: Void.self) { group in
             var next = 0
             func add() {
@@ -172,6 +173,33 @@ final class PodcastController {
             while await group.next() != nil { add() }
         }
     }
+
+    /// What a drag of `episodeIDs` onto an iPod sends: those episodes, downloaded first when they aren't
+    /// yet (the show's "keep the latest" rule is for the Sync button, not for episodes picked by hand).
+    func shows(forDropped episodeIDs: Set<UUID>) async -> [PodcastShow] {
+        let wanted = shows.flatMap { show in show.episodes.filter { episodeIDs.contains($0.id) && !$0.isDownloaded }.map { (show.id, $0.id) } }
+        if !wanted.isEmpty {
+            onStatus("Downloading \(wanted.count) episode\(wanted.count == 1 ? "" : "s")…")
+            await withTaskGroup(of: Void.self) { group in
+                var next = 0
+                func add() {
+                    guard next < wanted.count else { return }
+                    let (show, episode) = wanted[next]; next += 1
+                    group.addTask { await self.download(showID: show, episodeID: episode) }
+                }
+                for _ in 0..<3 { add() }
+                while await group.next() != nil { add() }
+            }
+        }
+        return shows.compactMap { show in
+            var copy = show
+            copy.episodes = show.episodes.filter { episodeIDs.contains($0.id) && $0.isDownloaded }
+            copy.syncEnabled = true
+            return copy.episodes.isEmpty ? nil : copy
+        }
+    }
+
+    var episodeIDs: Set<UUID> { Set(shows.flatMap { $0.episodes.map(\.id) }) }
 
     func cancelDownload(episodeID: UUID) { downloads[episodeID]?.cancel() }
 

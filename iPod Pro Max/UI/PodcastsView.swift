@@ -3,95 +3,21 @@ import SwiftCrossUI
 import iPodKit
 import MediaKit
 
-/// The Podcasts section, ported from the SwiftUI app's `PodcastsView`: the subscriptions on the left,
-/// the selected show and its episodes on the right, and an add panel (search or paste a feed link).
-/// The controller is not observable: `revision` changes whenever it publishes, which redraws this view.
-struct PodcastsView: View {
-    var revision: Int
-    /// Names of the connected iPods that can receive podcasts, for the Sync buttons.
-    var devices: [String]
-    var onSync: (String) -> Void
-    var isBusy: (String) -> Bool
+// The Podcasts section is three pieces around the app's one native track table, which gives the
+// episodes multi-selection, virtualization and the platform's own drag onto an iPod in the sidebar:
+//   PodcastShowList    the subscriptions, at the left of the table
+//   PodcastShowHeader  the selected show's settings, above the table
+//   PodcastAddPanel    search or paste a link, drawn over the table
+// The controller is not observable: the app bumps a revision whenever it publishes.
 
-    @State private var selectedID: UUID?
-    @State private var adding = false
-    @State private var query = ""
-    @State private var results: [PodcastSearchResult] = []
-    @State private var working = false
-    @State private var message = ""
-    @State private var showAll = false
+/// The subscriptions, with their covers.
+struct PodcastShowList: View {
+    var revision: Int
+    @Binding var selectedID: UUID?
 
     private var controller: PodcastController { .shared }
-    private let episodeLimit = 100
 
     var body: some View {
-        VStack(spacing: 0) {
-            actionBar
-            Divider()
-            if adding { addPanel; Divider() }
-            if controller.shows.isEmpty && !adding {
-                EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No Podcasts Yet",
-                           message: "Subscribe by searching Apple Podcasts or pasting a feed, OHdio or YouTube link. New episodes download here and are copied to the iPod's Podcasts menu, with unplayed dots and resume positions.")
-            } else {
-                HStack(spacing: 0) {
-                    showList.frame(width: 260)
-                    Divider()
-                    detail
-                }
-            }
-        }
-    }
-
-    // MARK: Pieces
-
-    private var actionBar: some View {
-        HStack(spacing: 10) {
-            Button(adding ? "Done" : "Add Podcast…") { adding.toggle(); message = "" }
-            Button("Refresh All") { Task { await controller.refreshAll() } }
-                .disabled(controller.shows.isEmpty || !controller.refreshing.isEmpty)
-            let pending = controller.pendingDownloads.count
-            Button(pending > 0 ? "Download \(pending) New" : "Download New") { Task { await controller.downloadPending() } }
-                .disabled(pending == 0)
-            Spacer()
-            ForEach(devices, id: \.self) { name in
-                Button(devices.count > 1 ? "Sync to \(name)" : "Sync to iPod") { onSync(name) }
-                    .disabled(isBusy(name) || controller.shows.isEmpty)
-            }
-        }
-        .padding(8)
-    }
-
-    private var addPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                TextField("Search podcasts or paste a feed link", text: $query)
-                    .onSubmit { Task { await go() } }
-                Button(PodcastSources.normalizedFeedURL(query) != nil ? "Subscribe" : "Search") { Task { await go() } }
-                    .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || working)
-            }
-            if working { Text("Working…").font(.system(size: 11)).foregroundColor(.gray) }
-            if !message.isEmpty { Text(message).font(.system(size: 11)).foregroundColor(MacColor.red) }
-            ForEach(results) { result in
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(result.name).lineLimit(1)
-                        Text(result.artist).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
-                    }
-                    Spacer()
-                    if let url = result.feedURL {
-                        if controller.shows.contains(where: { $0.feedURL == url }) {
-                            Text("Subscribed").font(.system(size: 11)).foregroundColor(.gray)
-                        } else {
-                            Button("Subscribe") { Task { await subscribe(url) } }.disabled(working)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(10)
-    }
-
-    private var showList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(controller.shows) { show in
@@ -110,70 +36,118 @@ struct PodcastsView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(selectedID == show.id ? sidebarSelection : Color(white: 0.5, opacity: 0.001))
-                    .onTapGesture { selectedID = show.id; showAll = false }
+                    .onTapGesture { selectedID = show.id }
                 }
             }
         }
     }
+}
 
-    @ViewBuilder
-    private var detail: some View {
-        if let id = selectedID ?? controller.shows.first?.id, let show = controller.show(id: id) {
-            let sync = Set(show.episodesToSync().map(\.id))
-            let episodes = show.sortedEpisodes
-            let visible = showAll ? episodes : Array(episodes.prefix(episodeLimit))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    header(show)
-                    Divider()
-                    ForEach(visible) { episode in
-                        EpisodeRow(show: show, episode: episode, willSync: sync.contains(episode.id),
-                                   progress: controller.progress[episode.id], downloading: controller.isDownloading(episode.id))
-                    }
-                    if visible.count < episodes.count {
-                        Button("Show all \(episodes.count) episodes") { showAll = true }
-                    }
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } else {
-            Text("Select a podcast").foregroundColor(.gray).frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
+/// The selected show: cover, description, and what the sync does with it.
+struct PodcastShowHeader: View {
+    var show: PodcastShow
+    var revision: Int
+    /// Names of the connected iPods that can receive podcasts.
+    var devices: [String]
+    var isBusy: (String) -> Bool
+    var onSync: (String) -> Void
+    var onUnsubscribe: () -> Void
 
-    private func header(_ show: PodcastShow) -> some View {
+    private var controller: PodcastController { .shared }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 14) {
-                Cover(url: controller.artworkURL(for: show), size: 88)
+                Cover(url: controller.artworkURL(for: show), size: 72)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(show.title).font(.system(size: 20, weight: .bold)).lineLimit(2)
-                    if let author = show.author { Text(author).foregroundColor(.gray) }
+                    Text(show.title).font(.system(size: 18, weight: .bold)).lineLimit(1)
+                    if let author = show.author { Text(author).foregroundColor(.gray).lineLimit(1) }
                     if let summary = show.summary, !summary.isEmpty {
-                        Text(summary).font(.system(size: 12)).foregroundColor(.gray).lineLimit(3)
+                        Text(summary).font(.system(size: 12)).foregroundColor(.gray).lineLimit(2)
                     }
                 }
             }
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 CheckboxRow(title: "Sync to iPod", isOn: Binding(get: { show.syncEnabled }, set: { value in
                     var copy = show; copy.syncEnabled = value; controller.update(copy)
                 }))
-                HStack(spacing: 6) {
-                    Text("Keep")
-                    Picker(of: KeepRule.allCases, selection: Binding(get: { KeepRule(rawValue: show.keepLatest) ?? .latest5 }, set: { value in
-                        guard let value else { return }
-                        var copy = show; copy.keepLatest = value.rawValue; controller.update(copy)
-                    }))
-                }
+                Text("Keep")
+                Picker(of: KeepRule.allCases, selection: Binding(get: { KeepRule(rawValue: show.keepLatest) ?? .latest5 }, set: { value in
+                    guard let value else { return }
+                    var copy = show; copy.keepLatest = value.rawValue; controller.update(copy)
+                }))
                 Spacer()
                 Button("Refresh") { Task { await controller.refresh(showID: show.id) } }
                     .disabled(controller.refreshing.contains(show.id))
-                Button("Unsubscribe") { controller.unsubscribe(showID: show.id); selectedID = nil }
+                let pending = controller.pendingDownloads.filter { $0.show.id == show.id }.count
+                Button(pending > 0 ? "Download \(pending) New" : "Download New") {
+                    Task { await controller.downloadPending(showID: show.id) }
+                }
+                .disabled(pending == 0)
+                ForEach(devices, id: \.self) { name in
+                    Button(devices.count > 1 ? "Sync to \(name)" : "Sync to iPod") { onSync(name) }
+                        .disabled(isBusy(name))
+                }
+                Button("Unsubscribe") { onUnsubscribe() }
             }
+            Text("Select episodes in the list and drag them onto an iPod in the sidebar. Episodes that aren't downloaded yet are downloaded first.")
+                .font(.system(size: 11)).foregroundColor(.gray)
         }
+        .padding(10)
     }
+}
 
-    // MARK: Actions
+/// Search Apple Podcasts or paste a feed, OHdio or YouTube link.
+struct PodcastAddPanel: View {
+    var onSubscribed: (UUID) -> Void
+    var onClose: () -> Void
+
+    @State private var query = ""
+    @State private var results: [PodcastSearchResult] = []
+    @State private var working = false
+    @State private var message = ""
+
+    private var controller: PodcastController { .shared }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                TextField("Search podcasts or paste a feed link", text: $query)
+                    .onSubmit { Task { await go() } }
+                Button(PodcastSources.normalizedFeedURL(query) != nil ? "Subscribe" : "Search") { Task { await go() } }
+                    .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                Button("Done") { onClose() }
+            }
+            if working { Text("Working…").font(.system(size: 11)).foregroundColor(.gray) }
+            if !message.isEmpty { Text(message).font(.system(size: 11)).foregroundColor(MacColor.red) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(results) { result in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(result.name).lineLimit(1)
+                                Text(result.artist).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
+                            }
+                            Spacer()
+                            if let url = result.feedURL {
+                                if controller.shows.contains(where: { $0.feedURL == url }) {
+                                    Text("Subscribed").font(.system(size: 11)).foregroundColor(.gray)
+                                } else {
+                                    Button("Subscribe") { Task { await subscribe(url) } }.disabled(working)
+                                }
+                            }
+                        }
+                    }
+                    if results.isEmpty && !working {
+                        Text("Search Apple Podcasts, or paste the link of a feed, an OHdio show or a YouTube channel.")
+                            .foregroundColor(.gray)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(12)
+    }
 
     private func go() async {
         message = ""
@@ -192,7 +166,7 @@ struct PodcastsView: View {
         defer { working = false }
         do {
             let show = try await controller.subscribe(feedURL: url)
-            selectedID = show.id
+            onSubscribed(show.id)
             query = ""
             results = []
         } catch { message = "Couldn't subscribe: \(error.localizedDescription)" }
@@ -212,93 +186,42 @@ enum KeepRule: Int, CaseIterable, CustomStringConvertible {
     }
 }
 
-struct EpisodeRow: View {
-    var show: PodcastShow
-    var episode: PodcastEpisode
-    var willSync: Bool
-    var progress: Double?
-    var downloading: Bool
-    @State private var expanded = false
+// MARK: Table rows
 
-    private var controller: PodcastController { .shared }
+/// The episodes of one show as rows of the track table. The same array comes back while nothing visible
+/// changed (download progress, for one, doesn't), so the table doesn't reload and lose its selection.
+final class PodcastRowsCache {
+    private var showID: UUID?
+    private var rows: [TrackRow] = []
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 10) {
-                Circle().fill(episode.played ? Color(white: 0.5, opacity: 0.001) : MacColor.accent).frame(width: 8, height: 8).padding(.top, 5)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(episode.title).lineLimit(expanded ? nil : 1)
-                    Text(details).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
-                }
-                .onTapGesture { expanded.toggle() }
-                Spacer()
-                trailing
+    @MainActor
+    func rows(for show: PodcastShow?) -> [TrackRow] {
+        guard let show else { showID = nil; rows = []; return rows }
+        let fresh = show.sortedEpisodes.map { episode -> TrackRow in
+            var year = ""
+            if let date = episode.publishedAt {
+                year = String(Calendar(identifier: .gregorian).component(.year, from: date))
             }
-            if expanded {
-                if let summary = episode.summary, !summary.isEmpty {
-                    Text(summary).font(.system(size: 12)).foregroundColor(.gray).padding(.leading, 18)
-                }
-                HStack(spacing: 8) {
-                    Button(episode.played ? "Mark as Unplayed" : "Mark as Played") {
-                        controller.setPlayed(showID: show.id, episodeID: episode.id, played: !episode.played)
-                    }
-                    Button(syncLabel) {
-                        let next: Bool? = episode.syncOverride == nil ? true : (episode.syncOverride == true ? false : nil)
-                        controller.setEpisodeSync(showID: show.id, episodeID: episode.id, override: next)
-                    }
-                }
-                .padding(.leading, 18)
-            }
+            return TrackRow(id: episode.id.uuidString,
+                            title: (episode.played ? "" : "● ") + episode.title + (episode.isDownloaded ? "" : "  (not downloaded)"),
+                            artist: show.author ?? show.title, album: show.title,
+                            number: (episode.episodeNumber ?? 0) > 0 ? "\(episode.episodeNumber!)" : "",
+                            year: year, duration: Self.duration(episode.durationMs ?? 0))
         }
+        if showID == show.id, fresh == rows { return rows }
+        showID = show.id
+        rows = fresh
+        return rows
     }
-
-    private var syncLabel: String {
-        switch episode.syncOverride {
-        case nil: "Follows the show's rule"
-        case true?: "Always sync"
-        case false?: "Never sync"
-        }
-    }
-
-    private var details: String {
-        var parts: [String] = []
-        if let date = episode.publishedAt { parts.append(Self.dateFormatter.string(from: date)) }
-        if let ms = episode.durationMs, ms > 0 { parts.append(Self.duration(ms)) }
-        if let size = episode.fileSize ?? episode.enclosureLength, size > 0 { parts.append(bytes(size)) }
-        if episode.isDownloaded { parts.append("Downloaded") }
-        if willSync { parts.append("Syncs") }
-        return parts.joined(separator: " · ")
-    }
-
-    @ViewBuilder
-    private var trailing: some View {
-        if downloading {
-            HStack(spacing: 6) {
-                ProgressView(value: progress ?? 0).frame(width: 80)
-                Button("Cancel") { controller.cancelDownload(episodeID: episode.id) }
-            }
-        } else if episode.isDownloaded {
-            Button("Delete") { controller.deleteDownload(showID: show.id, episodeID: episode.id) }
-        } else {
-            Button("Download") { Task { await controller.download(showID: show.id, episodeID: episode.id) } }
-        }
-    }
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .none
-        return f
-    }()
 
     private static func duration(_ ms: Int) -> String {
         let s = ms / 1000
-        return s >= 3600 ? "\(s / 3600):" + (s % 3600 / 60 < 10 ? "0" : "") + "\(s % 3600 / 60):" + (s % 60 < 10 ? "0" : "") + "\(s % 60)"
-            : "\(s / 60):" + (s % 60 < 10 ? "0" : "") + "\(s % 60)"
+        let two = { (n: Int) in n < 10 ? "0\(n)" : "\(n)" }
+        return s >= 3600 ? "\(s / 3600):\(two(s % 3600 / 60)):\(two(s % 60))" : "\(s / 60):\(two(s % 60))"
     }
 }
 
-/// A square cover, or a gray tile with the podcast symbol while there is none.
+/// A square cover, or a gray tile with a symbol while there is none.
 struct Cover: View {
     var url: URL?
     var size: Double

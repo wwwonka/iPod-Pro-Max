@@ -27,7 +27,7 @@ private struct LibraryDocument: Decodable {
 }
 
 /// Preformatted row for `Table`, whose columns only take `String` key paths.
-struct TrackRow {
+struct TrackRow: Equatable {
     var id: String = ""
     var title: String
     var artist: String

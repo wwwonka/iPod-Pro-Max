@@ -44,7 +44,11 @@ final class MusicTransfer {
         guard !ejecting.contains(device.id) else { onStatus("This iPod is being ejected."); return }
         let selected = Set(ids)
         loadedByDevice[device.id] = loaded
-        for track in loaded.cache.tracks where selected.contains(track.id) && track.kind != .video {
+        // A chapter stands for its whole book: the iPod gets one merged file, so a partial selection
+        // would be a partial book.
+        let books = Set(loaded.cache.tracks.filter { selected.contains($0.id) && $0.isAudiobook }.map { "\($0.album ?? "")\u{1}\($0.artist ?? "")" })
+        for track in loaded.cache.tracks where track.kind != .video
+            && (selected.contains(track.id) || (track.isAudiobook && books.contains("\(track.album ?? "")\u{1}\(track.artist ?? "")"))) {
             queues[device.id, default: [:]][track.id] = track
         }
         start(device)
@@ -59,7 +63,8 @@ final class MusicTransfer {
         }
         guard device.supportsPodcasts else { onStatus("This iPod's firmware has no Podcasts menu."); return }
         guard !ejecting.contains(device.id) else { onStatus("This iPod is being ejected."); return }
-        podcastJobs[device.id] = (shows, loaded)
+        // Several drops while one is running add up.
+        podcastJobs[device.id] = ((podcastJobs[device.id]?.0 ?? []) + shows, loaded)
         start(device)
     }
 

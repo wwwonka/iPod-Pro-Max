@@ -25,6 +25,10 @@ struct ContentView: View {
     @State var podcastRevision = 0
     @State var podcastsLoaded = false
     @State var audiobooks: [AudiobookEntry] = []
+    @State var audiobookRows: [TrackRow] = []
+    @State var selectedShowID: Foundation.UUID?
+    @State var addingPodcast = false
+    @State var podcastRows = PodcastRowsCache()
     @State var library: Library?
     @State var ipods: [IPodDevice] = []
     /// The iPods' names, for the sidebar.
@@ -67,6 +71,7 @@ struct ContentView: View {
             MusicTransfer.shared.onPodcastResult = { PodcastController.shared.apply($0) }
             PodcastController.shared.onChange = { podcastRevision += 1 }
             PodcastController.shared.onError = { transferStatus = $0 }
+            PodcastController.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onActivityChanged = { busyDevices = $0 }
             MusicTransfer.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onDeviceFinished = { device in
@@ -75,7 +80,18 @@ struct ContentView: View {
             }
             MusicTransfer.shared.onDrop = { ids, name in
                 guard let device = ipod(named: name), let loaded = portableLibrary else { return false }
-                MusicTransfer.shared.enqueue(ids: ids.compactMap(UUID.init(uuidString:)), device: device, loaded: loaded)
+                // What is dragged is songs, audiobook chapters or podcast episodes: all rows of the same table.
+                let dropped = ids.compactMap(UUID.init(uuidString:))
+                let episodes = Set(dropped).intersection(PodcastController.shared.episodeIDs)
+                let tracks = dropped.filter { !episodes.contains($0) }
+                if !tracks.isEmpty { MusicTransfer.shared.enqueue(ids: tracks, device: device, loaded: loaded) }
+                if !episodes.isEmpty {
+                    Task {
+                        let shows = await PodcastController.shared.shows(forDropped: episodes)
+                        if shows.isEmpty { transferStatus = "None of those episodes could be downloaded." }
+                        else { MusicTransfer.shared.enqueuePodcasts(shows: shows, device: device, loaded: loaded) }
+                    }
+                }
                 return true
             }
             if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil {
@@ -224,6 +240,12 @@ struct ContentView: View {
         await loadPortable(folder: folder, refresh: true)
     }
 
+    /// The show picked in the list, or the first one.
+    private var currentShow: PodcastShow? {
+        let controller = PodcastController.shared
+        return selectedShowID.flatMap { controller.show(id: $0) } ?? controller.shows.first
+    }
+
     private var audiobooksFolderPath: String? {
         guard let store = portableLibrary?.store else { return nil }
         return store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == store.hostID }?
@@ -248,9 +270,11 @@ struct ContentView: View {
             let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path) }.value
             portableLibrary = loaded; library = indexed
-            audiobooks = await Task.detached(priority: .userInitiated) {
-                AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook), artwork: loaded.store.artwork)
+            let books = await Task.detached(priority: .userInitiated) {
+                AudiobookEntry.books(from: loaded.cache.tracks.filter(\.isAudiobook))
             }.value
+            audiobooks = books
+            audiobookRows = AudiobookEntry.rows(books)
             if !podcastsLoaded {
                 podcastsLoaded = true
                 await PodcastController.shared.load(store: loaded.store)
@@ -282,6 +306,22 @@ struct ContentView: View {
                             .frame(width: 250)
                         Divider()
                     }
+                    if selection == .podcasts && !PodcastController.shared.shows.isEmpty {
+                        PodcastShowList(revision: podcastRevision, selectedID: Binding(get: { currentShow?.id }, set: { selectedShowID = $0 }))
+                            .frame(width: 260)
+                        Divider()
+                    }
+                    VStack(spacing: 0) {
+                    if selection == .podcasts, !addingPodcast, let show = currentShow {
+                        PodcastShowHeader(show: show, revision: podcastRevision, devices: ipods.filter(\.supportsPodcasts).map(\.id),
+                            isBusy: { busyDevices.contains($0) },
+                            onSync: { name in
+                                guard let device = ipod(named: name), let loaded = portableLibrary else { return }
+                                MusicTransfer.shared.enqueuePodcasts(shows: PodcastController.shared.shows, device: device, loaded: loaded)
+                            },
+                            onUnsubscribe: { PodcastController.shared.unsubscribe(showID: show.id); selectedShowID = nil })
+                        Divider()
+                    }
                     // The cover only hides the table: over the artist list, it would swallow the
                     // clicks that pick an artist.
                     ZStack {
@@ -294,24 +334,8 @@ struct ContentView: View {
                                 })
                                 .background(WindowBackground())
                         }
-                        if selection == .podcasts {
-                            PodcastsView(revision: podcastRevision, devices: ipods.filter(\.supportsPodcasts).map(\.id),
-                                onSync: { name in
-                                    guard let device = ipod(named: name), let loaded = portableLibrary else { return }
-                                    MusicTransfer.shared.enqueuePodcasts(shows: PodcastController.shared.shows, device: device, loaded: loaded)
-                                },
-                                isBusy: { busyDevices.contains($0) })
-                                .background(WindowBackground())
-                        }
-                        if selection == .audiobooks {
-                            AudiobooksView(books: audiobooks, folderPath: audiobooksFolderPath, scanning: scanning,
-                                devices: ipods.map(\.id), isBusy: { busyDevices.contains($0) },
-                                onChooseFolder: { Task { await configureAudiobooks() } },
-                                onRescan: { Task { await loadPortable(refresh: true) } },
-                                onSync: { ids, name in
-                                    guard let device = ipod(named: name), let loaded = portableLibrary else { return }
-                                    MusicTransfer.shared.enqueue(ids: ids, device: device, loaded: loaded)
-                                })
+                        if selection == .podcasts && addingPodcast {
+                            PodcastAddPanel(onSubscribed: { selectedShowID = $0; addingPodcast = false }, onClose: { addingPodcast = false })
                                 .background(WindowBackground())
                         }
                         if case .device = selection {
@@ -321,6 +345,7 @@ struct ContentView: View {
                         } else if let cover = cover(library) {
                             cover.background(WindowBackground())
                         }
+                    }
                     }
                 }
                 HStack {
@@ -372,6 +397,14 @@ struct ContentView: View {
                 ToolbarButton(icon: "plus") { Task { await configureMusic() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
                 SearchField(prompt: "Search songs", text: $search)
+            } else if selection == .podcasts {
+                ToolbarButton(icon: "plus") { addingPodcast.toggle() }
+                ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
+                SearchField(prompt: "Search episodes", text: $search)
+            } else if selection == .audiobooks {
+                ToolbarButton(icon: "plus") { Task { await configureAudiobooks() } }
+                ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
+                SearchField(prompt: "Search audiobooks", text: $search)
             } else if case .device(let id) = selection, let device = ipod(named: id) {
                 ToolbarButton(icon: "arrow.clockwise") {
                     DevicePageCache.shared.invalidate(device)
@@ -391,6 +424,10 @@ struct ContentView: View {
             return filtered(library.allRows)
         case .playlist(let id):
             return library.rowsByPlaylist[id] ?? []
+        case .podcasts:
+            return filtered(podcastRows.rows(for: currentShow))
+        case .audiobooks:
+            return filtered(audiobookRows)
         default:
             return nil
         }
@@ -405,6 +442,12 @@ struct ContentView: View {
         case .music where mode == .byArtist && selectedArtist == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
                               message: "Pick an artist in the list to see their songs.")
+        case .podcasts where PodcastController.shared.shows.isEmpty && !addingPodcast:
+            return EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No Podcasts Yet",
+                              message: "Subscribe by searching Apple Podcasts or pasting a feed, OHdio or YouTube link with +. Episodes are downloaded here and copied to the iPod's Podcasts menu when you drag them onto it.")
+        case .audiobooks where audiobookRows.isEmpty:
+            return EmptyState(icon: "book", title: scanning ? "Scanning…" : "No Audiobooks Yet",
+                              message: "Choose a folder with + . A subfolder with several files becomes a book with chapters, merged into a single file with chapter marks on the iPod; a single file becomes a one-part book. Drag chapters onto an iPod in the sidebar.")
         case .music, .playlist, .podcasts, .audiobooks:
             return nil
         case .device:
