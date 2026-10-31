@@ -32,6 +32,37 @@ final class ReviewRegressionTests: XCTestCase {
         XCTAssertEqual(AudiobookScanner.bookGroups(second.tracks)[0].map { $0.url.lastPathComponent }, ["01.mp3", "02.mp3", "03.mp3", "04.mp3"])
     }
 
+    func testAnUnreadableChapterKeepsTheOthersAtTheirOwnPlace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("gap-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Book")
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        try AudioFixtures.twoSecondMP3.write(to: book.appendingPathComponent("01.mp3"))
+        try Data("not audio".utf8).write(to: book.appendingPathComponent("02.mp3"))
+        try AudioFixtures.threeSecondMP3.write(to: book.appendingPathComponent("03.mp3"))
+        let scanned = await AudiobookScanner.scan(folder: root, artworkDir: root.appendingPathComponent("art"), namespace: "s")
+        XCTAssertEqual(scanned.failed, ["02.mp3"])
+        XCTAssertEqual(scanned.tracks.map(\.trackNumber), [1, 3], "03 stays chapter 3, not 2")
+        XCTAssertEqual(Set(scanned.tracks.map(\.trackCount)), [3])
+    }
+
+    func testMergingOverAnExistingBookReplacesItWhole() async throws {
+        TestFFmpeg.prepare()
+        guard FFmpeg.binaryPath() != nil else { throw XCTSkip("no ffmpeg found (set IPODPROMAX_FFMPEG)") }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replace-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let a = dir.appendingPathComponent("a.mp3"), b = dir.appendingPathComponent("b.mp3")
+        try AudioFixtures.threeSecondMP3.write(to: a)
+        try AudioFixtures.twoSecondMP3.write(to: b)
+        let out = dir.appendingPathComponent("book.m4b")
+        try await AudiobookMuxer.merge(chapters: [AudiobookChapter(title: "A", url: a)], to: out)
+        let first = try Data(contentsOf: out).count
+        try await AudiobookMuxer.merge(chapters: [AudiobookChapter(title: "A", url: a), AudiobookChapter(title: "B", url: b)], to: out)
+        XCTAssertGreaterThan(try Data(contentsOf: out).count, first, "the longer book is in place")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(".merge-") }, [])
+    }
+
     #if !os(Windows)
     func testLargeYtDlpListingDoesNotBlock() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ytdlp-\(UUID())")

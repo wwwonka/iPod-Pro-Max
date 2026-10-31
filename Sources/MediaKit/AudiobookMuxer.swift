@@ -75,8 +75,12 @@ public enum AudiobookMuxer {
         let partial = workDir.appendingPathComponent("book.m4b")
         try await FFmpeg.run(ffmpeg, ["-y", "-v", "error", "-i", FileOps.nativePath(concatenated), "-i", FileOps.nativePath(metaURL), "-map", "0:a", "-map_metadata", "1", "-map_chapters", "1", "-codec", "copy", "-f", "ipod", FileOps.nativePath(partial)])
         // `workDir` sits next to the destination, so this is a rename on the same volume, not a copy.
-        if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
-        try FileManager.default.moveItem(at: partial, to: destination)
+        // An existing book is replaced in one step: it stays whole until the new one is in place.
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: partial)
+        } else {
+            try FileManager.default.moveItem(at: partial, to: destination)
+        }
     }
 
     // MARK: Pieces

@@ -21,7 +21,6 @@ final class PodcastController {
     private var saveTask: Task<Void, Never>?
     private var saveChain: Task<Void, Error>?
     private var dirty = false
-    private var lastProgressPublish = Date.distantPast
     /// Bumped by changes to the shows' content, not by download progress: the episode list rebuilds on this.
     private(set) var contentRevision = 0
 
@@ -217,12 +216,10 @@ final class PodcastController {
         mutate(showID, episodeID) { $0.localPath = nil; $0.fileSize = nil }
     }
 
+    /// Already throttled where the callbacks arrive (`ProgressGate`).
     private func publishProgress(_ id: UUID, _ fraction: Double) {
         guard downloads[id] != nil else { return }
         progress[id] = fraction
-        let now = Date()
-        guard now.timeIntervalSince(lastProgressPublish) >= 0.25 else { return }
-        lastProgressPublish = now
         onChange()
     }
 
@@ -253,7 +250,10 @@ final class PodcastController {
             }
         }
         // Also waits for a debounced save that already started: its `dirty` is false but the file isn't written yet.
-        do { try await saveChain?.value } catch { dirty = true; throw error }
+        // A finished chain is forgotten, so a failure is reported once and a later flush starts clean.
+        guard let chain = saveChain else { return }
+        defer { if saveChain == chain { saveChain = nil } }
+        do { try await chain.value } catch { dirty = true; throw error }
     }
 }
 

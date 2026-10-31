@@ -149,22 +149,8 @@
             var onEject: (SidebarItem) -> Void = { _ in }
             private var isSyncingSelection = false
 
-            func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
-                let point = outlineView.convert(info.draggingLocation, from: nil)
-                guard let node = outlineView.item(atRow: outlineView.row(at: point)) as? Node,
-                      case .device = node.item, let payload = TrackDrag.payload,
-                      musicDragPayload(in: info.draggingPasteboard) == payload else {
-                    (outlineView as? MusicDropOutlineView)?.highlightDrop(row: nil)
-                    return []
-                }
-                (outlineView as? MusicDropOutlineView)?.highlightDrop(row: outlineView.row(forItem: node))
-                return .copy
-            }
-            func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
-                defer { (outlineView as? MusicDropOutlineView)?.highlightDrop(row: nil) }
-                guard let node = item as? Node, case .device(let id) = node.item else { return false }
-                return TrackDrag.accept(musicDragPayload(in: info.draggingPasteboard), device: id)
-            }
+            // Drops are decided by `MusicDropOutlineView` itself (it answers the drag events, see there): the
+            // table's own validate/accept path is what draws the frame we don't want.
 
             private var busyDevices: Set<String> = []
             func updateActivity(_ devices: Set<String>, in outline: NSOutlineView) {

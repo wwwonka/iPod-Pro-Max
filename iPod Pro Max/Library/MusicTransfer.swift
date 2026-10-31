@@ -94,6 +94,7 @@ final class MusicTransfer {
             var failures: [String] = []
             defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil; onActivityChanged(runningDeviceIDs); if changed { onDeviceFinished(device) }; onFinished() }
             while !Task.isCancelled {
+                var job = "Songs"
                 do {
                     if let pending = queues.removeValue(forKey: device.id), !pending.isEmpty {
                         let loaded = loadedByDevice[device.id]
@@ -105,6 +106,7 @@ final class MusicTransfer {
                             try await PortableMusicTransfer.prepare(tracks: tracks, device: device, store: loaded.store, albumArtistGrouping: grouping)
                         }) { changed = changed || result.added > 0 }
                     } else if let (shows, loaded) = podcastJobs.removeValue(forKey: device.id) {
+                        job = "Podcasts"
                         onStatus("Preparing podcast episodes…")
                         if let result = try await transfer(device, prepare: {
                             try PortablePodcastTransfer.prepare(shows: shows, device: device, store: loaded.store)
@@ -113,6 +115,7 @@ final class MusicTransfer {
                             onPodcastResult(result)
                         }
                     } else if let (selection, loaded) = photoJobs.removeValue(forKey: device.id) {
+                        job = "Photos"
                         onStatus("Preparing photos…")
                         if let result = try await transfer(device, prepare: {
                             try PortablePhotoTransfer.prepare(device: device, store: loaded.store,
@@ -126,7 +129,7 @@ final class MusicTransfer {
                         break
                     }
                     // The failed job is already off its queue: the others still run.
-                    failures.append(error.localizedDescription)
+                    failures.append("\(job): \(error.localizedDescription)")
                 }
             }
             if !failures.isEmpty, !cancelled.contains(device.id) { onStatus("Transfer failed: " + failures.joined(separator: " · ")) }

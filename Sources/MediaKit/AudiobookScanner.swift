@@ -99,15 +99,17 @@ public enum AudiobookScanner {
         // Chapter files are often tagged inconsistently (narrator, author, nothing), which would split one
         // book into several on the iPod: every chapter gets the same author and cover.
         var tracks: [LibraryTrack] = []
-        var byBook: [Int: [LibraryTrack]] = [:]
-        for (n, job) in jobs.enumerated() { if let t = read[n] { byBook[job.book, default: []].append(t) } }
+        var byBook: [Int: [(position: Int, track: LibraryTrack)]] = [:]
+        for (n, job) in jobs.enumerated() { if let t = read[n] { byBook[job.book, default: []].append((job.index, t)) } }
         for b in books.indices {
-            guard var chapters = byBook[b] else { continue }
+            guard let found = byBook[b] else { continue }
+            var chapters = found.map(\.track)
             let author = chapters.compactMap(\.artist).first { !$0.isEmpty } ?? "Unknown Author"
             let cover = chapters.compactMap(\.artworkKey).first
             for i in chapters.indices {
-                // Cached chapters keep what they were read with: numbers follow the files that are there now.
-                if chapters.count > 1 { chapters[i].trackNumber = i + 1; chapters[i].trackCount = chapters.count }
+                // Numbers follow the book's files as they are now (a cached chapter keeps what it was read with), and
+                // stay the file's own place when a neighbor can't be read.
+                if books[b].files.count > 1 { chapters[i].trackNumber = found[i].position + 1; chapters[i].trackCount = books[b].files.count }
                 chapters[i].artist = author
                 chapters[i].albumArtist = author
                 if chapters[i].artworkKey == nil { chapters[i].artworkKey = cover }

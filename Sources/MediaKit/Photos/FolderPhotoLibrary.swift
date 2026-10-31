@@ -77,23 +77,23 @@ public struct FolderPhotoLibrary: PhotoLibrarySource {
         let state = ExportState(count: unique.count)
         let total = unique.count
         // concurrentPerform's workers don't run in this task, so cancellation is checked between chunks, here.
-        let chunk = max(ProcessInfo.processInfo.activeProcessorCount, 1) * 4
+        let chunk = max(ProcessInfo.processInfo.activeProcessorCount, 1) * 16
         for start in stride(from: 0, to: unique.count, by: chunk) {
             try Task.checkCancellation()
             let end = min(start + chunk, unique.count)
             DispatchQueue.concurrentPerform(iterations: end - start) { offset in
-            let i = start + offset
-            let file = unique[i]
-            let attrs = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            let key = Self.key(for: file, size: attrs?.fileSize ?? 0, modified: attrs?.contentModificationDate)
-            let jpeg = cacheDir.appendingPathComponent(key + ".jpg")
-            var ok = FileManager.default.fileExists(atPath: jpeg.path)
-            if !ok, let data = ImageLoading.photoJPEG(from: file, maxDimension: 1024, quality: 0.9) {
-                ok = (try? data.write(to: jpeg, options: .atomic)) != nil
-            }
-            let size = UInt32((try? jpeg.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            let done = state.finish(i, item: ok ? PhotoItem(key: key, jpegURL: jpeg, creationDate: attrs?.contentModificationDate, originalSize: size) : nil)
-            if done % 8 == 0 || done == total { progress(done, total) }
+                let i = start + offset
+                let file = unique[i]
+                let attrs = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let key = Self.key(for: file, size: attrs?.fileSize ?? 0, modified: attrs?.contentModificationDate)
+                let jpeg = cacheDir.appendingPathComponent(key + ".jpg")
+                var ok = FileManager.default.fileExists(atPath: jpeg.path)
+                if !ok, let data = ImageLoading.photoJPEG(from: file, maxDimension: 1024, quality: 0.9) {
+                    ok = (try? data.write(to: jpeg, options: .atomic)) != nil
+                }
+                let size = UInt32((try? jpeg.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                let done = state.finish(i, item: ok ? PhotoItem(key: key, jpegURL: jpeg, creationDate: attrs?.contentModificationDate, originalSize: size) : nil)
+                if done % 8 == 0 || done == total { progress(done, total) }
             }
         }
         let byPath = Dictionary(uniqueKeysWithValues: unique.indices.compactMap { i in state.item(i).map { (unique[i].standardizedFileURL.path, $0) } })

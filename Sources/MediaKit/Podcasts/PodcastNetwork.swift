@@ -419,20 +419,27 @@ enum YouTubeFeed {
                 let out = Pipe(), err = Pipe()
                 process.standardOutput = out
                 process.standardError = err
+                // One reader per pipe, each to the end of the stream: nothing is cut or reordered, and a full
+                // pipe never blocks yt-dlp. The result is given once both are done and the process has exited.
                 let collected = DataBox()
-                out.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if !data.isEmpty { collected.append(data) }
-                }
-                err.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+                let group = DispatchGroup()
+                group.enter()
+                DispatchQueue.global(qos: .utility).async { collected.set(out.fileHandleForReading.readDataToEndOfFile()); group.leave() }
+                group.enter()
+                DispatchQueue.global(qos: .utility).async { _ = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
                 process.terminationHandler = { _ in
-                    out.fileHandleForReading.readabilityHandler = nil
-                    err.fileHandleForReading.readabilityHandler = nil
-                    collected.append(out.fileHandleForReading.readDataToEndOfFile())
-                    cont.resume(returning: String(decoding: collected.data, as: UTF8.self))
+                    group.notify(queue: .global(qos: .utility)) {
+                        if box.cancelled { cont.resume(throwing: CancellationError()) }
+                        else { cont.resume(returning: String(decoding: collected.data, as: UTF8.self)) }
+                    }
                 }
                 box.set(process)
-                do { try process.run() } catch { cont.resume(throwing: error) }
+                do { try process.run() } catch {
+                    // Nothing will write: closing our ends lets both readers finish instead of waiting forever.
+                    try? out.fileHandleForWriting.close()
+                    try? err.fileHandleForWriting.close()
+                    group.notify(queue: .global(qos: .utility)) { cont.resume(throwing: error) }
+                }
             }
         } onCancel: { box.cancel() }
     }
@@ -440,7 +447,7 @@ enum YouTubeFeed {
     private final class DataBox: @unchecked Sendable {
         private let lock = NSLock()
         private var buffer = Data()
-        func append(_ d: Data) { lock.lock(); buffer.append(d); lock.unlock() }
+        func set(_ d: Data) { lock.lock(); buffer = d; lock.unlock() }
         var data: Data { lock.lock(); defer { lock.unlock() }; return buffer }
     }
 
