@@ -6,7 +6,7 @@
 #   Tools/Build/assemble-ipod.sh --clean    # starts Build/ over, those two included
 #
 # Build/
-#   LAUNCHER.bat, LAUNCHER.command          one polyglot file (Distribution/Launcher/LAUNCHER.bat)
+#   LAUNCHER.bat                            one polyglot file (Distribution/Launcher/LAUNCHER.bat)
 #   iPod_Control/                           generated when missing, then never touched
 #   <Distribution/iPod Root/>               copied as is
 #   iPod Pro Max/
@@ -19,6 +19,15 @@ cd "$(dirname "$0")/../.."
 WORK=.build-work
 OUT=Build
 APP="$OUT/iPod Pro Max"
+
+# Unlock only distribution-owned files before replacing them, including repeat builds.
+protected=(autorun.inf .VolumeIcon.icns .VolumeIcon.ico .VolumeIcon.png .directory)
+for name in "${protected[@]}"; do
+    if [ -f "$OUT/$name" ]; then
+        if [ "$(uname -s)" = Darwin ]; then chflags nouchg "$OUT/$name"; fi
+        chmod u+w "$OUT/$name"
+    fi
+done
 
 if [ "${1:-}" = --clean ]; then
     echo "Starting Build/ over (iPod_Control and Persistent Data included)."
@@ -56,14 +65,10 @@ for arch in x86_64 aarch64; do
     place "linux-cli/$arch" "Command Line/Linux/$arch"
 done
 
-# The launcher, under the names each OS opens with a double-click (same bytes).
-for name in LAUNCHER.bat LAUNCHER.command; do
-    cp Distribution/Launcher/LAUNCHER.bat "$OUT/$name"
-    chmod +x "$OUT/$name"
-done
-# Linux: a double-click on it runs LAUNCHER.bat without a terminal.
-cp "Distribution/Launcher/iPod Pro Max.desktop" "$OUT/"
-chmod +x "$OUT/iPod Pro Max.desktop"
+# One polyglot launcher on all three platforms. Remove aliases from earlier builds.
+rm -f "$OUT/LAUNCHER.command" "$OUT/LAUNCHER.desktop" "$OUT/iPod Pro Max.desktop"
+cp Distribution/Launcher/LAUNCHER.bat "$OUT/LAUNCHER.bat"
+chmod +x "$OUT/LAUNCHER.bat"
 { git rev-parse --short HEAD 2>/dev/null || echo unknown; date -u +%Y-%m-%dT%H:%M:%SZ; } > "$APP/version.txt"
 mkdir -p "$APP/Persistent Data"
 
@@ -79,4 +84,16 @@ if [ ! -d "$OUT/iPod_Control" ]; then
         echo "warning: no iPod_Control yet: build the Mac command-line tool (build.sh mac)." >&2
     fi
 fi
+# Finder flags also map to the hidden/read-only attributes on a mounted FAT iPod.
+# Never lock iPod_Control: transfers must remain able to update its contents.
+for name in "${protected[@]}"; do
+    [ -f "$OUT/$name" ] || continue
+    chmod a-w "$OUT/$name"
+    if [ "$(uname -s)" = Darwin ]; then chflags hidden,uchg "$OUT/$name"; fi
+done
+if [ "$(uname -s)" = Darwin ] && [ -d "$OUT/iPod_Control" ]; then
+    chflags hidden "$OUT/iPod_Control"
+fi
+# Linux file managers honor .hidden for the names that do not start with a dot.
+printf '%s\n' autorun.inf iPod_Control > "$OUT/.hidden"
 echo "OK: $(pwd)/$OUT"

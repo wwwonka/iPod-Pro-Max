@@ -211,6 +211,14 @@ struct ContentView: View {
             let idle = await mainThreadIdle()
             log("[bench] \(item.title): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
         }
+        mode = .byArtist
+        selection = .music
+        for artist in library?.artists.prefix(8) ?? [] {
+            let start = Date()
+            selectedArtist = artist.id
+            let idle = await mainThreadIdle()
+            log("[bench] artist \(artist.id): \(Int(idle.timeIntervalSince(start) * 1000)) ms")
+        }
         // The chrome logs how many frames each slide drew ([bench] sidebar ...).
         for _ in 0..<4 {
             toggleSidebar()
@@ -365,7 +373,7 @@ struct ContentView: View {
                                             transferStatus = "That picture couldn't be used."
                                         }
                                     }
-                                })
+                                }, query: search.trimmingCharacters(in: .whitespaces))
                                 .background(WindowBackground())
                         }
                         if selection == .photos {
@@ -462,7 +470,7 @@ struct ContentView: View {
     private func tableRows(_ library: Library) -> [TrackRow]? {
         switch selection {
         case .music where mode == .byArtist:
-            return filtered(selectedArtist.flatMap { library.rowsByArtist[$0] } ?? [])
+            return nil
         case .music:
             return filtered(library.allRows)
         case .playlist(let id):

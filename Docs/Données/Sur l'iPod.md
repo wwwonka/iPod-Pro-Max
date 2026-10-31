@@ -7,7 +7,6 @@ Ce qui concerne **l'iPod lui-même** voyage avec lui. Décision : [[ADR-001 Bibl
 ```
 <iPod>/
 ├─ LAUNCHER.bat             lanceur polyglotte sh + cmd (Windows : double-clic ; Linux : sh LAUNCHER.bat)
-├─ LAUNCHER.command         le même fichier, pour le double-clic sur macOS
 ├─ LISEZMOI.txt             et tout ce que contient Distribution/iPod Root/
 ├─ iPod_Control/            (inchangé : iTunesDB, ArtworkDB, Music/F00…F49)
 └─ iPod Pro Max/
@@ -62,3 +61,5 @@ Objectif mesuré : données de l'iPod disponibles moins de 300 ms après le mont
 ## Déjà en place
 - Le CLI écrit son registre de sync dans `Persistent Data/cli-sync.json` avec l'écriture sûre décrite plus haut (`DeviceDataFolder` dans iPodKit). Voir [[CLI ipodpromax]].
 - La page iPod de l'app écrit ses options de sync dans `Persistent Data/device.json` de cet iPod, 2 s après le dernier changement (une rafale de clics ne réveille le disque qu'une fois).
+
+Les fichiers `autorun.inf`, `.VolumeIcon.icns`, `.VolumeIcon.ico`, `.VolumeIcon.png` et `.directory` sont masqués et verrouillés à l’assemblage. `iPod_Control` est masqué, mais reste modifiable pour les transferts. Le seul lanceur distribué est `LAUNCHER.bat`.

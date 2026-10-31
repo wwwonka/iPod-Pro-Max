@@ -1,8 +1,8 @@
 #!/bin/sh
 :; # iPod Pro Max launcher: one file read by sh on macOS and Linux and by cmd on Windows.
 :; # The #! line is for Linux file managers ("Run as Program" needs it); cmd shows one error for it.
-:; # Copied to the iPod's root as LAUNCHER.bat (Windows: double-click; Linux: sh LAUNCHER.bat) and as
-:; # LAUNCHER.command (macOS: double-click). "LAUNCHER cli <arguments>" runs the command-line tool.
+:; # Copied to the iPod root as LAUNCHER.bat on all platforms.
+:; # "LAUNCHER cli <arguments>" runs the command-line tool.
 :; # Runs from the iPod. No application copy or library cache is created on the computer.
 :; # Docs/Distribution/Lancement portatif par OS.md
 :; [ -n "${IPPM_LAUNCHER_SH:-}" ] || IPPM_LAUNCHER_SH=1 exec /bin/sh "$0" "$@"
@@ -12,6 +12,9 @@ rem No labels below: cmd finds them unreliably in a file with Unix line endings.
 setlocal EnableExtensions EnableDelayedExpansion
 set "ROOT=%~dp0"
 set "HOME_DIR=!ROOT!iPod Pro Max"
+rem FAT/Windows attributes, also when this folder was copied from another filesystem.
+for %%F in (autorun.inf .VolumeIcon.icns .VolumeIcon.ico .VolumeIcon.png .directory) do if exist "!ROOT!%%F" attrib +h +r "!ROOT!%%F" >nul 2>&1
+if exist "!ROOT!iPod_Control" attrib +h "!ROOT!iPod_Control" >nul 2>&1
 set "ARCH=x64"
 if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
 if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCH=arm64"
@@ -47,7 +50,7 @@ exit /b 0
 set -u
 fail() {
     printf 'iPod Pro Max: %s\n' "$1" >&2
-    # Opened by a double-click (iPod Pro Max.desktop on Linux): no terminal to read it in.
+    # A file manager may launch this without a terminal to read errors in.
     if [ ! -t 2 ] && [ "$(uname -s)" = Linux ]; then
         zenity --error --title="iPod Pro Max" --text="$1" 2>/dev/null ||
             kdialog --title "iPod Pro Max" --error "$1" 2>/dev/null ||

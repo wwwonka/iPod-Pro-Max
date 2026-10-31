@@ -27,6 +27,26 @@ func checkNativeMusicInteractions() {
     precondition(!TrackDrag.accept("external", device: "test-device"))
     TrackDrag.end()
 
+    // The artist page's visible song list, including a selection spanning album headings.
+    let albumSource = ArtistTrackList.Coordinator()
+    albumSource.entries = [.album(AlbumInfo(id: "one", title: "One", year: "", rows: [rows[0]], durationMs: 0)),
+                           .song(rows[0]),
+                           .album(AlbumInfo(id: "two", title: "Two", year: "", rows: Array(rows[1...]), durationMs: 0)),
+                           .song(rows[1]), .song(rows[2])]
+    table.dataSource = albumSource
+    table.delegate = albumSource
+    table.reloadData()
+    precondition(!albumSource.tableView(table, shouldSelectRow: 0))
+    precondition(albumSource.tableView(table, shouldSelectRow: 1))
+    table.selectRowIndexes(IndexSet([1, 3, 4]), byExtendingSelection: false)
+    board.clearContents()
+    let albumWriters = [1, 3, 4].compactMap { albumSource.tableView(table, pasteboardWriterForRow: $0) }
+    precondition(albumWriters.count == 3 && board.writeObjects(albumWriters))
+    precondition(TrackDrag.accept(musicDragPayload(in: board), device: "test-device"))
+    precondition(Set(received) == Set(rows.map(\.id)), "Artist album list lost a cross-album selection")
+    TrackDrag.end()
+    log("PASS: artist album list selection and 3-track drag across album headings")
+
     let artist = ArtistList.Coordinator()
     artist.artists = [NamedGroup(id: "Artist", count: 3)]
     artist.tracksByArtist = ["Artist": rows]

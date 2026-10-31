@@ -2,8 +2,8 @@ import Foundation
 import SwiftCrossUI
 
 // The "By Artist" page, as it was in the SwiftUI app: the artist in a header card, then one
-// section per album with its cover and its numbered songs. Drawn with SwiftCrossUI itself, so it
-// is the same on every platform. (No gradients: the GTK and WinUI backends have none.)
+// section per album with its cover and its numbered songs. Songs use a virtualized native
+// list so selection/dragging stay available and offscreen tracks create no widgets.
 
 /// "12 songs, 48 min", or "1 hr 5 min".
 private func songsSummary(count: Int, durationMs: Int) -> String {
@@ -21,27 +21,22 @@ struct ArtistDetail: View {
     var isBusy: (String) -> Bool
     var onSend: ([String], String) -> Void
     var onChoosePhoto: () -> Void
+    var query: String
 
-    private func coverURL(_ key: String?) -> URL? {
-        guard let key, let artworkFolder else { return nil }
-        let url = artworkFolder.appendingPathComponent("\(key).jpg")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
+    @State private var rowsCache = ArtistRowsCache()
 
     private var allIDs: [String] { albums.flatMap { $0.rows.map(\.id) } }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                ForEach(albums) { album in
-                    AlbumSection(album: album, cover: coverURL(album.artworkKey), devices: devices, isBusy: isBusy,
-                                 onSend: { name in onSend(album.rows.map(\.id), name) })
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 20)
-            .padding(.bottom, 24)
+        VStack(spacing: 0) {
+            header.padding(.horizontal, 24).padding(.vertical, 16)
+            Divider()
+            #if canImport(AppKitBackend)
+                ArtistTrackList(albums: albums, artworkFolder: artworkFolder, query: query,
+                                devices: devices, busyDevices: Set(devices.filter(isBusy)), onSend: onSend)
+            #else
+                TrackTable(rows: rowsCache.rows(albums, query: query))
+            #endif
         }
     }
 
@@ -102,52 +97,17 @@ private struct SendButtons: View {
     }
 }
 
-/// An album: its cover and Send button at the left; title, details and the numbered songs at the right.
-private struct AlbumSection: View {
-    var album: AlbumInfo
-    var cover: URL?
-    var devices: [String]
-    var isBusy: (String) -> Bool
-    var onSend: (String) -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 10) {
-                Cover(url: cover, size: 150, symbol: "music.note")
-                SendButtons(devices: devices, isBusy: isBusy, onSend: onSend)
-            }
-            .frame(width: 150)
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(album.title).font(.system(size: 20, weight: .bold)).lineLimit(2)
-                    Text([album.genre, album.year.isEmpty ? nil : album.year,
-                          songsSummary(count: album.rows.count, durationMs: album.durationMs)]
-                        .compactMap { $0 }.joined(separator: " · "))
-                        .foregroundColor(MacColor.secondaryText)
-                }
-                VStack(spacing: 0) {
-                    ForEach(Array(album.rows.enumerated()), id: \.offset) { index, row in
-                        HStack(spacing: 10) {
-                            Text(row.number.isEmpty ? "–" : row.number)
-                                .foregroundColor(MacColor.secondaryText)
-                                .frame(width: 22, alignment: .trailing)
-                            Text(row.title).lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text(row.duration).foregroundColor(MacColor.secondaryText)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(index.isMultiple(of: 2) ? MacColor.groupFill : Color(white: 0.5, opacity: 0.001))
-                    }
-                }
-                .cornerRadius(8)
-                .background(
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8).fill(MacColor.groupFill)
-                        RoundedRectangle(cornerRadius: 8).stroke(MacColor.groupBorder)
-                    }
-                )
-            }
-        }
+/// Reuse one flattened buffer so progress/photo updates preserve native table selection.
+final class ArtistRowsCache: SwiftCrossUI.ObservableObject {
+    private var albums: [AlbumInfo] = []
+    private var cached: [TrackRow] = []
+    private var query = ""
+    func rows(_ albums: [AlbumInfo], query: String) -> [TrackRow] {
+        guard !self.albums.sameStorage(as: albums) || self.query != query else { return cached }
+        self.albums = albums
+        self.query = query
+        cached = albums.flatMap(\.rows).filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
+            || $0.artist.localizedCaseInsensitiveContains(query) || $0.album.localizedCaseInsensitiveContains(query) }
+        return cached
     }
 }

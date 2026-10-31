@@ -224,6 +224,6 @@ done
 # Build/ as an iPod root, with whatever each OS built (now or last time).
 Tools/Build/assemble-ipod.sh ${CLEAN[@]+"${CLEAN[@]}"}
 if [ $RUN -eq 1 ] && [[ " ${TARGETS[*]} " == *" mac "* ]]; then
-    open Build/LAUNCHER.command
+    sh Build/LAUNCHER.bat
 fi
 exit $status

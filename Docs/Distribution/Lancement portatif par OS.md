@@ -2,7 +2,7 @@
 
 ## Exécution depuis l'iPod
 
-Depuis [[ADR-006 Application entièrement portable]], le lanceur exécute directement l'application depuis l'iPod, sans copie persistante sur l'ordinateur. `Distribution/Launcher/LAUNCHER.bat` reste un script polyglotte sh/cmd, également distribué comme `LAUNCHER.command` pour macOS.
+Depuis [[ADR-006 Application entièrement portable]], le lanceur exécute directement l'application depuis l'iPod, sans copie persistante sur l'ordinateur. `Distribution/Launcher/LAUNCHER.bat` reste un script polyglotte sh/cmd, distribué uniquement sous le nom `LAUNCHER.bat` sur les trois plateformes.
 
 Le lanceur transmet `IPPM_PORTABLE_ROOT` (et `--portable-root` pour les interfaces POSIX). L'application charge les préférences communes, l'hôte connu et son cache depuis `iPod Pro Max/Persistent Data/`. L'option `cli` lance directement l'outil correspondant à l'OS.
 
