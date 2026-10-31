@@ -128,15 +128,25 @@
         /// The sidebar's width right now, read by `TitleClearance` while SwiftCrossUI lays out.
         var currentSidebarWidth: Double {
             guard let split = findSplitView() else { return sidebarWidth }
-            return split.subviews[0].frame.width
+            return split.subviews[0].isHidden ? 0 : split.subviews[0].frame.width
         }
 
         /// Slides the sidebar closed or open: the divider moves every frame and the split view's
         /// resize lays the panes out. The timer exists only for the slide.
         @objc func toggleSidebar() {
             guard slide == nil, let split = findSplitView() else { return }
-            let from = split.subviews[0].frame.width
-            let closing = from > 0
+            let sidebar = split.subviews[0]
+            let opening = sidebar.isHidden || sidebar.frame.width < 1
+            // Once closed, the pane must not participate in an AppKit resize at all.  Leaving a
+            // zero-width SwiftCrossUI pane visible lets its split delegate restore the minimum
+            // width for a frame during window zooming.
+            if opening {
+                collapsibleDelegate(for: split).allowsCollapse = true
+                sidebar.isHidden = false
+                split.setPosition(0, ofDividerAt: 0)
+            }
+            let from = opening ? 0 : sidebar.frame.width
+            let closing = !opening
             if closing { expandedWidth = from }
             collapsibleDelegate(for: split).allowsCollapse = true
             slide = SidebarSlide(from: from, to: closing ? 0 : expandedWidth, duration: sidebarSlideDuration)
@@ -164,7 +174,11 @@
             self.slide = nil
             pinnedSidebarContentWidth = nil
             slide.logResult(elapsed: elapsed)
-            // Stays allowed while closed: the window's resizes must keep the sidebar at zero.
+            if slide.to == 0 {
+                // Do this only after the final divider layout.  A hidden pane is excluded from
+                // the next resize entirely, preventing the visible one-frame width rebound.
+                split.subviews[0].isHidden = true
+            }
             splitDelegate?.allowsCollapse = slide.to == 0
         }
 
@@ -227,6 +241,10 @@
         }
 
         func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+            // A fully hidden sidebar is intentionally absent from this resize.  In particular,
+            // do not forward to SwiftCrossUI: its minimum-width pass is the source of the zoom
+            // flash we are avoiding.
+            if splitView.subviews[0].isHidden { return }
             // Closed: keep the sidebar at zero when the window resizes.
             if allowsCollapse && splitView.subviews[0].frame.width < 1 {
                 // `adjustSubviews()` asks SwiftCrossUI for its minimum sidebar width first, then
