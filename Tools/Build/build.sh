@@ -61,7 +61,7 @@ build_mac() {
     concurrency="$(dirname "$(xcrun --find swift)")/../lib/swift-5.5/macosx/libswift_Concurrency.dylib"
     # The app's own ffmpeg (Tools/FFmpeg/build.sh), next to each executable where MediaKit looks.
     local ffmpeg="$WORK/FFmpeg/macos-universal/ffmpeg"
-    [ -x "$ffmpeg" ] || echo "warning: ffmpeg not built (Tools/FFmpeg/build.sh)" >&2
+    [ -x "$ffmpeg" ] || Tools/FFmpeg/build.sh || echo "warning: ffmpeg couldn't be built (Tools/FFmpeg/build.sh)" >&2
     extras() { # <folder>: the concurrency runtime and ffmpeg, signed
         cp "$concurrency" "$1/"
         [ -x "$ffmpeg" ] && cp "$ffmpeg" "$1/"
@@ -125,7 +125,7 @@ ensure_vm() {
 build_linux() {
     if [ "${IPPM_LINUX_BUILD:-docker}" = vm ]; then build_linux_vm; return; fi
     Tools/Build/build-linux-docker.sh
-    [ $RUN -eq 1 ] && echo "To try it: in a Linux session, sh <Build>/LAUNCHER.cmd (the VM sees Build/ in /media/psf/Home)."
+    [ $RUN -eq 1 ] && echo "To try it: in a Linux session, sh <Build>/LAUNCHER.bat (the VM sees Build/ in /media/psf/Home)."
     return 0
 }
 

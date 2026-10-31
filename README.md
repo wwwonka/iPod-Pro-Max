@@ -24,7 +24,7 @@ Un seul `Package.swift` à la racine décrit l’application, les bibliothèques
 
 ## Compiler et lancer
 
-Depuis le Finder, double-cliquer sur `Build.command` : il construit les trois OS, puis fait de `Build/` la **racine d’un iPod** (FAT32) avec les applications, la CLI, un `iPod_Control/` simulé et le lanceur `LAUNCHER.cmd` / `LAUNCHER.command`. Le build ne touche jamais un vrai iPod. Linux se compile dans Docker (OrbStack) sur le Mac ; Windows utilise encore la VM Parallels.
+Depuis le Finder, double-cliquer sur `Build.command` : il construit les trois OS, puis fait de `Build/` la **racine d’un iPod** (FAT32) avec les applications, la CLI, un `iPod_Control/` simulé et le lanceur `LAUNCHER.bat` / `LAUNCHER.command`. Le build ne touche jamais un vrai iPod. Linux se compile dans Docker (OrbStack) sur le Mac ; Windows utilise encore la VM Parallels.
 
 Depuis la racine du dépôt :
 
@@ -32,7 +32,7 @@ Depuis la racine du dépôt :
 Tools/Build/build.sh              # mac + linux + windows, puis Build/
 Tools/Build/build.sh mac --run    # seulement macOS, puis lance l’app par Build/LAUNCHER.command
 Tools/Build/build.sh --clean      # repart de zéro, iPod_Control et Persistent Data compris
-sh Build/LAUNCHER.cmd cli list    # la CLI de cet OS, depuis l’iPod simulé
+sh Build/LAUNCHER.bat cli list    # la CLI de cet OS, depuis l’iPod simulé
 Tools/Build/run-mac.sh            # lancement de développement
 Tools/Build/run-mac.sh gtk        # aperçu GTK sur Mac
 ```

@@ -70,6 +70,12 @@ EOF
             IPPM_FFMPEG_CACHE=/work/ffmpeg-cache Tools/FFmpeg/build.sh
             mkdir -p /out/FFmpeg && rsync -a .build-work/FFmpeg/ /out/FFmpeg/
         fi
+        # And the Windows ones (x64, arm64), cross-compiled with llvm-mingw: assemble-ipod.sh puts
+        # them next to the Windows executables.
+        if [ ! -f /out/FFmpeg/windows-arm64/ffmpeg.exe ] || [ ! -f /out/FFmpeg/windows-x64/ffmpeg.exe ]; then
+            IPPM_FFMPEG_CACHE=/work/ffmpeg-cache Tools/FFmpeg/build.sh windows
+            mkdir -p /out/FFmpeg && rsync -a .build-work/FFmpeg/ /out/FFmpeg/
+        fi
 
         # The app: static Swift runtime, GTK only (SwiftPM would also build the WinUI backend).
         export SCUI_DEFAULT_BACKEND=GtkBackend

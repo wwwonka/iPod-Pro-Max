@@ -5,7 +5,7 @@ import iPodKit
 /// (Docs/Données/Sur l'iPod.md). What's saved there, in `iPod Pro Max/Persistent Data/`, is shared by
 /// the macOS, Windows and Linux apps.
 ///
-/// In order: `--portable-root <path>` (passed by LAUNCHER.cmd, which runs a local copy of the app),
+/// In order: `--portable-root <path>` (passed by LAUNCHER.bat, which runs a local copy of the app),
 /// `IPPM_PORTABLE_ROOT`, then the app's own location when it runs straight from
 /// `<root>/iPod Pro Max/Applications/…`. Nil when the app runs from anywhere else.
 enum PortableRoot {
@@ -19,7 +19,12 @@ enum PortableRoot {
             return URL(fileURLWithPath: env, isDirectory: true)
         }
         let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: arguments.first ?? "")
-        var dir = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+        #if os(Windows)
+            // No resolvingSymlinksInPath: it overflows the stack on network paths (\\Mac\Home\…).
+            var dir = executable.standardizedFileURL.deletingLastPathComponent()
+        #else
+            var dir = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+        #endif
         // Applications/macOS/iPod Pro Max.app/Contents/MacOS is the deepest: five levels.
         for _ in 0..<6 {
             if dir.lastPathComponent == "Applications", dir.deletingLastPathComponent().lastPathComponent == "iPod Pro Max" {
@@ -36,8 +41,8 @@ enum PortableRoot {
     /// (`Build/` on the development machine). Touches the disk.
     static func simulatedIPod(besides mounted: [IPodDevice]) -> IPodDevice? {
         guard let url else { return nil }
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        guard !mounted.contains(where: { $0.mountPoint.standardizedFileURL.resolvingSymlinksInPath().path == path }) else { return nil }
+        let path = FileOps.canonicalPath(url)
+        guard !mounted.contains(where: { FileOps.canonicalPath($0.mountPoint) == path }) else { return nil }
         return IPodDevice.detect(volume: url, simulated: true)
     }
 }

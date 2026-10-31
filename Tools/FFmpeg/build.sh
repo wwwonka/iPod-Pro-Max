@@ -69,7 +69,7 @@ EOF
 build_native() {
     local os arch
     case "$(uname -s)" in Darwin) os=macos ;; Linux) os=linux ;; *) echo "Unsupported OS" >&2; exit 1 ;; esac
-    arch=$(uname -m); [ "$arch" = aarch64 ] && arch=arm64
+    arch=$(uname -m); [ "$arch" = aarch64 ] && arch=arm64; [ "$arch" = x86_64 ] && arch=x64
     [ $os = macos ] && { build_macos; return; }
     local work=$CACHE/build-$os-$arch out=$OUTPUT/$os-$arch
     mkdir -p "$work" "$out"

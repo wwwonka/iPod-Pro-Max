@@ -1,5 +1,7 @@
+#!/bin/sh
 :; # iPod Pro Max launcher: one file read by sh on macOS and Linux and by cmd on Windows.
-:; # Copied to the iPod's root as LAUNCHER.cmd (Windows: double-click; Linux: sh LAUNCHER.cmd) and as
+:; # The #! line is for Linux file managers ("Run as Program" needs it); cmd shows one error for it.
+:; # Copied to the iPod's root as LAUNCHER.bat (Windows: double-click; Linux: sh LAUNCHER.bat) and as
 :; # LAUNCHER.command (macOS: double-click). "LAUNCHER cli <arguments>" runs the command-line tool.
 :; # It copies the app for this OS to the computer and runs that copy, so nothing runs from the iPod.
 :; # Docs/Distribution/Lancement portatif par OS.md
@@ -13,8 +15,10 @@ set "HOME_DIR=!ROOT!iPod Pro Max"
 set "ARCH=x64"
 if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
 if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARCH=arm64"
-rem "E:\." rather than "E:\": a backslash before the closing quote would escape it.
-set "IPPM_PORTABLE_ROOT=!ROOT!."
+rem The root without its trailing backslash, except for a drive's root ("E:\", not "E:"). No "\."
+rem at the end: Foundation on Windows overflows its stack resolving "\\server\share\folder\.".
+set "IPPM_PORTABLE_ROOT=!ROOT:~0,-1!"
+if "!IPPM_PORTABLE_ROOT:~-1!"==":" set "IPPM_PORTABLE_ROOT=!ROOT!"
 set "WHAT=Applications\Windows\!ARCH!"
 set "COPY=%LOCALAPPDATA%\iPod Pro Max\App-!ARCH!"
 set "EXE=iPodProMaxApp.exe"
@@ -44,13 +48,23 @@ if /i "%~1"=="cli" (
     "!COPY!\!EXE!" !ARGS!
     exit /b !errorlevel!
 )
-start "" "!COPY!\!EXE!" --portable-root "!IPPM_PORTABLE_ROOT!"
+rem The app finds the root in IPPM_PORTABLE_ROOT, which start passes on.
+start "" /D "!COPY!" "!COPY!\!EXE!"
 exit /b 0
 ::WINDOWS
 
 # macOS and Linux, in POSIX sh.
 set -u
-fail() { printf 'iPod Pro Max: %s\n' "$1" >&2; exit 1; }
+fail() {
+    printf 'iPod Pro Max: %s\n' "$1" >&2
+    # Opened by a double-click (iPod Pro Max.desktop on Linux): no terminal to read it in.
+    if [ ! -t 2 ] && [ "$(uname -s)" = Linux ]; then
+        zenity --error --title="iPod Pro Max" --text="$1" 2>/dev/null ||
+            kdialog --title "iPod Pro Max" --error "$1" 2>/dev/null ||
+            notify-send "iPod Pro Max" "$1" 2>/dev/null
+    fi
+    exit 1
+}
 root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P) || fail "can't find the iPod's folder."
 home="$root/iPod Pro Max"
 

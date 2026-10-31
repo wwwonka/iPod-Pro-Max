@@ -5,6 +5,6 @@ Ce qui va sur l'iPod en plus des applications. `Tools/Build/assemble-ipod.sh` (a
 | Dossier | Rôle |
 |---|---|
 | `iPod Root/` | Assets copiés tels quels à la racine de l'iPod (`Build/`). Y mettre ce qui doit simplement se retrouver sur l'iPod. Un `iPod_Control/` mis ici sert de modèle à la place de l'iPod simulé généré, s'il n'existe pas encore dans `Build/`. |
-| `Launcher/LAUNCHER.cmd` | Le lanceur polyglotte (sh + cmd), copié à la racine sous `LAUNCHER.cmd` et `LAUNCHER.command`. |
+| `Launcher/LAUNCHER.bat` | Le lanceur polyglotte (sh + cmd), copié à la racine sous `LAUNCHER.bat` et `LAUNCHER.command`. |
 
 Disposition produite : `Docs/Données/Sur l'iPod.md`.

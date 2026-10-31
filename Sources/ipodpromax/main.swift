@@ -108,14 +108,14 @@ func supportText(_ level: IPodSupportLevel) -> String {
     }
 }
 
-/// The mounted iPods, plus the one this tool was started from by LAUNCHER.cmd (`IPPM_PORTABLE_ROOT`)
+/// The mounted iPods, plus the one this tool was started from by LAUNCHER.bat (`IPPM_PORTABLE_ROOT`)
 /// when it isn't mounted: `Build/` on the development machine.
 func knownIPods() -> [IPodDevice] {
     var devices = DeviceScanner.scan()
     if let root = ProcessInfo.processInfo.environment["IPPM_PORTABLE_ROOT"], !root.isEmpty {
         let url = URL(fileURLWithPath: root, isDirectory: true)
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        if !devices.contains(where: { $0.mountPoint.standardizedFileURL.resolvingSymlinksInPath().path == path }),
+        let path = FileOps.canonicalPath(url)
+        if !devices.contains(where: { FileOps.canonicalPath($0.mountPoint) == path }),
            let device = IPodDevice.detect(volume: url, simulated: true) {
             devices.append(device)
         }

@@ -6,7 +6,7 @@
 #   Tools/Build/assemble-ipod.sh --clean    # starts Build/ over, those two included
 #
 # Build/
-#   LAUNCHER.cmd, LAUNCHER.command          one polyglot file (Distribution/Launcher/LAUNCHER.cmd)
+#   LAUNCHER.bat, LAUNCHER.command          one polyglot file (Distribution/Launcher/LAUNCHER.bat)
 #   iPod_Control/                           generated when missing, then never touched
 #   <Distribution/iPod Root/>               copied as is
 #   iPod Pro Max/
@@ -26,7 +26,7 @@ if [ "${1:-}" = --clean ]; then
 fi
 mkdir -p "$APP"
 # What the build put in Build/ before it became an iPod root.
-rm -rf "$OUT/mac" "$OUT/linux" "$OUT/windows" "$OUT/icons" "$OUT/FFmpeg" "$OUT"/*.log "$OUT"/windows-vm.*
+rm -rf "$OUT/LAUNCHER.cmd" "$OUT/mac" "$OUT/linux" "$OUT/windows" "$OUT/icons" "$OUT/FFmpeg" "$OUT"/*.log "$OUT"/windows-vm.*
 
 # Assets: added and updated, never deleted (Build/ is an iPod: what the app syncs there stays).
 rsync -a --exclude .DS_Store --exclude /iPod_Control/ "Distribution/iPod Root/" "$OUT/"
@@ -46,6 +46,10 @@ place mac/cli "Command Line/macOS"
 for arch in x64 arm64; do
     place "windows/$arch" "Applications/Windows/$arch"
     place "windows-cli/$arch" "Command Line/Windows/$arch"
+    # ffmpeg for Windows is built in the Linux container, possibly after the VM's build.
+    for dir in "Applications/Windows/$arch" "Command Line/Windows/$arch"; do
+        [ -d "$APP/$dir" ] && [ -f "$WORK/FFmpeg/windows-$arch/ffmpeg.exe" ] && cp "$WORK/FFmpeg/windows-$arch/ffmpeg.exe" "$APP/$dir/"
+    done
 done
 for arch in x86_64 aarch64; do
     place "linux/$arch" "Applications/Linux/$arch"
@@ -53,10 +57,13 @@ for arch in x86_64 aarch64; do
 done
 
 # The launcher, under the names each OS opens with a double-click (same bytes).
-for name in LAUNCHER.cmd LAUNCHER.command; do
-    cp Distribution/Launcher/LAUNCHER.cmd "$OUT/$name"
+for name in LAUNCHER.bat LAUNCHER.command; do
+    cp Distribution/Launcher/LAUNCHER.bat "$OUT/$name"
     chmod +x "$OUT/$name"
 done
+# Linux: a double-click on it runs LAUNCHER.bat without a terminal.
+cp "Distribution/Launcher/iPod Pro Max.desktop" "$OUT/"
+chmod +x "$OUT/iPod Pro Max.desktop"
 { git rev-parse --short HEAD 2>/dev/null || echo unknown; date -u +%Y-%m-%dT%H:%M:%SZ; } > "$APP/version.txt"
 mkdir -p "$APP/Persistent Data"
 

@@ -66,6 +66,17 @@ public enum FileOps {
         url.withUnsafeFileSystemRepresentation { $0.map { String(cString: $0) } } ?? url.path
     }
 
+    /// A path to compare two folders by: symlinks resolved on macOS and Linux; on Windows only
+    /// standardized and lowercased (paths are case-insensitive there, and Foundation overflows its
+    /// stack resolving links in a network path such as `\\Mac\Home\…`).
+    public static func canonicalPath(_ url: URL) -> String {
+        #if os(Windows)
+        return url.standardizedFileURL.path.lowercased()
+        #else
+        return url.standardizedFileURL.resolvingSymlinksInPath().path
+        #endif
+    }
+
     /// Total and free bytes of the volume holding `url` (0, 0 when unknown).
     public static func volumeCapacity(of url: URL) -> (total: Int64, free: Int64) {
         #if os(macOS)

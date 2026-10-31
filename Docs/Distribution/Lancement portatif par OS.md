@@ -1,11 +1,11 @@
 # Lancement portatif par OS
 
 ## Le lanceur « shadow copy » (les trois OS)
-L'app **ne s'exécute jamais directement depuis l'iPod**. Un seul fichier, `Distribution/Launcher/LAUNCHER.cmd`, sert les trois OS : c'est à la fois un script POSIX sh et un batch Windows (technique de github.com/ChewKeanHo/research-the-polyglot-scripts). `cmd` prend les lignes commençant par `:` pour des étiquettes, et le bloc batch est caché à `sh` dans un heredoc (`:<<"::WINDOWS"`). Le fichier garde des fins de ligne LF : le batch n'utilise donc ni étiquette ni `goto`, que `cmd` retrouve mal dans ce cas. Il est posé à la racine de l'iPod sous `LAUNCHER.cmd` (Windows, et `sh LAUNCHER.cmd` sous Linux) et `LAUNCHER.command` (double-clic sur macOS). Le nom est provisoire. Il :
+L'app **ne s'exécute jamais directement depuis l'iPod**. Un seul fichier, `Distribution/Launcher/LAUNCHER.bat`, sert les trois OS : c'est à la fois un script POSIX sh et un batch Windows (technique de github.com/ChewKeanHo/research-the-polyglot-scripts). `cmd` prend les lignes commençant par `:` pour des étiquettes, et le bloc batch est caché à `sh` dans un heredoc (`:<<"::WINDOWS"`). Le fichier garde des fins de ligne LF : le batch n'utilise donc ni étiquette ni `goto`, que `cmd` retrouve mal dans ce cas. Il est posé à la racine de l'iPod sous `LAUNCHER.bat` (double-clic sous Windows ; « Run as Program » sous Linux, d'où la ligne `#!/bin/sh` en tête, pour laquelle `cmd` affiche une erreur sans conséquence) et `LAUNCHER.command` (double-clic sur macOS). Sous Linux, `iPod Pro Max.desktop` (racine de l'iPod) le lance au double-clic sans terminal (KDE, Xfce, Cinnamon, MATE ; GNOME Fichiers n'ouvre plus les `.desktop`). Le nom est provisoire. Il :
 1. trouve la racine de l'iPod (son propre dossier), l'OS et l'architecture ;
 2. compare `iPod Pro Max/version.txt` à celui de la copie locale (`~/Library/Caches/iPod Pro Max/App`, `%LOCALAPPDATA%\iPod Pro Max\App-<arch>`, `~/.cache/ipod-pro-max/App`) ;
 3. recopie l'app de cet OS et de cette architecture si la version a changé ;
-4. lance la copie locale avec `--portable-root <racine de l'iPod>` ; l'app y lit et écrit `iPod Pro Max/Persistent Data/`, partagé par les 3 OS.
+4. lance la copie locale avec la racine de l'iPod (`--portable-root` sur macOS et Linux, `IPPM_PORTABLE_ROOT` sous Windows) ; l'app y lit et écrit `iPod Pro Max/Persistent Data/`, partagé par les 3 OS.
 
 `LAUNCHER cli <arguments>` fait de même pour la CLI (copie dans `…/Command Line`) et lui passe `IPPM_PORTABLE_ROOT`, pour qu'elle voie l'iPod même quand c'est `Build/` (non monté).
 
@@ -41,9 +41,12 @@ Ce que ça règle :
 - Pas de Mark-of-the-Web sur FAT32 (pas de flux NTFS alternatif), donc SmartScreen est peu probable une fois l'app sur l'iPod.
 - Copie locale dans `%LOCALAPPDATA%\iPod Pro Max\App-<arch>`.
 
+## Windows : pile du thread principal
+SwiftCrossUI calcule la mise en page récursivement sur le thread principal. Windows ne lui donne que 1 Mo de pile (8 Mo sur macOS et Linux), et la page d'un iPod la dépassait (plantage `0xc00000fd` dans `swiftCore.dll`). `Package.swift` lie donc l'app avec `/STACK:8388608` sous Windows.
+
 ## Linux
 - Binaire avec la stdlib Swift statique. glibc et GTK4 sont liés dynamiquement. Compilé dans Docker sur Ubuntu 22.04, pour x86_64 et aarch64 (`Tools/Build/build-linux-docker.sh`), afin de couvrir les distributions plus récentes.
-- udisks2 monte le vfat avec `showexec` : seuls `.exe`, `.com` et `.bat` sont exécutables. On lance donc par `sh LAUNCHER.cmd`, qui copie l'app en local et lui rend ses droits d'exécution.
+- udisks2 monte le vfat avec `showexec` : seuls `.exe`, `.com` et `.bat` sont exécutables. `LAUNCHER.bat` y est donc exécutable ; il copie l'app en local et lui rend ses droits d'exécution. Sans terminal, ses erreurs s'affichent par zenity, kdialog ou notify-send.
 - Copie locale dans `~/.cache/ipod-pro-max/App`.
 
 ## FAT32

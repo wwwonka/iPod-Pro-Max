@@ -18,7 +18,7 @@ ipodpromax init-sim <dossier> [--model <numéro>] [--name <nom>]
                                         fait d'un dossier un iPod simulé, pour essayer
 ```
 
-`--ipod` prend le point de montage (`/Volumes/IPOD`, `/run/media/moi/IPOD`, `E:\`) ou un dossier créé par `init-sim`. Il est facultatif quand un seul iPod est connu : les iPods montés, plus celui d'où `LAUNCHER cli` a lancé la CLI (`IPPM_PORTABLE_ROOT`, par exemple `Build/`). Sur l'iPod, la CLI se lance par `LAUNCHER.cmd cli <commande>` (Windows), `sh LAUNCHER.cmd cli <commande>` (macOS, Linux).
+`--ipod` prend le point de montage (`/Volumes/IPOD`, `/run/media/moi/IPOD`, `E:\`) ou un dossier créé par `init-sim`. Il est facultatif quand un seul iPod est connu : les iPods montés, plus celui d'où `LAUNCHER cli` a lancé la CLI (`IPPM_PORTABLE_ROOT`, par exemple `Build/`). Sur l'iPod, la CLI se lance par `LAUNCHER.bat cli <commande>` (Windows), `sh LAUNCHER.bat cli <commande>` (macOS, Linux).
 
 ## Ce que fait `sync <dossier>`
 1. **Lit le dossier** en parallèle, un fichier par cœur (`FolderImporter`) : tags, durée, pochette (une seule fois par album, réencodée en JPEG de 600 px au plus). Les fichiers cachés sont ignorés.

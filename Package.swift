@@ -56,6 +56,9 @@ let package = Package(
                 .linkedFramework("DiskArbitration", .when(platforms: [.macOS])),
                 .linkedFramework("IOKit", .when(platforms: [.macOS])),
                 .linkedLibrary("cfgmgr32", .when(platforms: [.windows])),
+                // SwiftCrossUI lays views out recursively on the main thread: Windows gives it 1 MB
+                // of stack (macOS and Linux 8 MB), which the iPod page overflows.
+                .unsafeFlags(["-Xlinker", "/STACK:8388608"], .when(platforms: [.windows])),
             ]
         ),
         .executableTarget(name: "ipodpromax", dependencies: ["iPodKit", "MediaKit", "DeviceKit"]),

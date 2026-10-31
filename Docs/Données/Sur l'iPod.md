@@ -6,7 +6,7 @@ Ce qui concerne **l'iPod lui-même** voyage avec lui. Décision : [[ADR-001 Bibl
 
 ```
 <iPod>/
-├─ LAUNCHER.cmd             lanceur polyglotte sh + cmd (Windows : double-clic ; Linux : sh LAUNCHER.cmd)
+├─ LAUNCHER.bat             lanceur polyglotte sh + cmd (Windows : double-clic ; Linux : sh LAUNCHER.bat)
 ├─ LAUNCHER.command         le même fichier, pour le double-clic sur macOS
 ├─ LISEZMOI.txt             et tout ce que contient Distribution/iPod Root/
 ├─ iPod_Control/            (inchangé : iTunesDB, ArtworkDB, Music/F00…F49)

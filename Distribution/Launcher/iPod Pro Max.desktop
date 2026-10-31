@@ -1,0 +1,11 @@
+[Desktop Entry]
+# Linux: double-click to open iPod Pro Max without a terminal (KDE, Xfce, Cinnamon, MATE; they
+# ask once whether to trust it). Runs LAUNCHER.bat, next to this file at the iPod's root (%k).
+# Docs/Distribution/Lancement portatif par OS.md
+Type=Application
+Version=1.0
+Name=iPod Pro Max
+Comment=Sync this iPod
+Icon=multimedia-player
+Terminal=false
+Exec=sh -c "exec sh \\"\\${0%%/*}/LAUNCHER.bat\\"" %k

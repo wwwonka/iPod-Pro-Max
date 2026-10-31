@@ -3,7 +3,7 @@
 Application principale du projet depuis le 2026-10-30, écrite en Swift et lancée sur macOS, Fedora et Windows 11. Son code est dans `iPod Pro Max/` ; le package unique est à la racine. Résultats et leçons : `Docs/Feuille de route/Prototypes phase 0.md`. Méthode : `Docs/Interface/Composants natifs par plateforme.md`.
 
 ## Lancer
-Depuis le Finder, double-cliquer sur `Build.command` à la racine du repo. Il appelle `Tools/Build/build.sh`, qui construit les trois OS dans `.build-work/<os>/`, puis `Tools/Build/assemble-ipod.sh` fait de `Build/` la racine d'un iPod (disposition dans [[Sur l'iPod]]). On lance ensuite l'app par `Build/LAUNCHER.command` (Mac), `Build\LAUNCHER.cmd` (Windows) ou `sh Build/LAUNCHER.cmd` (Linux).
+Depuis le Finder, double-cliquer sur `Build.command` à la racine du repo. Il appelle `Tools/Build/build.sh`, qui construit les trois OS dans `.build-work/<os>/`, puis `Tools/Build/assemble-ipod.sh` fait de `Build/` la racine d'un iPod (disposition dans [[Sur l'iPod]]). On lance ensuite l'app par `Build/LAUNCHER.command` (Mac), `Build\LAUNCHER.bat` (Windows) ou `sh Build/LAUNCHER.bat` (Linux).
 
 | OS | Où ça compile | Sortie |
 |---|---|---|
