@@ -29,6 +29,9 @@
             // The outline view's own drop frame (a rounded rectangle around the whole row, larger than
             // the highlight) would show underneath: the row draws the one and only feedback, in the accent color.
             outline.draggingDestinationFeedbackStyle = .none
+            // The system draws a source list's selection itself and never calls the rows' `drawSelection`: the
+            // rows draw it (neutral gray, or the accent color under a drag) so one shape is ever on screen.
+            outline.selectionHighlightStyle = .none
             outline.floatsGroupRows = false
             outline.rowSizeStyle = .default
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -155,7 +158,6 @@
                     return []
                 }
                 (outlineView as? MusicDropOutlineView)?.highlightDrop(row: outlineView.row(forItem: node))
-                outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .copy
             }
             func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
@@ -295,21 +297,38 @@
                 (rowView(atRow: row, makeIfNecessary: true) as? NeutralSidebarRow)?.isMusicDropTarget = true
             }
         }
-        override func draggingExited(_ sender: (any NSDraggingInfo)?) {
-            super.draggingExited(sender)
-            highlightDrop(row: nil)
+        // The table itself never handles the drag. Its own drop feedback (a rounded shape around the whole
+        // row, wider than the row, which no setting turns off in the source-list style) only appears when
+        // it validates a drop, so this view answers the drag events directly and draws the one highlight.
+        private func device(for sender: any NSDraggingInfo) -> (row: Int, id: String)? {
+            let row = self.row(at: convert(sender.draggingLocation, from: nil))
+            guard row >= 0, let node = item(atRow: row) as? Sidebar.Node, case .device(let id) = node.item,
+                  let payload = TrackDrag.payload, musicDragPayload(in: sender.draggingPasteboard) == payload else { return nil }
+            return (row, id)
         }
+        private func operation(for sender: any NSDraggingInfo) -> NSDragOperation {
+            guard let target = device(for: sender) else { highlightDrop(row: nil); return [] }
+            highlightDrop(row: target.row)
+            return .copy
+        }
+        override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { operation(for: sender) }
+        override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { operation(for: sender) }
+        override func draggingExited(_ sender: (any NSDraggingInfo)?) { highlightDrop(row: nil) }
+        override func draggingEnded(_ sender: any NSDraggingInfo) { highlightDrop(row: nil) }
+        override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { device(for: sender) != nil }
         override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
             defer { highlightDrop(row: nil) }
-            return super.performDragOperation(sender)
+            guard let target = device(for: sender) else { return false }
+            return TrackDrag.accept(musicDragPayload(in: sender.draggingPasteboard), device: target.id)
         }
-        override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
-            super.concludeDragOperation(sender)
-            highlightDrop(row: nil)
-        }
+        override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) { highlightDrop(row: nil) }
     }
 
     final class NeutralSidebarRow: NSTableRowView {
+        /// Rows of a source-list table render through their layer (`updateLayer`) on recent macOS, which never
+        /// calls the `draw…` overrides below. Asking for plain drawing makes the rows draw the selection and
+        /// the drop highlight themselves.
+        override var wantsUpdateLayer: Bool { false }
         var isMusicDropTarget = false { didSet { refreshFeedback() } }
         private var dropActive: Bool { isMusicDropTarget || isTargetForDropOperation }
         override var isEmphasized: Bool { get { false } set {} }
@@ -324,6 +343,7 @@
         override func drawBackground(in dirtyRect: NSRect) {
             super.drawBackground(in: dirtyRect)
             if dropActive { drawHighlight(.controlAccentColor) }
+            else if isSelected { drawHighlight(.unemphasizedSelectedContentBackgroundColor) }
         }
         override var interiorBackgroundStyle: NSView.BackgroundStyle {
             dropActive ? .emphasized : .normal
@@ -331,12 +351,14 @@
         override func drawSelection(in dirtyRect: NSRect) {
             drawHighlight(dropActive ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor)
         }
+        override var isSelected: Bool { didSet { if oldValue != isSelected { needsDisplay = true } } }
         override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {
             if dropActive { drawHighlight(.controlAccentColor) }
         }
         private func drawHighlight(_ color: NSColor) {
             color.setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 6, yRadius: 6).fill()
+            // The system's own selection is inset 10 pt on each side of the row: same shape, whatever draws it.
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 10, dy: 1), xRadius: 6, yRadius: 6).fill()
         }
     }
 
