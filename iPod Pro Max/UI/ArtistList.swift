@@ -410,7 +410,7 @@ import SwiftCrossUI
                 coordinator.artists = artists
                 coordinator.isSyncing = true
                 list.items.clear()
-                for artist in artists { list.items.append(Self.row(artist, artworkFolder: artworkFolder)) }
+                for artist in artists { list.items.append(Self.row(artist)) }
                 coordinator.isSyncing = false
             }
             let index = Int32(selection.flatMap { name in artists.firstIndex { $0.id == name } } ?? -1)
@@ -425,7 +425,7 @@ import SwiftCrossUI
             ViewSize(proposal.width ?? 250, proposal.height ?? 400)
         }
 
-        private static func row(_ artist: NamedGroup, artworkFolder: URL?) -> ListViewItem {
+        private static func row(_ artist: NamedGroup) -> ListViewItem {
             let grid = WinUI.Grid()
             for width in [GridLength(value: 34, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star)] {
                 let column = ColumnDefinition()
