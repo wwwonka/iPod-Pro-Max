@@ -51,3 +51,15 @@ La page native est réutilisée lors du passage direct entre deux appareils. Ses
 `Tools/DevicePageCheck/run.sh '<ipod-simulé-existant>'` vérifie les accès répétés et la sauvegarde des options. Le mode interne `IPPM_BENCH_DEVICES=1` mesure la navigation native; `IPPM_BENCH_DEVICE_FOLDER` peut ajouter un second appareil simulé au banc de mesure.
 
 Mesure native macOS release du 2026-10-31 : **30 changements, médiane 180 ms, maximum 212 ms, zéro lecture supplémentaire**, entre un iPod physique et deux appareils simulés, pendant les compilations finales. Le contrôle du cache seul effectue 200 accès en 0,206 ms; ce dernier chiffre exclut la mise en page native.
+
+### Dépôts multiples et état de transfert
+
+Sur AppKit, la cible lit chaque `NSPasteboardItem` : la chaîne globale peut concaténer les nonces de plusieurs lignes et ne correspond alors plus au jeton privé. Les listes d'artistes natives utilisent l'index `rowsByArtist` déjà en mémoire pour déposer toutes les pistes de l'artiste, sans rescanner les fichiers.
+
+Le dernier résumé de capacité reste affichable pendant son actualisation. Un transfert sans nouvel ajout ne l'invalide pas. Les lectures répétées du cache et le maintien de l'ancien résumé lors d'une invalidation sont vérifiés par `DevicePageCheck` (deux appareils simulés possibles avec `--extra-ipod`).
+
+Les lignes sélectionnées gardent un fond gris, même avec le focus. Le pictogramme d'éjection mesure 10 points dans une cible de 20 points. Pendant toute la préparation, la copie et la publication du manifeste, il est remplacé par une flèche circulaire qui tourne dans le sens horaire. AppKit utilise `arrow.trianglehead.2.clockwise` avec repli pour les systèmes plus anciens; les autres interfaces utilisent leur glyphe disponible. L'animation native s'arrête quand la file est vide. L'éjection de la page est également désactivée; une réservation interdit qu'une nouvelle copie démarre pendant une éjection déjà engagée.
+
+Le contrôle interne macOS `IPPM_CHECK_INTERACTIONS=1 <exécutable>` prépare un vrai presse-papiers AppKit privé de trois pistes et un dépôt d'artiste, vérifie les identifiants reçus, refuse un jeton externe et contrôle l'animation ainsi que le refus d'éjection pendant l'activité. Aucun fichier musical n'est écrit par ce contrôle. Le contrôle de transfert simulé vérifie aussi les transitions d'activité, l'exclusion copie/éjection et l'absence d'invalidation pour un dépôt déjà synchronisé.
+
+La sélection de navigation reste neutre, mais `isTargetForDropOperation` active la couleur d’accent et le contraste du texte sur la ligne iPod visée. La flèche animée utilise un calque propre, ancré à `(0.5, 0.5)` et positionné au centre de sa zone carrée; la transformation ne touche pas le calque de vue géré par AppKit. Son image est préparée lors d’un changement de symbole ou de teinte, jamais à chaque image d’animation. Le contrôle natif vérifie le pixel de surbrillance contre une référence accent et le centre du calque avant/après redimensionnement.

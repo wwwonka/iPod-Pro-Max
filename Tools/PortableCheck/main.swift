@@ -26,6 +26,10 @@ struct PortableCheck {
         }
         guard selected.count == 2 else { fatalError("Need two music files") }
         guard let device = IPodDevice.detect(volume: root, simulated: true) else { fatalError("Device missing") }
+        var activity: [Set<String>] = []
+        var contentChanges = 0
+        MusicTransfer.shared.onActivityChanged = { activity.append($0) }
+        MusicTransfer.shared.onDeviceFinished = { _ in contentChanges += 1 }
         MusicTransfer.shared.onStatus = { print($0) }
         MusicTransfer.shared.onDrop = { ids, target in
             guard target == device.id else { return false }
@@ -38,14 +42,21 @@ struct PortableCheck {
             guard !TrackDrag.accept("external text", device: device.id),
                   !TrackDrag.accept(payload, device: "wrong device"),
                   TrackDrag.accept(payload, device: device.id) else { fatalError("Drag endpoint failed") }
+            guard MusicTransfer.shared.isRunning(device), !MusicTransfer.shared.beginEject(device) else { fatalError("Transfer allowed eject") }
             TrackDrag.end()
         }
         guard try device.readDatabase().tracks.count == 2 else { fatalError("First transfer failed") }
+        guard MusicTransfer.shared.beginEject(device) else { fatalError("Idle device cannot reserve eject") }
+        MusicTransfer.shared.enqueue(ids: selected.map(\.id), device: device, loaded: refreshed)
+        guard !MusicTransfer.shared.isRunning(device) else { fatalError("Transfer started during eject") }
+        MusicTransfer.shared.endEject(device)
         await withCheckedContinuation { continuation in
             MusicTransfer.shared.onFinished = { continuation.resume() }
             MusicTransfer.shared.enqueue(ids: selected.map(\.id), device: device, loaded: refreshed)
         }
         guard try device.readDatabase().tracks.count == 2 else { fatalError("Repeat duplicated tracks") }
-        print("PASS: portable library, incremental scan, transfer queue and repeat drop")
+        guard activity.count == 4, activity[0] == [device.id], activity[1].isEmpty,
+              activity[2] == [device.id], activity[3].isEmpty, contentChanges == 1 else { fatalError("Activity lifecycle or unnecessary cache invalidation") }
+        print("PASS: portable library, transfer/repeat, busy lifecycle, eject exclusion and no-op cache retention")
     }
 }

@@ -49,6 +49,7 @@
         func install(on window: NSWindow) {
             guard self.window !== window else { return }
             self.window = window
+            MacWindowLifecycle.shared.install(on: window)
             // The portable app does not persist window state in the host's defaults.
             _ = window.setFrameAutosaveName("")
             window.isRestorable = false

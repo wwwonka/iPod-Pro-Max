@@ -13,6 +13,7 @@ struct DeviceView: View {
     var device: IPodDevice
     var library: Library
     var revision: Int = 0
+    var isBusy: Bool = false
     var onEject: () -> Void
     var onRename: (String) -> Void = { _ in }
 
@@ -49,9 +50,9 @@ struct DeviceView: View {
     @State var page: PageState
     typealias DeviceContents = DeviceContentsSummary
 
-    init(device: IPodDevice, library: Library, revision: Int = 0, onEject: @escaping () -> Void, onRename: @escaping (String) -> Void = { _ in }) {
+    init(device: IPodDevice, library: Library, revision: Int = 0, isBusy: Bool = false, onEject: @escaping () -> Void, onRename: @escaping (String) -> Void = { _ in }) {
         self.device = device; self.library = library; self.revision = revision
-        self.onEject = onEject; self.onRename = onRename
+        self.onEject = onEject; self.onRename = onRename; self.isBusy = isBusy
         _page = State(wrappedValue: PageState(device: device, snapshot: DevicePageCache.shared.cached(for: device)))
     }
 
@@ -303,6 +304,7 @@ struct DeviceView: View {
     private var actionsPanel: some View {
         HStack(spacing: 12) {
             LabelButton(title: device.isSimulated ? "Detach Folder" : "Eject", icon: "eject") { onEject() }
+                .disabled(isBusy)
             LabelButton(title: "Import Songs from iPod…", icon: "square.and.arrow.down") {}
                 .disabled(true)
                 .help("Importing isn't available yet")
@@ -316,11 +318,9 @@ struct DeviceView: View {
     // MARK: Actions
 
     private func loadContents() async {
-        if let snapshot = DevicePageCache.shared.cached(for: device) {
-            page = PageState(device: device, snapshot: snapshot)
-            return
+        if page.device != device {
+            page = PageState(device: device, snapshot: DevicePageCache.shared.cached(for: device))
         }
-        if page.device != device { page = PageState(device: device, snapshot: nil) }
         guard let snapshot = await DevicePageCache.shared.load(device), !Task.isCancelled else { return }
         page = PageState(device: device, snapshot: snapshot)
     }

@@ -6,7 +6,10 @@ func log(_ message: String) { fputs(message + "\n", stderr) }
 
 @main struct DevicePageCheck {
     @MainActor static func main() async throws {
-        var devices = await Task.detached(priority: .utility) { DeviceScanner.scan() }.value
+        let extra = CommandLine.arguments.firstIndex(of: "--extra-ipod").flatMap { i in
+            i + 1 < CommandLine.arguments.count ? URL(fileURLWithPath: CommandLine.arguments[i + 1]) : nil
+        }
+        var devices = await Task.detached(priority: .utility) { DeviceScanner.scan(simulatedFolders: extra.map { [$0] } ?? []) }.value
         if let simulated = PortableRoot.simulatedIPod(besides: devices) { devices.append(simulated) }
         guard devices.count >= 2 else { fatalError("Use two connected or simulated devices") }
         let start = Date()
@@ -22,6 +25,7 @@ func log(_ message: String) { fputs(message + "\n", stderr) }
         print("After: \(devices.count * 100) cached switches in \(Date().timeIntervalSince(warm)) s; additional reads: \(cache.readCount - reads)")
         guard cache.readCount == devices.count else { fatalError("Unexpected repeated reads") }
         cache.invalidate(devices[0])
+        guard cache.cached(for: devices[0]) != nil else { fatalError("Invalidation blanked the capacity bar") }
         _ = await cache.load(devices[0])
         guard cache.readCount == reads + 1 else { fatalError("Invalidation failed") }
         // Staged options must survive leaving the view, and be flushed before ejecting.

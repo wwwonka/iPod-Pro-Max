@@ -13,6 +13,7 @@ import iPodKit
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
     @State var portableLibrary: LoadedPortableLibrary?
+    @State var busyDevices: Set<String> = []
     @State var transferStatus = ""
     @State var scanning = false
     @State var settingsLoaded = false
@@ -30,7 +31,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             NavigationSplitView {
-                Sidebar(devices: $devices, library: $library, selection: $selection, onEject: eject)
+                Sidebar(devices: $devices, library: $library, selection: $selection, busyDevices: $busyDevices, onEject: eject)
             } detail: {
                 detail
             }
@@ -41,6 +42,13 @@ struct ContentView: View {
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
         .task {
+            if ProcessInfo.processInfo.environment["IPPM_CHECK_INTERACTIONS"] != nil {
+                #if canImport(AppKitBackend)
+                checkNativeMusicInteractions()
+                exit(0)
+                #endif
+            }
+            MusicTransfer.shared.onActivityChanged = { busyDevices = $0 }
             MusicTransfer.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onDeviceFinished = { device in
                 DevicePageCache.shared.invalidate(device)
@@ -110,12 +118,13 @@ struct ContentView: View {
     /// iPod from the sidebar.
     private func eject(_ item: SidebarItem) {
         guard case .device(let name) = item, let device = ipod(named: name) else { return }
-        guard !MusicTransfer.shared.isRunning(device) else {
+        guard MusicTransfer.shared.beginEject(device) else {
             transferStatus = "Cancel or finish the transfer before ejecting."
             return
         }
         log("[app] ejecting \(name)")
         Task {
+            defer { MusicTransfer.shared.endEject(device) }
             do {
                 try await DevicePageCache.shared.flush(device)
                 if let store = portableLibrary?.store, let mode {
@@ -221,7 +230,7 @@ struct ContentView: View {
                 header(library)
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
-                        ArtistList(artists: library.artists, selection: $selectedArtist)
+                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtist)
                             .frame(width: 250)
                         Divider()
                     }
@@ -230,7 +239,7 @@ struct ContentView: View {
                     ZStack {
                         TrackTable(rows: tableRows(library))
                         if case .device(let id) = selection, let device = ipod(named: id) {
-                            DeviceView(device: device, library: library, revision: contentRevision,
+                            DeviceView(device: device, library: library, revision: contentRevision, isBusy: busyDevices.contains(device.id),
                                 onEject: { eject(.device(device.id)) }, onRename: { name in
                                     ConnectedDeviceTitles.names[device.id] = name
                                     contentRevision += 1

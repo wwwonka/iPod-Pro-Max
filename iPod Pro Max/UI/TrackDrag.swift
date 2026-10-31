@@ -43,3 +43,14 @@ private let musicDropped: @convention(c) (OpaquePointer?, UnsafePointer<GValue>?
     return MainActor.assumeIsolated { TrackDrag.accept(String(cString: text), device: name) ? 1 : 0 }
 }
 #endif
+
+#if canImport(AppKitBackend)
+import AppKit
+
+/// AppKit can aggregate plain strings from multiple dragged rows. Read individual items instead.
+@MainActor
+func musicDragPayload(in pasteboard: NSPasteboard) -> String? {
+    pasteboard.pasteboardItems?.compactMap { $0.string(forType: .string) }
+        .first { $0 == TrackDrag.payload }
+}
+#endif

@@ -11,6 +11,7 @@ import SwiftCrossUI
 
     struct ArtistList: NSViewRepresentable {
         var artists: [NamedGroup]
+        var tracksByArtist: [String: [TrackRow]]
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -23,6 +24,7 @@ import SwiftCrossUI
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("artist")))
             table.dataSource = context.coordinator
             table.delegate = context.coordinator
+            table.setDraggingSourceOperationMask(.copy, forLocal: true)
             let scroll = NSScrollView()
             scroll.documentView = table
             scroll.hasVerticalScroller = true
@@ -34,6 +36,7 @@ import SwiftCrossUI
             guard let table = scroll.documentView as? NSTableView else { return }
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
+            coordinator.tracksByArtist = tracksByArtist
             if !coordinator.artists.sameStorage(as: artists) {
                 coordinator.artists = artists
                 table.reloadData()
@@ -52,8 +55,23 @@ import SwiftCrossUI
 
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var artists: [NamedGroup] = []
+            var tracksByArtist: [String: [TrackRow]] = [:]
             var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
+
+            private var dragPayload: String?
+            func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+                guard artists.indices.contains(row) else { return nil }
+                if dragPayload == nil { dragPayload = TrackDrag.begin((tracksByArtist[artists[row].id] ?? []).map(\.id)) }
+                guard let dragPayload else { return nil }
+                let item = NSPasteboardItem()
+                item.setString(dragPayload, forType: .string)
+                return item
+            }
+            func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+                dragPayload = nil
+                TrackDrag.end()
+            }
 
             func numberOfRows(in tableView: NSTableView) -> Int { artists.count }
 
@@ -106,6 +124,7 @@ import SwiftCrossUI
     /// A GtkListView over a string list of the names; cells read the counts from a Swift array.
     struct ArtistList: GtkWidgetRepresentable {
         var artists: [NamedGroup]
+        var tracksByArtist: [String: [TrackRow]]
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -127,6 +146,12 @@ import SwiftCrossUI
             g_signal_connect_data(cast(factory), "bind", unsafeBitCast(bindArtist, to: GCallback.self),
                                   ArtistBinding.retained(coordinator), releaseArtistBinding, GConnectFlags(rawValue: 0))
             let list = gtk_list_view_new(cast(selectionModel), factory)!
+            let drag = gtk_drag_source_new()!
+            gtk_drag_source_set_actions(drag, GDK_ACTION_COPY)
+            g_signal_connect_data(cast(drag), "prepare", unsafeBitCast(prepareArtistDrag, to: GCallback.self),
+                ArtistBinding.retained(coordinator), releaseArtistBinding, GConnectFlags(rawValue: 0))
+            g_signal_connect_data(cast(drag), "drag-end", unsafeBitCast(endArtistDrag, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            gtk_widget_add_controller(list, cast(drag))
             let scroll = gtk_scrolled_window_new()!
             gtk_scrolled_window_set_policy(cast(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
             gtk_scrolled_window_set_child(cast(scroll), list)
@@ -136,6 +161,7 @@ import SwiftCrossUI
         func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
+            coordinator.tracksByArtist = tracksByArtist
             coordinator.show(artists)
             let position = selection.flatMap { name in artists.firstIndex { $0.id == name } }.map(UInt32.init)
                 ?? UInt32.max  // GTK_INVALID_LIST_POSITION
@@ -155,6 +181,7 @@ import SwiftCrossUI
             let model = gtk_string_list_new(nil)!
             var selectionModel: OpaquePointer?
             var artists: [NamedGroup] = []
+            var tracksByArtist: [String: [TrackRow]] = [:]
             var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
 
@@ -227,6 +254,25 @@ import SwiftCrossUI
         }
     }
 
+    private let prepareArtistDrag: @convention(c) (OpaquePointer?, Double, Double, gpointer?) -> UnsafeMutablePointer<GdkContentProvider>? = { _, _, _, data in
+        guard let data else { return nil }
+        return MainActor.assumeIsolated {
+            guard let c = Unmanaged<ArtistBinding>.fromOpaque(data).takeUnretainedValue().coordinator,
+                  let model = c.selectionModel else { return nil }
+            let row = Int(gtk_single_selection_get_selected(model))
+            guard c.artists.indices.contains(row),
+                  let payload = TrackDrag.begin((c.tracksByArtist[c.artists[row].id] ?? []).map(\.id)) else { return nil }
+            var value = GValue()
+            g_value_init(&value, g_type_from_name("gchararray"))
+            g_value_set_string(&value, payload)
+            defer { g_value_unset(&value) }
+            return gdk_content_provider_new_for_value(&value)
+        }
+    }
+    private let endArtistDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gboolean, gpointer?) -> Void = { _, _, _, _ in
+        MainActor.assumeIsolated { TrackDrag.end() }
+    }
+
     private let artistSelected: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, _, data in
         guard let data else { return }
         MainActor.assumeIsolated {
@@ -241,6 +287,7 @@ import SwiftCrossUI
     /// A ListView of rows with the name and, in gray at the right, the song count.
     struct ArtistList: WinUIElementRepresentable {
         var artists: [NamedGroup]
+        var tracksByArtist: [String: [TrackRow]]
         @SwiftCrossUI.Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -248,6 +295,20 @@ import SwiftCrossUI
         func makeWinUIElement(context: Context) -> ListView {
             let list = ListView()
             list.selectionMode = .single
+            list.canDragItems = true
+            list.dragItemsStarting.addHandler { [weak coordinator = context.coordinator, weak list] _, args in
+                guard let coordinator, let list, let args else { return }
+                MainActor.assumeIsolated {
+                    let row = Int(list.selectedIndex)
+                    guard coordinator.artists.indices.contains(row),
+                          let payload = TrackDrag.begin((coordinator.tracksByArtist[coordinator.artists[row].id] ?? []).map(\.id))
+                    else { args.cancel = true; return }
+                    do { try args.data.setText(payload) } catch { TrackDrag.end(); args.cancel = true; return }
+                    args.data.requestedOperation = .copy
+                    args.data.properties.title = "\(TrackDrag.ids.count) songs"
+                }
+            }
+            list.dragItemsCompleted.addHandler { _, _ in MainActor.assumeIsolated { TrackDrag.end() } }
             list.selectionChanged.addHandler { [weak coordinator = context.coordinator, weak list] _, _ in
                 guard let list else { return }
                 MainActor.assumeIsolated { coordinator?.selectionChanged(Int(list.selectedIndex)) }
@@ -258,6 +319,7 @@ import SwiftCrossUI
         func updateWinUIElement(_ list: ListView, context: Context) {
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
+            coordinator.tracksByArtist = tracksByArtist
             if !coordinator.artists.sameStorage(as: artists) {
                 coordinator.artists = artists
                 coordinator.isSyncing = true
@@ -302,6 +364,7 @@ import SwiftCrossUI
         @MainActor
         final class Coordinator {
             var artists: [NamedGroup] = []
+            var tracksByArtist: [String: [TrackRow]] = [:]
             var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
 

@@ -18,6 +18,7 @@
         @Binding var devices: [String]
         @Binding var library: Library?
         @Binding var selection: SidebarItem
+        @Binding var busyDevices: Set<String>
         var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
@@ -54,6 +55,7 @@
                 coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists))
             }
             coordinator.select(selection)
+            coordinator.updateActivity(busyDevices)
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, gtkWidget: Gtk.Widget, context: Context) -> ViewSize {
@@ -215,8 +217,30 @@
                 return false
             }
 
+            func updateActivity(_ busy: Set<String>) {
+                for (button, item) in ejectButtons {
+                    guard case .device(let id) = item else { continue }
+                    let active = busy.contains(id)
+                    let widget: UnsafeMutablePointer<GtkWidget> = cast(button)
+                    guard (gtk_widget_get_sensitive(widget) == 0) != active else { continue }
+                    gtk_widget_set_sensitive(widget, active ? 0 : 1)
+                    gtk_widget_set_tooltip_text(widget, active ? "Syncing…" : "Eject")
+                    if active {
+                        let image = gtk_image_new_from_icon_name("view-refresh-symbolic")!
+                        gtk_image_set_pixel_size(cast(image), Int32(SidebarMetrics.ejectPointSize))
+                        gtk_widget_add_css_class(widget, "ippm-sync")
+                        gtk_button_set_child(cast(button), image)
+                    } else {
+                        gtk_widget_remove_css_class(widget, "ippm-sync")
+                        let glyph = gtk_label_new(nil)!
+                        gtk_label_set_markup(cast(glyph), symbolMarkup("eject.fill", pointSize: SidebarMetrics.ejectPointSize, tint: nil, dark: false))
+                        gtk_button_set_child(cast(button), glyph)
+                    }
+                }
+            }
+
             fileprivate func eject(button: OpaquePointer?) {
-                guard let button, let item = ejectButtons[button] else { return }
+                guard let button, gtk_widget_get_sensitive(cast(button)) != 0, let item = ejectButtons[button] else { return }
                 onEject(item)
             }
 
@@ -269,9 +293,8 @@
             .ippm-dark .ippm-dim > .ippm-icon { color: #98989D; }
             .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: false, dark: false))); }
             .ippm-dark .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: false, dark: true))); }
-            .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: false))); color: white; }
+            .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: false))); }
             .ippm-dark .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: true))); }
-            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-icon { color: white; }
             .ippm-eject { min-width: \(Int(M.ejectSize))px; min-height: \(Int(M.ejectSize))px; padding: 0;
                 border: none; background: none; box-shadow: none; outline: none; color: \(css(ejectButtonRGB(.normal, dark: false))); }
             .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: false))); }
@@ -285,9 +308,8 @@
             .ippm-dark .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true, on: .selected))); }
             .ippm-dark .ippm-list > row:selected .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: true, on: .selected))); }
             .ippm-dark .ippm-list > row:selected .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: true, on: .selected))); }
-            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true, on: .accent))); }
-            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject:hover,
-            .ippm-sidebar:focus-within .ippm-list > row:selected .ippm-eject:active { color: white; }
+            @keyframes ippm-sync-turn { from { -gtk-icon-transform: rotate(0deg); } to { -gtk-icon-transform: rotate(360deg); } }
+            .ippm-sync image { animation: ippm-sync-turn 1s linear infinite; }
             """)
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
     }

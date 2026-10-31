@@ -70,8 +70,16 @@ Comment ça marche :
 | `WindowChromeMac.swift`, `WindowChromeGtk.swift`, `WindowChromeWinUI.swift` | fenêtre, déplacement, boutons et glissement par plateforme ; mode sombre et coins arrondis GTK |
 | `Devices.swift` | iPods montés, par DeviceKit (`DeviceScanner`), mis à jour à chaque montage ou démontage (`VolumeWatcher`, sans polling), plus l'iPod simulé d'où l'app est lancée |
 | `PortableRoot.swift` | racine de l'iPod d'où l'app est lancée : `--portable-root` (passé par LAUNCHER), `IPPM_PORTABLE_ROOT`, ou son propre emplacement sous `iPod Pro Max/Applications/` ; `Build/` y apparaît comme iPod simulé. `DeviceOptions` : le `device.json` de chaque iPod |
-| `DeviceView.swift` | page d'un iPod, copiée du `DeviceView` de l'app Mac : nom (renommable), modèle, contenu et espace lus sur l'iPod par iPodKit ; options de synchro enregistrées sur cet iPod (`Persistent Data/device.json`) ; Sync, Import et Forget affichés mais pas branchés (moteur partagé pas encore connecté à l’interface) ; Eject et « Show in Finder/Files/Explorer » fonctionnent |
+| `DeviceView.swift` | page d'un iPod : nom renommable, modèle, contenu et capacité préchargés hors du thread principal puis conservés en mémoire ; options dans `Persistent Data/device.json` ; ajout musical par dépôt branché au moteur partagé, Sync complet, Import et Forget différés ; éjection bloquée pendant un transfert |
 
 ## Organisation depuis la promotion
 
 `App.swift` est dans `App/`, `Library.swift` dans `Library/`, `Devices.swift` dans `Platforms/` et les composants visuels dans `UI/`, sous `iPod Pro Max/`. Les variantes Mac, GTK et WinUI restent près de leur composant. L’identifiant technique `com.ipodpromax.proto` est conservé pendant le rangement pour préserver les préférences et l’intégration existantes ; le nom visible est iPod Pro Max.
+
+## Fermer et rouvrir la fenêtre sur macOS
+
+`MacWindowLifecycle` intercepte le bouton rouge et Cmd-W pour masquer la fenêtre tout en conservant son graphe de vues. Le clic dans le Dock, lorsque l'app n'a plus de fenêtre visible, réaffiche la dernière fenêtre masquée avec sa navigation, sa recherche, ses sélections et ses caches. Aucune préférence de session n'est écrite sur l'hôte et aucun scan n'est relancé pour cette réouverture.
+
+Les délégués AppKit d'origine restent destinataires des autres callbacks, notamment le redimensionnement et l'ouverture d'URL. Une fermeture réelle libère les délégués associés; Cmd-Q conserve le comportement de terminaison de l'application. Cet état est conservé pour la session courante, pas après avoir quitté l'app.
+
+`Tools/WindowReopenCheck/run.sh` vérifie trois cycles de fermeture/réouverture sur une fenêtre AppKit, l'identité et le contenu de la vue, ainsi que la transmission des callbacks d'origine.

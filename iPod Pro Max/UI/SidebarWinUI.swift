@@ -22,6 +22,7 @@
         @SwiftCrossUI.Binding var devices: [String]
         @SwiftCrossUI.Binding var library: Library?
         @SwiftCrossUI.Binding var selection: SidebarItem
+        @SwiftCrossUI.Binding var busyDevices: Set<String>
         var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
@@ -53,6 +54,7 @@
                 coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists), dark: dark)
             }
             coordinator.select(selection)
+            coordinator.updateActivity(busyDevices)
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: WinUI.Grid, context: Context) -> ViewSize {
@@ -311,6 +313,12 @@
                 onSelect(item)
             }
 
+            func updateActivity(_ busy: Set<String>) {
+                for entry in sections.flatMap(\.cells) {
+                    if case .device(let id) = entry.row.item { entry.eject?.isBusy = busy.contains(id) }
+                }
+            }
+
             /// The Mac's selection: accent with white text while the sidebar has focus, gray otherwise.
             private func paintSelection() {
                 let focused = focusedList != nil
@@ -319,7 +327,7 @@
                     let selected = Int(section.list.selectedIndex)
                     for (index, entry) in section.cells.enumerated() {
                         let isSelected = index == selected
-                        let emphasized = isSelected && focused
+                        let emphasized = false
                         entry.cell.background = isSelected ? brush(selectionRGB.r, selectionRGB.g, selectionRGB.b) : nil
                         entry.label.foreground = emphasized ? brush(255, 255, 255) : textBrush(secondary: entry.row.item == nil)
                         // White glyph on the accent: the primary tint in dark mode is white.
@@ -415,6 +423,19 @@
     /// held down (`ejectButtonRGB`). Ejects when released over it; the press never reaches the row,
     /// so it isn't selected.
     final class EjectButton: WinUI.Grid {
+        private var rendering: EventCleanup?
+        private var turnStarted = Date()
+        var isBusy = false {
+            didSet {
+                guard oldValue != isBusy else { return }
+                state = .normal
+                ToolTipService.setToolTip(self, isBusy ? "Syncing…" : "Eject")
+                rendering?.dispose()
+                rendering = nil
+                if isBusy { startRotation() } else { glyph.rotation = 0 }
+                paint()
+            }
+        }
         var behind = EjectButtonBackground.plain { didSet { if behind != oldValue { paint() } } }
         private let glyph = TextBlock()
         private let dark: Bool
@@ -445,12 +466,14 @@
             }
             pointerPressed.addHandler { [weak self] _, args in
                 guard let self, let args else { return }
+                guard !self.isBusy else { args.handled = true; return }
                 _ = try? self.capturePointer(args.pointer)
                 self.set(.pressed)
                 args.handled = true
             }
             pointerReleased.addHandler { [weak self] _, args in
                 guard let self, let args else { return }
+                guard !self.isBusy else { args.handled = true; return }
                 let wasPressed = self.state == .pressed
                 var inside = false
                 if let point = try? args.getCurrentPoint(self) {
@@ -467,6 +490,25 @@
                 self.set(.normal)
             }
             tapped.addHandler { _, args in args?.handled = true }
+            loaded.addHandler { [weak self] _, _ in
+                if let self, self.isBusy { self.startRotation() }
+            }
+            unloaded.addHandler { [weak self] _, _ in
+                self?.rendering?.dispose()
+                self?.rendering = nil
+            }
+        }
+
+        private func startRotation() {
+            guard rendering == nil else { return }
+            turnStarted = Date()
+            rendering = CompositionTarget.rendering.addHandler { [weak self] _, _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.glyph.centerPoint = .init(x: Float(self.glyph.actualWidth / 2), y: Float(self.glyph.actualHeight / 2), z: 0)
+                    self.glyph.rotation = Float(Date().timeIntervalSince(self.turnStarted).truncatingRemainder(dividingBy: 1) * 360)
+                }
+            }
         }
 
         private func set(_ newState: EjectButtonState) {
@@ -476,7 +518,7 @@
         }
 
         private func paint() {
-            let symbol = symbolCodepoints["eject.fill"].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? ""
+            let symbol = symbolCodepoints[isBusy ? "arrow.triangle.2.circlepath" : "eject.fill"].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? ""
             if glyph.text != symbol {
                 glyph.fontFamily = FontFamily("SF-Symbols")
                 glyph.text = symbol

@@ -15,6 +15,7 @@
         @Binding var devices: [String]
         @Binding var library: Library?
         @Binding var selection: SidebarItem
+        @Binding var busyDevices: Set<String>
         var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
@@ -60,6 +61,7 @@
                 outline.expandItem(nil, expandChildren: true)
             }
             coordinator.select(selection, in: outline)
+            coordinator.updateActivity(busyDevices, in: outline)
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> ViewSize {
@@ -145,13 +147,27 @@
                 let point = outlineView.convert(info.draggingLocation, from: nil)
                 guard let node = outlineView.item(atRow: outlineView.row(at: point)) as? Node,
                       case .device = node.item, let payload = TrackDrag.payload,
-                      info.draggingPasteboard.string(forType: .string) == payload else { return [] }
+                      musicDragPayload(in: info.draggingPasteboard) == payload else { return [] }
                 outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .copy
             }
             func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
                 guard let node = item as? Node, case .device(let id) = node.item else { return false }
-                return TrackDrag.accept(info.draggingPasteboard.string(forType: .string), device: id)
+                return TrackDrag.accept(musicDragPayload(in: info.draggingPasteboard), device: id)
+            }
+
+            private var busyDevices: Set<String> = []
+            func updateActivity(_ devices: Set<String>, in outline: NSOutlineView) {
+                busyDevices = devices
+                for row in 0..<outline.numberOfRows {
+                    guard let node = outline.item(atRow: row) as? Node,
+                          case .device(let id) = node.item,
+                          let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell else { continue }
+                    cell.ejectButton?.isBusy = devices.contains(id)
+                }
+            }
+            func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+                NeutralSidebarRow()
             }
 
             func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
@@ -181,6 +197,7 @@
                     ?? Self.makeCell(id, group: node.isGroup, ejectable: node.ejectable)
                 if let eject = (cell as? SidebarCell)?.ejectButton, let item = node.item {
                     eject.action = { [weak self] in self?.onEject(item) }
+                    if case .device(let id) = item { eject.isBusy = busyDevices.contains(id) }
                 }
                 cell.textField?.stringValue = node.title
                 if let icon = node.icon {
@@ -256,17 +273,75 @@
         }
     }
 
+    final class NeutralSidebarRow: NSTableRowView {
+        override var isEmphasized: Bool { get { false } set {} }
+        override var isTargetForDropOperation: Bool {
+            didSet {
+                needsDisplay = true
+                for cell in subviews.compactMap({ $0 as? Sidebar.SidebarCell }) {
+                    cell.backgroundStyle = interiorBackgroundStyle
+                    cell.textField?.textColor = isTargetForDropOperation ? .alternateSelectedControlTextColor : nil
+                }
+            }
+        }
+        override var interiorBackgroundStyle: NSView.BackgroundStyle {
+            isTargetForDropOperation ? .emphasized : .normal
+        }
+        override func drawSelection(in dirtyRect: NSRect) {
+            drawHighlight(isTargetForDropOperation ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor)
+        }
+        override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {
+            if isTargetForDropOperation { drawHighlight(.controlAccentColor) }
+        }
+        private func drawHighlight(_ color: NSColor) {
+            color.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 6, yRadius: 6).fill()
+        }
+    }
+
     /// The Finder's eject button: `eject.fill`, dim at rest, brighter under the pointer, white while
     /// held down. Ejects on release inside, like a button; the row isn't selected.
     final class EjectButton: NSView {
         var action: () -> Void = {}
+        var isBusy = false {
+            didSet {
+                guard oldValue != isBusy else { return }
+                pressed = false
+                image.image = isBusy
+                    ? systemSymbol("arrow.trianglehead.2.clockwise", description: "Syncing", pointSize: SidebarMetrics.ejectPointSize)
+                        ?? systemSymbol("arrow.triangle.2.circlepath", description: "Syncing", pointSize: SidebarMetrics.ejectPointSize)
+                    : systemSymbol("eject.fill", description: "Eject", pointSize: SidebarMetrics.ejectPointSize)
+                toolTip = isBusy ? "Syncing…" : "Eject"
+                image.isHidden = isBusy
+                syncGlyph.isHidden = !isBusy
+                layoutSyncGlyph()
+                if isBusy {
+                    let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+                    turn.fromValue = 0
+                    turn.toValue = -Double.pi * 2
+                    turn.duration = 1
+                    turn.repeatCount = .infinity
+                    syncGlyph.add(turn, forKey: "syncRotation")
+                } else {
+                    syncGlyph.removeAnimation(forKey: "syncRotation")
+                }
+                updateTint()
+            }
+        }
         var onAccent = false { didSet { updateTint() } }
         private let image = NSImageView()
+        /// Owned layer, independent of AppKit's backing-layer origin and anchor conventions.
+        private let syncGlyph = CALayer()
         private var hovering = false
         private var pressed = false
 
         override init(frame: NSRect) {
             super.init(frame: frame)
+            wantsLayer = true
+            syncGlyph.name = "syncGlyph"
+            syncGlyph.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            syncGlyph.isHidden = true
+            layer?.addSublayer(syncGlyph)
             image.image = systemSymbol("eject.fill", description: "Eject", pointSize: SidebarMetrics.ejectPointSize)
             image.imageScaling = .scaleNone
             image.translatesAutoresizingMaskIntoConstraints = false
@@ -281,6 +356,47 @@
 
         required init?(coder: NSCoder) { fatalError() }
 
+        override func layout() {
+            super.layout()
+            layoutSyncGlyph()
+        }
+
+        private func layoutSyncGlyph() {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            syncGlyph.bounds = CGRect(x: 0, y: 0, width: SidebarMetrics.ejectSize, height: SidebarMetrics.ejectSize)
+            syncGlyph.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            CATransaction.commit()
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            updateTint()
+        }
+
+        /// Rasterize once on an icon/tint change, never on animation frames.
+        private func updateSyncGlyph(tint: NSColor) {
+            guard isBusy, let symbol = image.image else { return }
+            let side = SidebarMetrics.ejectSize
+            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+            let pixels = Int(ceil(side * scale))
+            guard let bitmap = CGContext(data: nil, width: pixels, height: pixels, bitsPerComponent: 8,
+                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+            bitmap.scaleBy(x: scale, y: scale)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: false)
+            symbol.draw(in: NSRect(x: (side - symbol.size.width) / 2, y: (side - symbol.size.height) / 2,
+                width: symbol.size.width, height: symbol.size.height))
+            tint.setFill()
+            NSRect(x: 0, y: 0, width: side, height: side).fill(using: .sourceIn)
+            NSGraphicsContext.restoreGraphicsState()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            syncGlyph.contentsScale = scale
+            syncGlyph.contents = bitmap.makeImage()
+            CATransaction.commit()
+        }
+
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             trackingAreas.forEach(removeTrackingArea)
@@ -293,6 +409,7 @@
 
         /// Tracks the press here, so the outline view doesn't select the row.
         override func mouseDown(with event: NSEvent) {
+            guard !isBusy else { return }
             pressed = true
             updateTint()
             while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
@@ -301,7 +418,7 @@
                     pressed = false
                     hovering = inside
                     updateTint()
-                    if inside { action() }
+                    if inside && !isBusy { action() }
                     return
                 }
                 if pressed != inside {
@@ -319,6 +436,7 @@
                 : pressed ? .labelColor
                 : hovering ? .secondaryLabelColor
                 : .tertiaryLabelColor
+            updateSyncGlyph(tint: image.contentTintColor ?? .tertiaryLabelColor)
         }
     }
 #endif

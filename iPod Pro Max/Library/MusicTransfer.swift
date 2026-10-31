@@ -6,10 +6,18 @@ import MediaKit
 @MainActor
 final class MusicTransfer {
     static let shared = MusicTransfer()
+    var onActivityChanged: (Set<String>) -> Void = { _ in }
+    var runningDeviceIDs: Set<String> { Set(tasks.keys) }
     var onStatus: (String) -> Void = { _ in }
     var onFinished: () -> Void = {}
     var onDeviceFinished: (IPodDevice) -> Void = { _ in }
     var onDrop: ([String], String) -> Bool = { _, _ in false }
+    private var ejecting: Set<String> = []
+    func beginEject(_ device: IPodDevice) -> Bool {
+        guard !isRunning(device), !ejecting.contains(device.id) else { return false }
+        ejecting.insert(device.id); return true
+    }
+    func endEject(_ device: IPodDevice) { ejecting.remove(device.id) }
     private var queues: [String: [UUID: LibraryTrack]] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
     private var engines: [String: Task<SyncResult, Error>] = [:]
@@ -24,6 +32,7 @@ final class MusicTransfer {
             onStatus("This iPod's database signature is not supported yet.")
             return
         }
+        guard !ejecting.contains(device.id) else { onStatus("This iPod is being ejected."); return }
         let selected = Set(ids)
         for track in loaded.cache.tracks where selected.contains(track.id) && (track.kind == nil || track.kind == .song) {
             queues[device.id, default: [:]][track.id] = track
@@ -31,7 +40,8 @@ final class MusicTransfer {
         guard tasks[device.id] == nil else { return }
         cancelled.remove(device.id)
         tasks[device.id] = Task {
-            defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; onDeviceFinished(device); onFinished() }
+            var changed = false
+            defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; onActivityChanged(runningDeviceIDs); if changed { onDeviceFinished(device) }; onFinished() }
             while let pending = queues.removeValue(forKey: device.id), !pending.isEmpty, !Task.isCancelled {
                 onStatus("Preparing \(pending.count) songs…")
                 let tracks = Array(pending.values).sorted { $0.id.uuidString < $1.id.uuidString }
@@ -54,6 +64,7 @@ final class MusicTransfer {
                     let task = Task.detached(priority: .userInitiated) { try await engine.run() }
                     engines[device.id] = task
                     let result = try await task.value
+                    changed = changed || result.added > 0
                     engines[device.id] = nil
                     try await Task.detached(priority: .utility) {
                         // Pending entries are written before copy; only confirmed files are committed.
@@ -71,6 +82,7 @@ final class MusicTransfer {
                 }
             }
         }
+        onActivityChanged(runningDeviceIDs)
     }
 
 

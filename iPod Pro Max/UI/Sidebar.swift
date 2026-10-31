@@ -96,7 +96,7 @@ enum SidebarMetrics {
     /// Expand and collapse.
     static let collapseDuration = 0.25
     /// The eject button: glyph size, square hit area, and its distance from the selection's edge.
-    static let ejectPointSize = 12.0
+    static let ejectPointSize = 10.0
     static let ejectSize = 20.0
     static let ejectTrailing = 4.0
 }
@@ -104,12 +104,7 @@ enum SidebarMetrics {
 /// Selected row: `selectedContentBackgroundColor` while the sidebar has focus,
 /// `unemphasizedSelectedContentBackgroundColor` otherwise.
 func sidebarSelectionRGB(focused: Bool, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8) {
-    switch (focused, dark) {
-    case (true, false): (0x00, 0x63, 0xE1)
-    case (true, true): (0x00, 0x59, 0xD0)
-    case (false, false): (0xDC, 0xDC, 0xDC)
-    case (false, true): (0x46, 0x46, 0x46)
-    }
+    dark ? (0x46, 0x46, 0x46) : (0xDC, 0xDC, 0xDC)
 }
 
 /// The SwiftUI sidebar's selection when the list isn't focused: a neutral gray, not the accent color.

@@ -9,6 +9,7 @@ final class DevicePageCache {
         var contents: DeviceContentsSummary
         var options: DeviceOptions
     }
+    private var lastKnown: [IPodDevice: Snapshot] = [:]
     private let snapshots = DeviceSnapshotCache<Snapshot>()
     private var pending: [IPodDevice: DeviceOptions] = [:]
     private var writes: [IPodDevice: Task<Void, Never>] = [:]
@@ -16,7 +17,7 @@ final class DevicePageCache {
 
     var readCount: Int { snapshots.readCount }
 
-    func cached(for device: IPodDevice) -> Snapshot? { snapshots.cached(for: device) }
+    func cached(for device: IPodDevice) -> Snapshot? { snapshots.cached(for: device) ?? lastKnown[device] }
     func load(_ device: IPodDevice) async -> Snapshot? {
         guard var value = await snapshots.load(for: device, using: { dev in
             Snapshot(contents: DeviceContentsSummary.read(from: dev), options:
@@ -26,6 +27,7 @@ final class DevicePageCache {
             value.options = options
             snapshots.store(value, for: device)
         }
+        lastKnown[device] = value
         return value
     }
     func prefetch(_ devices: [IPodDevice]) async {
@@ -43,18 +45,21 @@ final class DevicePageCache {
     func invalidate(_ device: IPodDevice) { snapshots.invalidate(device) }
     func forget(_ device: IPodDevice) {
         invalidate(device)
+        lastKnown[device] = nil
         writes.removeValue(forKey: device)?.cancel()
         pending[device] = nil
     }
     func renamed(_ device: IPodDevice, to name: String) {
         guard var value = cached(for: device) else { return }
         value.contents.name = name
-        snapshots.store(value, for: device)
+        lastKnown[device] = value
+        if snapshots.cached(for: device) != nil { snapshots.store(value, for: device) }
     }
     func stage(_ options: DeviceOptions, for device: IPodDevice) {
         if var value = cached(for: device) {
             value.options = options
-            snapshots.store(value, for: device)
+            lastKnown[device] = value
+            if snapshots.cached(for: device) != nil { snapshots.store(value, for: device) }
         }
         pending[device] = options
         writes[device]?.cancel()
