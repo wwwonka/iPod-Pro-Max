@@ -356,7 +356,16 @@ struct ContentView: View {
                            let artist = library.artists.first(where: { $0.id == name }) {
                             ArtistDetail(artist: artist, albums: library.albumsByArtist[name] ?? [], artworkFolder: library.artworkFolder,
                                 devices: ipods.map(\.id), isBusy: { busyDevices.contains($0) },
-                                onSend: { ids, device in _ = MusicTransfer.shared.onDrop(ids, device) })
+                                onSend: { ids, device in _ = MusicTransfer.shared.onDrop(ids, device) },
+                                onChoosePhoto: {
+                                    Task {
+                                        guard let file = await chooseFile(title: "Choose a Photo of \(name)", defaultButtonLabel: "Use Photo",
+                                            allowSelectingFiles: true, allowSelectingDirectories: false) else { return }
+                                        if !(await ArtistPhotoController.shared.setCustomPhoto(file, for: name)) {
+                                            transferStatus = "That picture couldn't be used."
+                                        }
+                                    }
+                                })
                                 .background(WindowBackground())
                         }
                         if selection == .photos {

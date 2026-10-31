@@ -20,6 +20,7 @@ struct ArtistDetail: View {
     var devices: [String]
     var isBusy: (String) -> Bool
     var onSend: ([String], String) -> Void
+    var onChoosePhoto: () -> Void
 
     private func coverURL(_ key: String?) -> URL? {
         guard let key, let artworkFolder else { return nil }
@@ -55,6 +56,7 @@ struct ArtistDetail: View {
                     .foregroundColor(MacColor.secondaryText)
             }
             Spacer()
+            Button("Choose Photo…") { onChoosePhoto() }
             SendButtons(devices: devices, isBusy: isBusy, onSend: { onSend(allIDs, $0) })
         }
         .padding(18)

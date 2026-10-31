@@ -14,13 +14,31 @@ final class ArtistPhotoController {
     var onChange: () -> Void = {}
 
     func load(store portable: PortableLibraryStore) async {
-        let folder = portable.hostFolder.url.appendingPathComponent("Artist Photos", isDirectory: true)
-        let loaded = await Task.detached(priority: .utility) { ArtistPhotoStore(folder: folder) }.value
+        // In Persistent Data itself: the photos belong to the iPod, not to one computer.
+        let folder = portable.data.url.appendingPathComponent("Artist Photos", isDirectory: true)
+        let earlier = portable.hostFolder.url.appendingPathComponent("Artist Photos", isDirectory: true)
+        let loaded = await Task.detached(priority: .utility) { () -> ArtistPhotoStore in
+            // Photos kept per computer until now move up one level.
+            let fm = FileManager.default
+            if fm.fileExists(atPath: earlier.path), !fm.fileExists(atPath: folder.path) {
+                try? fm.createDirectory(at: folder.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.moveItem(at: earlier, to: folder)
+            }
+            return ArtistPhotoStore(folder: folder)
+        }.value
         store = loaded
         photos = await loaded.photos()
     }
 
     func url(for artist: String) -> URL? { photos[ArtistPhotoStore.normalize(artist)] }
+
+    /// Replaces an artist's photo with a picture file.
+    func setCustomPhoto(_ image: URL, for artist: String) async -> Bool {
+        guard let store, await store.setCustomPhoto(image, for: artist) else { return false }
+        photos = await store.photos()
+        onChange()
+        return true
+    }
 
     /// Looks up the artists that have no photo yet. Overlapping calls are ignored by the store.
     func fetchMissing(_ artists: [String]) {

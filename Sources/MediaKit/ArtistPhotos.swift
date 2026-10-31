@@ -112,6 +112,21 @@ public actor ArtistPhotoStore {
         saveIndex()
     }
 
+    /// Uses a picture the user picked instead of Deezer's (e.g. when Deezer matched a namesake). The file
+    /// gets a new name each time, so nothing that cached the old picture shows it again.
+    public func setCustomPhoto(_ image: URL, for artist: String) -> Bool {
+        let key = Self.normalize(artist)
+        guard !key.isEmpty, let data = try? Data(contentsOf: image),
+              let jpeg = ImageLoading.jpegData(from: data, maxDimension: 400) else { return false }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = String(Self.fileName(for: key).dropLast(4)) + "-\(Int(Date().timeIntervalSince1970)).jpg"
+        guard (try? jpeg.write(to: folder.appendingPathComponent(name), options: .atomic)) != nil else { return false }
+        if let old = index[key]?.file { try? FileManager.default.removeItem(at: folder.appendingPathComponent(old)) }
+        index[key] = Entry(file: name, checked: Date(), custom: true)
+        saveIndex()
+        return true
+    }
+
     private func saveIndex() {
         guard let data = try? JSONEncoder().encode(index) else { return }
         try? data.write(to: indexURL, options: .atomic)
