@@ -89,6 +89,11 @@ public actor ArtistPhotoStore {
             var unpublished = false
             var lastPublish = Date()
             while let (name, lookup) = await group.next() {
+                // The user may have picked a photo while this lookup was running: theirs stays.
+                if index[Self.normalize(name)]?.custom == true {
+                    if !Task.isCancelled { addNext() }
+                    continue
+                }
                 switch lookup {
                 case .found(let file):
                     index[Self.normalize(name)] = Entry(file: file, checked: Date())

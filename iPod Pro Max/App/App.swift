@@ -320,7 +320,7 @@ struct ContentView: View {
                 header(library)
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
-                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, artworkFolder: library.artworkFolder, selection: $selectedArtist)
+                        ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtist)
                             .frame(width: 250)
                         Divider()
                     }

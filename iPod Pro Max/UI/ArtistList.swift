@@ -14,7 +14,6 @@ import SwiftCrossUI
     struct ArtistList: NSViewRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        var artworkFolder: URL?
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -40,10 +39,12 @@ import SwiftCrossUI
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.tracksByArtist = tracksByArtist
-            coordinator.artworkFolder = artworkFolder
             if !coordinator.artists.sameStorage(as: artists) {
                 coordinator.artists = artists
+                // Photos arrive while an artist is selected: reloading must not look like the user deselecting it.
+                coordinator.isSyncing = true
                 table.reloadData()
+                coordinator.isSyncing = false
             }
             let row = selection.flatMap { name in artists.firstIndex { $0.id == name } } ?? -1
             if table.selectedRow != row {
@@ -60,8 +61,7 @@ import SwiftCrossUI
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
-            var artworkFolder: URL?
-            var onSelect: (String?) -> Void = { _ in }
+                var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
             private let thumbnails = NSCache<NSString, NSImage>()
 
@@ -174,7 +174,6 @@ import SwiftCrossUI
     struct ArtistList: GtkWidgetRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        var artworkFolder: URL?
         @Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
@@ -213,7 +212,6 @@ import SwiftCrossUI
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.tracksByArtist = tracksByArtist
-            coordinator.artworkFolder = artworkFolder
             coordinator.show(artists)
             let position = selection.flatMap { name in artists.firstIndex { $0.id == name } }.map(UInt32.init)
                 ?? UInt32.max  // GTK_INVALID_LIST_POSITION
@@ -234,8 +232,7 @@ import SwiftCrossUI
             var selectionModel: OpaquePointer?
             var artists: [NamedGroup] = []
             var tracksByArtist: [String: [TrackRow]] = [:]
-            var artworkFolder: URL?
-            var onSelect: (String?) -> Void = { _ in }
+                var onSelect: (String?) -> Void = { _ in }
             var isSyncing = false
 
             func show(_ newArtists: [NamedGroup]) {
@@ -377,7 +374,6 @@ import SwiftCrossUI
     struct ArtistList: WinUIElementRepresentable {
         var artists: [NamedGroup]
         var tracksByArtist: [String: [TrackRow]]
-        var artworkFolder: URL?
         @SwiftCrossUI.Binding var selection: String?
 
         func makeCoordinator() -> Coordinator { Coordinator() }
