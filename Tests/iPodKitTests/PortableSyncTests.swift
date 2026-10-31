@@ -4,7 +4,7 @@ import XCTest
 final class PortableSyncTests: XCTestCase {
     private func scratch() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("portable-sync-\(UUID())")
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try IPodDevice.createSimulatedIPod(at: url)
         return url
     }
     func testHostsArePortableAndRelocationKeepsSourceIdentity() throws {

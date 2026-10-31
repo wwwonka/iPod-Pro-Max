@@ -239,6 +239,9 @@
     final class WinUIChrome {
         static let shared = WinUIChrome()
 
+        private var closeHandler: EventCleanup?
+        private var closing = false
+        private var allowClose = false
         private weak var window: WinUI.Window?
         private var presenter: OverlappedPresenter?
         /// Kept: `content` hands out a new Swift wrapper each time, and its events only hold it
@@ -248,6 +251,13 @@
         func install(on window: WinUI.Window) {
             guard self.window !== window, let appWindow = window.appWindow else { return }
             self.window = window
+            closeHandler = appWindow.closing.addHandler { [weak self, weak window] _, args in
+                MainActor.assumeIsolated {
+                    guard let self, let args, !self.allowClose else { return }
+                    args.cancel = true
+                    self.requestClose()
+                }
+            }
             presenter = appWindow.presenter as? OverlappedPresenter
 
             // Content under the title bar, and a collapsed title bar hides the caption buttons.
@@ -280,9 +290,25 @@
         /// Set by `WindowControls`: the window became active or inactive.
         var onActivation: (Bool) -> Void = { _ in }
 
+        private func requestClose() {
+            guard !closing else { return }
+            closing = true
+            Task { @MainActor in
+                defer { closing = false }
+                do {
+                    try await ApplicationLifecycle.shared.prepareForExit()
+                    allowClose = true
+                    try window?.close()
+                } catch {
+                    allowClose = false
+                    ApplicationLifecycle.shared.report(error)
+                }
+            }
+        }
+
         func perform(_ action: WindowAction) {
             switch action {
-            case .close: try? window?.close()
+            case .close: requestClose()
             case .minimize: try? presenter?.minimize()
             case .zoom:
                 guard let presenter else { return }

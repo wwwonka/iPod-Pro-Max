@@ -75,8 +75,12 @@ final class DevicePageCache {
         try await writer.write(value, to: DeviceDataFolder(mountPoint: device.mountPoint))
         if pending[device] == value { pending[device] = nil }
     }
+    func flushAll() async throws {
+        for device in Array(pending.keys) { try await flush(device) }
+    }
     private actor OptionsWriter {
         func write(_ value: DeviceOptions, to folder: DeviceDataFolder) throws {
+            try folder.requireAvailableStorage()
             try folder.write(value, to: DeviceOptions.fileName)
         }
     }

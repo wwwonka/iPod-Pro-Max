@@ -6,6 +6,8 @@ import MediaKit
 @MainActor
 final class MusicTransfer {
     static let shared = MusicTransfer()
+    var beforeTransfer: (IPodDevice) async throws -> Void = { _ in }
+    var acceptingDrops = true
     var onActivityChanged: (Set<String>) -> Void = { _ in }
     var runningDeviceIDs: Set<String> { Set(tasks.keys) }
     var onStatus: (String) -> Void = { _ in }
@@ -22,12 +24,16 @@ final class MusicTransfer {
     private var tasks: [String: Task<Void, Never>] = [:]
     private var engines: [String: Task<SyncResult, Error>] = [:]
     private var cancelled = Set<String>()
+    func finishActiveTransfers() async {
+        for task in Array(tasks.values) { await task.value }
+    }
     func isRunning(_ device: IPodDevice) -> Bool { tasks[device.id] != nil }
     func cancel(_ device: IPodDevice) {
         cancelled.insert(device.id); queues[device.id] = nil
         tasks[device.id]?.cancel(); engines[device.id]?.cancel()
     }
     func enqueue(ids: [UUID], device: IPodDevice, loaded: LoadedPortableLibrary) {
+        guard acceptingDrops else { onStatus("Finishing current operations before closing…"); return }
         guard device.supportLevel != .unsupported else {
             onStatus("This iPod's database signature is not supported yet.")
             return
@@ -46,6 +52,7 @@ final class MusicTransfer {
                 onStatus("Preparing \(pending.count) songs…")
                 let tracks = Array(pending.values).sorted { $0.id.uuidString < $1.id.uuidString }
                 do {
+                    try await beforeTransfer(device)
                     let preparation = Task.detached(priority: .userInitiated) {
                         try await PortableMusicTransfer.prepare(tracks: tracks, device: device, store: loaded.store, albumArtistGrouping: DeviceDataFolder(mountPoint: device.mountPoint).read(DeviceOptions.self, from: DeviceOptions.fileName)?.useAlbumArtistForGrouping ?? true)
                     }

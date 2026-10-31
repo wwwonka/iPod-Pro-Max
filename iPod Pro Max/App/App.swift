@@ -3,6 +3,9 @@ import DeviceKit
 import Foundation
 import SwiftCrossUI
 import iPodKit
+#if canImport(AppKitBackend)
+    import AppKit
+#endif
 #if os(Windows)
     import WinSDK
 #endif
@@ -48,6 +51,16 @@ struct ContentView: View {
                 exit(0)
                 #endif
             }
+            ApplicationLifecycle.shared.onError = { transferStatus = $0 }
+            ApplicationLifecycle.shared.savePreferences = { try await flushPreferences() }
+            ApplicationLifecycle.shared.beforeExit = {
+                MusicTransfer.shared.acceptingDrops = false
+                defer { MusicTransfer.shared.acceptingDrops = true }
+                try await flushPreferences()
+                await MusicTransfer.shared.finishActiveTransfers()
+                try await flushPreferences()
+            }
+            MusicTransfer.shared.beforeTransfer = { _ in try await flushPreferences() }
             MusicTransfer.shared.onActivityChanged = { busyDevices = $0 }
             MusicTransfer.shared.onStatus = { transferStatus = $0 }
             MusicTransfer.shared.onDeviceFinished = { device in
@@ -64,6 +77,10 @@ struct ContentView: View {
                 await benchSidebar()
             } else {
                 await loadPortable(refresh: false)
+                if ProcessInfo.processInfo.environment["IPPM_CHECK_PREF_EXIT"] != nil {
+                    await checkPreferencesOnExit()
+                    return
+                }
                 await loadPortable(refresh: true)
             }
         }
@@ -94,20 +111,33 @@ struct ContentView: View {
             didBenchDevices = true
             await benchDevicePages()
         }
-        .task(id: mode?.rawValue ?? "") {
-            guard settingsLoaded, let store = portableLibrary?.store, let mode else { return }
-            let value = mode.rawValue
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !Task.isCancelled else { return }
-            do {
-                try await Task.detached(priority: .utility) {
-                    var settings = store.data.read(PortableSettings.self, from: "settings.json") ?? PortableSettings()
-                    settings.musicViewMode = value
-                    try store.data.write(settings, to: "settings.json")
-                }.value
-            } catch { transferStatus = error.localizedDescription }
-        }
         .alert($ejectError) {}
+    }
+
+    /// Opt-in integration check: stage changes and close in the same event turn, before debounce.
+    private func checkPreferencesOnExit() async {
+        guard let loaded = portableLibrary,
+              let device = await Task.detached(priority: .utility, operation: { PortableRoot.simulatedIPod(besides: []) }).value,
+              device.sysInfo["pszSerialNumber"] == "TEST0000000" else { log("FAIL: exit check requires a simulated iPod"); return }
+        mode = .byArtist
+        PortablePreferences.shared.stageMusicMode(MusicMode.byArtist.rawValue, store: loaded.store)
+        var options = DeviceOptions()
+        options.syncPodcasts = false; options.useAlbumArtistForGrouping = false
+        DevicePageCache.shared.stage(options, for: device)
+        log("[check] preferences staged; closing before debounce")
+        #if canImport(AppKitBackend)
+            NSApplication.shared.terminate(nil)
+        #else
+            performWindowAction(.close)
+        #endif
+    }
+
+    private func flushPreferences() async throws {
+        if settingsLoaded, let store = portableLibrary?.store, let mode {
+            PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
+        }
+        try await PortablePreferences.shared.flush()
+        try await DevicePageCache.shared.flushAll()
     }
 
     private func ipod(named name: String) -> IPodDevice? {
@@ -126,15 +156,7 @@ struct ContentView: View {
         Task {
             defer { MusicTransfer.shared.endEject(device) }
             do {
-                try await DevicePageCache.shared.flush(device)
-                if let store = portableLibrary?.store, let mode {
-                    let currentMode = mode.rawValue
-                    try await Task.detached(priority: .utility) {
-                        var settings = store.data.read(PortableSettings.self, from: "settings.json") ?? PortableSettings()
-                        settings.musicViewMode = currentMode
-                        try store.data.write(settings, to: "settings.json")
-                    }.value
-                }
+                try await flushPreferences()
                 try await Ejector.eject(device)
             } catch {
                 ejectError = "Couldn't eject \(name): \(error.localizedDescription)"
@@ -287,7 +309,12 @@ struct ContentView: View {
         }
         return DetailHeader(title: title, subtitle: subtitle) {
             if selection == .music {
-                SegmentedControl(options: MusicMode.allCases, selection: $mode)
+                SegmentedControl(options: MusicMode.allCases, selection: Binding(get: { mode }, set: { value in
+                    mode = value
+                    if settingsLoaded, let store = portableLibrary?.store, let value {
+                        PortablePreferences.shared.stageMusicMode(value.rawValue, store: store)
+                    }
+                }))
                 ToolbarButton(icon: "plus") { Task { await configureMusic() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
                 SearchField(prompt: "Search songs", text: $search)

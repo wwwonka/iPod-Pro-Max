@@ -23,7 +23,7 @@
         func makeCoordinator() -> Coordinator { Coordinator() }
 
         func makeNSView(context: Context) -> NSView {
-            let outline = NSOutlineView()
+            let outline = MusicDropOutlineView()
             if #available(macOS 11, *) { outline.style = .sourceList }
             outline.headerView = nil
             outline.floatsGroupRows = false
@@ -147,11 +147,16 @@
                 let point = outlineView.convert(info.draggingLocation, from: nil)
                 guard let node = outlineView.item(atRow: outlineView.row(at: point)) as? Node,
                       case .device = node.item, let payload = TrackDrag.payload,
-                      musicDragPayload(in: info.draggingPasteboard) == payload else { return [] }
+                      musicDragPayload(in: info.draggingPasteboard) == payload else {
+                    (outlineView as? MusicDropOutlineView)?.highlightDrop(row: nil)
+                    return []
+                }
+                (outlineView as? MusicDropOutlineView)?.highlightDrop(row: outlineView.row(forItem: node))
                 outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
                 return .copy
             }
             func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+                defer { (outlineView as? MusicDropOutlineView)?.highlightDrop(row: nil) }
                 guard let node = item as? Node, case .device(let id) = node.item else { return false }
                 return TrackDrag.accept(musicDragPayload(in: info.draggingPasteboard), device: id)
             }
@@ -273,25 +278,58 @@
         }
     }
 
-    final class NeutralSidebarRow: NSTableRowView {
-        override var isEmphasized: Bool { get { false } set {} }
-        override var isTargetForDropOperation: Bool {
-            didSet {
-                needsDisplay = true
-                for cell in subviews.compactMap({ $0 as? Sidebar.SidebarCell }) {
-                    cell.backgroundStyle = interiorBackgroundStyle
-                    cell.textField?.textColor = isTargetForDropOperation ? .alternateSelectedControlTextColor : nil
-                }
+    /// Own the visual target explicitly: source-list AppKit feedback does not reliably set
+    /// NSTableRowView.isTargetForDropOperation when custom rows draw a neutral selection.
+    final class MusicDropOutlineView: NSOutlineView {
+        private var dropRow: Int?
+        func highlightDrop(row: Int?) {
+            guard dropRow != row else { return }
+            if let old = dropRow, old < numberOfRows {
+                (rowView(atRow: old, makeIfNecessary: false) as? NeutralSidebarRow)?.isMusicDropTarget = false
+            }
+            dropRow = row
+            if let row, row >= 0, row < numberOfRows {
+                (rowView(atRow: row, makeIfNecessary: true) as? NeutralSidebarRow)?.isMusicDropTarget = true
             }
         }
+        override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+            super.draggingExited(sender)
+            highlightDrop(row: nil)
+        }
+        override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+            defer { highlightDrop(row: nil) }
+            return super.performDragOperation(sender)
+        }
+        override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+            super.concludeDragOperation(sender)
+            highlightDrop(row: nil)
+        }
+    }
+
+    final class NeutralSidebarRow: NSTableRowView {
+        var isMusicDropTarget = false { didSet { refreshFeedback() } }
+        private var dropActive: Bool { isMusicDropTarget || isTargetForDropOperation }
+        override var isEmphasized: Bool { get { false } set {} }
+        override var isTargetForDropOperation: Bool { didSet { refreshFeedback() } }
+        private func refreshFeedback() {
+            needsDisplay = true
+            for cell in subviews.compactMap({ $0 as? Sidebar.SidebarCell }) {
+                cell.backgroundStyle = interiorBackgroundStyle
+                cell.textField?.textColor = dropActive ? .alternateSelectedControlTextColor : nil
+            }
+        }
+        override func drawBackground(in dirtyRect: NSRect) {
+            super.drawBackground(in: dirtyRect)
+            if dropActive { drawHighlight(.controlAccentColor) }
+        }
         override var interiorBackgroundStyle: NSView.BackgroundStyle {
-            isTargetForDropOperation ? .emphasized : .normal
+            dropActive ? .emphasized : .normal
         }
         override func drawSelection(in dirtyRect: NSRect) {
-            drawHighlight(isTargetForDropOperation ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor)
+            drawHighlight(dropActive ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor)
         }
         override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {
-            if isTargetForDropOperation { drawHighlight(.controlAccentColor) }
+            if dropActive { drawHighlight(.controlAccentColor) }
         }
         private func drawHighlight(_ color: NSColor) {
             color.setFill()

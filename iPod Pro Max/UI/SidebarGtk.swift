@@ -308,6 +308,9 @@
             .ippm-dark .ippm-list > row:selected .ippm-eject { color: \(css(ejectButtonRGB(.normal, dark: true, on: .selected))); }
             .ippm-dark .ippm-list > row:selected .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: true, on: .selected))); }
             .ippm-dark .ippm-list > row:selected .ippm-eject:active { color: \(css(ejectButtonRGB(.pressed, dark: true, on: .selected))); }
+            .ippm-sidebar .ippm-list > row.ippm-drop-target > .ippm-cell { background-color: #007AFF; color: white; }
+            .ippm-sidebar .ippm-list > row.ippm-drop-target .ippm-icon,
+            .ippm-sidebar .ippm-list > row.ippm-drop-target .ippm-eject { color: white; }
             @keyframes ippm-sync-turn { from { -gtk-icon-transform: rotate(0deg); } to { -gtk-icon-transform: rotate(360deg); } }
             .ippm-sync image { animation: ippm-sync-turn 1s linear infinite; }
             """)

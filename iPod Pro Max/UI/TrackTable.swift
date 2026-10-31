@@ -244,11 +244,7 @@ extension Array {
     }
     private let beginMusicDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, drag, _ in
         MainActor.assumeIsolated {
-            guard let drag else { return }
-            let icon = gtk_drag_icon_get_for_drag(cast(drag))
-            let label = gtk_label_new("\(TrackDrag.ids.count) songs")
-            gtk_widget_add_css_class(label, "card")
-            gtk_drag_icon_set_child(cast(icon), label)
+            showMusicDragCount(drag)
         }
     }
     private let endMusicDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gboolean, gpointer?) -> Void = { _, _, _, _ in

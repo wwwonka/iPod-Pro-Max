@@ -38,6 +38,20 @@ func log(_ message: String) { fputs(message + "\n", stderr) }
         guard retained?.options == options else { fatalError("Lost pending choices") }
         try await cache.flush(simulated)
         guard DeviceDataFolder(mountPoint: scratch).read(DeviceOptions.self, from: DeviceOptions.fileName) == options else { fatalError("Flush failed") }
+        let store = PortableLibraryStore(root: scratch, hostID: "check")
+        var common = PortableSettings(); common.syncArtwork = false
+        try store.data.write(common, to: "settings.json")
+        let preferences = PortablePreferences()
+        preferences.stageMusicMode("By Artist", store: store)
+        try await preferences.flush()
+        let saved = store.data.read(PortableSettings.self, from: "settings.json")
+        guard saved?.musicViewMode == "By Artist", saved?.syncArtwork == false else { fatalError("Common preferences not flushed or other field lost") }
+        let gone = scratch.appendingPathComponent("not-mounted")
+        let absent = PortableLibraryStore(root: gone, hostID: "check")
+        preferences.stageMusicMode("All Songs", store: absent)
+        do { try await preferences.flush(); fatalError("Missing volume accepted") } catch {}
+        guard !FileManager.default.fileExists(atPath: gone.path) else { fatalError("Host folder recreated") }
+        print("PASS: common preferences immediate flush, field preservation and unavailable storage refusal")
         print("PASS: per-device cache, event invalidation and preferences surviving navigation")
     }
 }

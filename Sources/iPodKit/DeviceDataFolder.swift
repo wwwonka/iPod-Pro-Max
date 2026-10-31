@@ -17,8 +17,10 @@ public struct DeviceDataFolder: Sendable {
     public let url: URL
     /// `iPod Pro Max/Data/`, the folder's name until 2026-10-31: still read, never written.
     let legacyURL: URL?
+    private let mountPoint: URL?
 
     public init(mountPoint: URL) {
+        self.mountPoint = mountPoint
         let app = mountPoint.appendingPathComponent("iPod Pro Max", isDirectory: true)
         url = app.appendingPathComponent(Self.folderName, isDirectory: true)
         legacyURL = app.appendingPathComponent("Data", isDirectory: true)
@@ -28,6 +30,16 @@ public struct DeviceDataFolder: Sendable {
     public init(url: URL) {
         self.url = url
         legacyURL = nil
+        mountPoint = nil
+    }
+
+    /// A disappeared portable volume must not be recreated as a folder on the host.
+    public func requireAvailableStorage() throws {
+        guard let mountPoint else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: mountPoint.appendingPathComponent("iPod_Control").path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw IPodDBError.io("The portable iPod storage is unavailable. Reconnect it before saving.")
+        }
     }
 
     /// Decodes `name`, falling back to `name.bak` when the current file is unreadable, then to the

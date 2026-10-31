@@ -142,6 +142,7 @@
         static let shared = GtkChrome()
 
         private var window: UnsafeMutablePointer<GtkWindow>?
+        private var closing = false
         private var paned: OpaquePointer?
         private var onColorScheme: (ColorScheme) -> Void = { _ in }
         private var interfaceSettings: UnsafeMutablePointer<GSettings>?
@@ -151,6 +152,27 @@
             let pointer: UnsafeMutablePointer<GtkWindow> = cast(window.widgetPointer)
             guard self.window != pointer else { return }
             self.window = pointer
+            Task { @MainActor in
+                await Task.yield()
+                guard self.window == pointer else { return }
+                let originalClose = window.onCloseRequest
+                if ProcessInfo.processInfo.environment["IPPM_CHECK_PREF_EXIT"] != nil { log("[check] GTK close hook installed") }
+                window.onCloseRequest = { [weak self] candidate in
+                    if ProcessInfo.processInfo.environment["IPPM_CHECK_PREF_EXIT"] != nil { log("[check] GTK close intercepted") }
+                    // Stop GTK's default destruction until preferences and transfers are committed.
+                    g_signal_stop_emission_by_name(candidate.widgetPointer, "close-request")
+                    guard let self, !self.closing else { return }
+                    self.closing = true
+                    Task { @MainActor in
+                        defer { self.closing = false }
+                        do {
+                            try await ApplicationLifecycle.shared.prepareForExit()
+                            if ProcessInfo.processInfo.environment["IPPM_CHECK_PREF_EXIT"] != nil { log("[check] GTK preferences flushed") }
+                            originalClose?(candidate)
+                        } catch { ApplicationLifecycle.shared.report(error) }
+                    }
+                }
+            }
 
             // A hidden title bar widget: GTK keeps client-side decorations (shadow, resize edges)
             // but gives no height to it; a visible empty one still takes the theme's 46 px.

@@ -81,7 +81,6 @@ struct DeviceView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: device.id + "-\(revision)") { await loadContents() }
-        .task(id: options) { await saveOptions() }
     }
 
     /// The sync options as stored on the iPod.
@@ -93,11 +92,18 @@ struct DeviceView: View {
     }
 
     /// The connection-owned cache saves a burst once, even if this page disappears meanwhile.
-    private func saveOptions() async {
+    private func saveOptions() {
         let current = options
         guard page.device == device, let saved = page.savedOptions, saved != current else { return }
         DevicePageCache.shared.stage(current, for: device)
         page.savedOptions = current
+    }
+
+    private func preference<Value>(_ key: WritableKeyPath<PageState, Value>) -> Binding<Value> {
+        Binding(get: { page[keyPath: key] }, set: { value in
+            page[keyPath: key] = value
+            saveOptions()
+        })
     }
 
     private var displayName: String {
@@ -263,7 +269,7 @@ struct DeviceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Text("Music:")
-                    RadioGroup(options: MusicChoice.allCases, selection: $page.musicChoice)
+                    RadioGroup(options: MusicChoice.allCases, selection: preference(\.musicChoice))
                 }
                 if page.musicChoice == .selectedPlaylists {
                     if library.playlists.isEmpty {
@@ -275,6 +281,7 @@ struct DeviceView: View {
                                     get: { page.selectedPlaylists.contains(pl.id) },
                                     set: { on in
                                         if on { page.selectedPlaylists.insert(pl.id) } else { page.selectedPlaylists.remove(pl.id) }
+                                        saveOptions()
                                     }))
                             }
                         }
@@ -282,20 +289,20 @@ struct DeviceView: View {
                     }
                 }
                 Divider()
-                CheckboxRow(title: "Sync podcasts", isOn: $page.syncPodcasts).disabled(!device.supportsPodcasts)
+                CheckboxRow(title: "Sync podcasts", isOn: preference(\.syncPodcasts)).disabled(!device.supportsPodcasts)
                 if !device.supportsPodcasts {
                     Caption("This iPod's firmware has no Podcasts menu.")
                 }
-                CheckboxRow(title: "Sync videos", isOn: $page.syncVideos)
-                CheckboxRow(title: "Sync audiobooks", isOn: $page.syncAudiobooks)
-                CheckboxRow(title: "Sync photos", isOn: $page.syncPhotos).disabled(!device.generation.supportsPhotos)
+                CheckboxRow(title: "Sync videos", isOn: preference(\.syncVideos))
+                CheckboxRow(title: "Sync audiobooks", isOn: preference(\.syncAudiobooks))
+                CheckboxRow(title: "Sync photos", isOn: preference(\.syncPhotos)).disabled(!device.generation.supportsPhotos)
                 if !device.generation.supportsPhotos {
                     Caption("This iPod has no color screen for photos.")
                 }
-                CheckboxRow(title: "Remove songs that aren't in this library", isOn: $page.removeUnknownTracks)
+                CheckboxRow(title: "Remove songs that aren't in this library", isOn: preference(\.removeUnknownTracks))
                 Caption("When on, songs that were put on the iPod by iTunes or another Mac are deleted during sync so the iPod mirrors this library. Turn it off to keep them.")
                 Divider()
-                CheckboxRow(title: "Use Album Artist for Grouping", isOn: $page.albumArtistGrouping)
+                CheckboxRow(title: "Use Album Artist for Grouping", isOn: preference(\.albumArtistGrouping))
                 Caption("Replaces the Artist tag with Album Artist on this iPod so albums stay grouped in the Artists view. Your library files are not modified.")
             }
         }

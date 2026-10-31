@@ -9,6 +9,6 @@ OUT="${TMPDIR:-/tmp}/ippm-device-page-check"
 xcrun swiftc -O -parse-as-library -I "$BIN/Modules" -o "$OUT" \
     "$BIN"/iPodKit.build/*.o "$BIN"/DeviceKit.build/*.o \
     -framework DiskArbitration -framework IOKit \
-    'iPod Pro Max/Platforms/PortableRoot.swift' 'iPod Pro Max/Platforms/DevicePageCache.swift' \
+    'iPod Pro Max/Platforms/PortableRoot.swift' 'iPod Pro Max/Platforms/DevicePageCache.swift' 'iPod Pro Max/Platforms/PortablePreferences.swift' \
     Tools/DevicePageCheck/main.swift
 "$OUT" --portable-root "$SCRATCH_IPOD"

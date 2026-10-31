@@ -96,6 +96,7 @@
             private var sections: [Section] = []
             /// Kept across rebuilds (a playlist added doesn't reopen a closed section).
             private var collapsed: Set<String> = []
+            private var dropTarget: SidebarItem?
             private var dark = false
             private weak var focusedList: ListView?
             private var isSyncingSelection = false
@@ -246,17 +247,38 @@
                 let item = ListViewItem()
                 if case .device(let name) = row.item {
                     item.allowDrop = true
-                    item.dragOver.addHandler { _, args in
+                    item.dragOver.addHandler { [weak self] _, args in
                         MainActor.assumeIsolated {
                             guard let args, TrackDrag.payload != nil else { return }
+                            self?.dropTarget = row.item
+                            self?.paintSelection()
                             args.acceptedOperation = .copy
                             args.handled = true
                         }
                     }
-                    item.drop.addHandler { _, args in
+                    item.dragLeave.addHandler { [weak self] _, _ in
+                        MainActor.assumeIsolated { self?.dropTarget = nil; self?.paintSelection() }
+                    }
+                    item.drop.addHandler { [weak self] _, args in
                         MainActor.assumeIsolated {
-                            guard let args else { return }
-                            if TrackDrag.accept(TrackDrag.payload, device: name) { args.acceptedOperation = .copy; args.handled = true }
+                            guard let args, TrackDrag.payload != nil else { return }
+                            args.handled = true
+                            do {
+                                let deferral = try args.getDeferral()
+                                do {
+                                    guard var operation = try args.dataView.getTextAsync() else { try? deferral?.complete(); return }
+                                    operation.completed = { operation, _ in
+                                        let text = try? operation?.getResults()
+                                        Task { @MainActor in
+                                            defer { try? deferral?.complete(); self?.dropTarget = nil; self?.paintSelection() }
+                                            if TrackDrag.accept(text, device: name) { args.acceptedOperation = .copy }
+                                        }
+                                    }
+                                } catch {
+                                    try? deferral?.complete()
+                                    throw error
+                                }
+                            } catch { self?.dropTarget = nil; self?.paintSelection() }
                         }
                     }
                 }
@@ -327,8 +349,8 @@
                     let selected = Int(section.list.selectedIndex)
                     for (index, entry) in section.cells.enumerated() {
                         let isSelected = index == selected
-                        let emphasized = false
-                        entry.cell.background = isSelected ? brush(selectionRGB.r, selectionRGB.g, selectionRGB.b) : nil
+                        let emphasized = dropTarget != nil && entry.row.item == dropTarget
+                        entry.cell.background = emphasized ? brush(0x00, 0x7A, 0xFF) : isSelected ? brush(selectionRGB.r, selectionRGB.g, selectionRGB.b) : nil
                         entry.label.foreground = emphasized ? brush(255, 255, 255) : textBrush(secondary: entry.row.item == nil)
                         // White glyph on the accent: the primary tint in dark mode is white.
                         showSymbol(entry.row.icon, in: entry.glyph, pointSize: 13,

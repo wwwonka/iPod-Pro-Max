@@ -151,6 +151,7 @@ import SwiftCrossUI
             g_signal_connect_data(cast(drag), "prepare", unsafeBitCast(prepareArtistDrag, to: GCallback.self),
                 ArtistBinding.retained(coordinator), releaseArtistBinding, GConnectFlags(rawValue: 0))
             g_signal_connect_data(cast(drag), "drag-end", unsafeBitCast(endArtistDrag, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            g_signal_connect_data(cast(drag), "drag-begin", unsafeBitCast(beginArtistDrag, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
             gtk_widget_add_controller(list, cast(drag))
             let scroll = gtk_scrolled_window_new()!
             gtk_scrolled_window_set_policy(cast(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC)
@@ -268,6 +269,9 @@ import SwiftCrossUI
             defer { g_value_unset(&value) }
             return gdk_content_provider_new_for_value(&value)
         }
+    }
+    private let beginArtistDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, drag, _ in
+        MainActor.assumeIsolated { showMusicDragCount(drag) }
     }
     private let endArtistDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gboolean, gpointer?) -> Void = { _, _, _, _ in
         MainActor.assumeIsolated { TrackDrag.end() }

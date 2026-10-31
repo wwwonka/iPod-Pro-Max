@@ -16,7 +16,7 @@ struct PortableCheck {
         let cached = try await PortableLoading.load()
         print("Cache load + availability check: \(Date().timeIntervalSince(cacheStart)) s")
         let refreshStart = Date()
-        let refreshed = try await PortableLoading.load(refresh: true)
+        var refreshed = try await PortableLoading.load(refresh: true)
         print("Incremental scan: \(Date().timeIntervalSince(refreshStart)) s")
         guard cached.cache.tracks.map(\.id) == refreshed.cache.tracks.map(\.id) else { fatalError("IDs changed") }
         var selected = Array(refreshed.cache.tracks.filter { !$0.needsTranscode }.prefix(2))
@@ -26,6 +26,15 @@ struct PortableCheck {
         }
         guard selected.count == 2 else { fatalError("Need two music files") }
         guard let device = IPodDevice.detect(volume: root, simulated: true) else { fatalError("Device missing") }
+        selected[0].artist = "Track artist"; selected[0].albumArtist = "Album artist"
+        if let index = refreshed.cache.tracks.firstIndex(where: { $0.id == selected[0].id }) { refreshed.cache.tracks[index] = selected[0] }
+        var preferences = DeviceOptions(); preferences.useAlbumArtistForGrouping = false
+        DevicePageCache.shared.stage(preferences, for: device)
+        PortablePreferences.shared.stageMusicMode("By Artist", store: refreshed.store)
+        MusicTransfer.shared.beforeTransfer = { _ in
+            try await PortablePreferences.shared.flush()
+            try await DevicePageCache.shared.flushAll()
+        }
         var activity: [Set<String>] = []
         var contentChanges = 0
         MusicTransfer.shared.onActivityChanged = { activity.append($0) }
@@ -45,7 +54,9 @@ struct PortableCheck {
             guard MusicTransfer.shared.isRunning(device), !MusicTransfer.shared.beginEject(device) else { fatalError("Transfer allowed eject") }
             TrackDrag.end()
         }
-        guard try device.readDatabase().tracks.count == 2 else { fatalError("First transfer failed") }
+        let firstDB = try device.readDatabase()
+        guard firstDB.tracks.count == 2, firstDB.tracks.first(where: { $0.title == selected[0].title })?.artist == "Track artist" else { fatalError("First transfer or pending options flush failed") }
+        guard refreshed.store.data.read(PortableSettings.self, from: "settings.json")?.musicViewMode == "By Artist" else { fatalError("Settings not flushed before transfer") }
         guard MusicTransfer.shared.beginEject(device) else { fatalError("Idle device cannot reserve eject") }
         MusicTransfer.shared.enqueue(ids: selected.map(\.id), device: device, loaded: refreshed)
         guard !MusicTransfer.shared.isRunning(device) else { fatalError("Transfer started during eject") }
@@ -57,6 +68,25 @@ struct PortableCheck {
         guard try device.readDatabase().tracks.count == 2 else { fatalError("Repeat duplicated tracks") }
         guard activity.count == 4, activity[0] == [device.id], activity[1].isEmpty,
               activity[2] == [device.id], activity[3].isEmpty, contentChanges == 1 else { fatalError("Activity lifecycle or unnecessary cache invalidation") }
-        print("PASS: portable library, transfer/repeat, busy lifecycle, eject exclusion and no-op cache retention")
+        #if os(macOS)
+        let migrationRoot = root.appendingPathComponent("LegacyCheck")
+        try IPodDevice.createSimulatedIPod(at: migrationRoot)
+        let legacyFolder = root.appendingPathComponent("LegacySource")
+        try FileManager.default.createDirectory(at: legacyFolder, withIntermediateDirectories: true)
+        let legacySong = legacyFolder.appendingPathComponent("song.mp3")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: selected[0].path), to: legacySong)
+        var legacyTrack = selected[0]; legacyTrack.path = legacySong.path
+        let playlist = LibraryPlaylist(name: "Legacy", trackIDs: [legacyTrack.id])
+        var legacy = iPodKit.LibraryDocument(tracks: [legacyTrack], playlists: [playlist]); legacy.musicFolderPath = legacyFolder.path
+        let legacyFile = root.appendingPathComponent("legacy-library.json")
+        let legacyBytes = try JSONEncoder().encode(legacy)
+        try legacyBytes.write(to: legacyFile)
+        let migrated = try await PortableLoading.load(root: migrationRoot, legacyLibraryURL: legacyFile)
+        let rescanned = try await PortableLoading.load(refresh: true, root: migrationRoot, legacyLibraryURL: legacyFile)
+        guard migrated.cache.tracks.map(\.id) == [legacyTrack.id], rescanned.cache.tracks.map(\.id) == [legacyTrack.id],
+            rescanned.cache.playlists.first?.trackIDs == [legacyTrack.id], try Data(contentsOf: legacyFile) == legacyBytes else { fatalError("Legacy migration lost identities or modified original") }
+        print("PASS: nonempty legacy migration and subsequent scan preserve track/playlist IDs, source and original JSON")
+        #endif
+        print("PASS: portable library, transfer/repeat, preference flush, busy lifecycle, eject exclusion and no-op cache retention")
     }
 }

@@ -9,9 +9,12 @@ public enum PortableMusicTransfer {
     }
     public static func prepare(tracks: [LibraryTrack], device: IPodDevice, store: PortableLibraryStore, albumArtistGrouping: Bool = true) async throws -> Prepared {
         let folder = DeviceDataFolder(mountPoint: device.mountPoint)
+        try folder.requireAvailableStorage()
         var manifest = try folder.readChecked(TransferManifest.self, from: "manifest.json") ?? TransferManifest()
         guard manifest.version == 1 else { throw IPodDBError.unsupported("Unsupported manifest.json version") }
         let originalManifest = manifest
+        let sources = store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first(where: { $0.id == store.hostID })?.sources
+            .filter { $0.kind == .music }.sorted { $0.path.count > $1.path.count } ?? []
         var indexByFingerprint = Dictionary(manifest.tracks.enumerated().map { ($0.element.fingerprint, $0.offset) }, uniquingKeysWith: { a, _ in a })
         let db = try device.readDatabase()
         let present = Set(db.tracks.filter { $0.fileURL(mountPoint: device.mountPoint).map { FileManager.default.fileExists(atPath: $0.path) } ?? false }.map(\.dbid))
@@ -40,14 +43,16 @@ public enum PortableMusicTransfer {
             } else {
                 let dbid = IPodTrack.randomDBID()
                 indexByFingerprint[hash] = manifest.tracks.count
-                manifest.tracks.append(.init(dbid: dbid, owner: store.hostID, sourceID: track.id, fingerprint: hash, references: [reference]))
+                let source = sources.first { track.path.hasPrefix($0.path + "/") }
+                let relative = source.map { String(track.path.dropFirst($0.path.count + 1)) }
+                manifest.tracks.append(.init(dbid: dbid, owner: store.hostID, sourceID: track.id, fingerprint: hash, references: [reference], relativePath: relative, sourceRootID: source?.id))
                 record.trackDBIDs[track.id] = dbid
             }
             if let dbid = record.trackDBIDs[track.id], scheduled.insert(dbid).inserted { additions.append(track) }
             else { reused += 1 }
         }
         // Durable intent makes a crash between iTunesDB publication and manifest publication recoverable.
-        if manifest != originalManifest { try folder.write(manifest, to: "manifest.json") }
+        if manifest != originalManifest { try folder.requireAvailableStorage(); try folder.write(manifest, to: "manifest.json") }
         var options = SyncOptions()
         options.additiveOnly = true; options.removeUnknownTracks = false
         options.syncPhotos = false; options.syncPodcasts = false

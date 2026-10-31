@@ -11,6 +11,7 @@ CHECK_BINARY="${TMPDIR:-/tmp}/ippm-portable-check"
 xcrun swiftc -O -parse-as-library -o "$CHECK_BINARY" -I "$BIN/Modules" \
     "$BIN"/iPodKit.build/*.o "$BIN"/MediaKit.build/*.o "$BIN"/DeviceKit.build/*.o \
     -framework DiskArbitration -framework IOKit \
+    'iPod Pro Max/Platforms/PortablePreferences.swift' 'iPod Pro Max/Platforms/DevicePageCache.swift' \
     'iPod Pro Max/Platforms/PortableRoot.swift' 'iPod Pro Max/Library/PortableLoading.swift' \
     'iPod Pro Max/Library/MusicTransfer.swift' 'iPod Pro Max/UI/TrackDrag.swift' Tools/PortableCheck/main.swift
 "$CHECK_BINARY" --music-folder "$MUSIC_FOLDER" --portable-root "$SCRATCH_ROOT"

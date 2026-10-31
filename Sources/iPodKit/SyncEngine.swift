@@ -128,6 +128,7 @@ public final class SyncEngine: @unchecked Sendable {
 
     private func checkCancelled() throws {
         if Task.isCancelled { throw SyncError.cancelled }
+        if request.options.additiveOnly { try DeviceDataFolder(mountPoint: request.device.mountPoint).requireAvailableStorage() }
     }
 
     // MARK: - Run
@@ -152,6 +153,7 @@ public final class SyncEngine: @unchecked Sendable {
         default: break
         }
 
+        try checkCancelled()
         // 1. Read the database and play counts.
         report("Reading iPod", "Opening the iPod database…")
         var db = try device.readDatabase()
@@ -292,6 +294,7 @@ public final class SyncEngine: @unchecked Sendable {
                     }
                     record.lyricsFixedDates[t.id] = t.dateModified ?? Date()
                 }
+                try checkCancelled()
                 let (ipodPath, destURL) = try allocateDestination(device: device, folderCount: folderCount, ext: ext)
                 if request.options.additiveOnly { allocatedFiles.append(destURL) }
                 try fm.copyItem(at: source, to: destURL)
@@ -364,6 +367,7 @@ public final class SyncEngine: @unchecked Sendable {
         }
 
         // 9. Artwork.
+        if request.options.additiveOnly { try DeviceDataFolder(mountPoint: device.mountPoint).requireAvailableStorage() }
         if request.options.writeArtwork && device.supportsArtwork {
             report("Artwork", "Preparing album art…", fraction: 0)
             try await writeArtwork(device: device, db: &db, trackIDByDBID: trackIDByDBID, episodeIDByDBID: episodeIDByDBID, libraryByID: libraryByID, episodeByID: episodeByID)
@@ -413,6 +417,7 @@ public final class SyncEngine: @unchecked Sendable {
 
     private func checkCancelledForWrite() throws {
         // Once files are on the device we still write the database so it stays consistent.
+        if request.options.additiveOnly { try DeviceDataFolder(mountPoint: request.device.mountPoint).requireAvailableStorage() }
     }
 
     // MARK: - Play counts

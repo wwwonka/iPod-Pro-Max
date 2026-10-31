@@ -10,19 +10,22 @@ struct LoadedPortableLibrary {
 }
 
 enum PortableLoading {
-    static func load(folder: URL? = nil, refresh: Bool = false) async throws -> LoadedPortableLibrary {
+    static func load(folder: URL? = nil, refresh: Bool = false, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
         try await Task.detached(priority: .userInitiated) {
-            guard let root = PortableRoot.url else { throw LoadingError.noRoot }
+            guard let root = overrideRoot ?? PortableRoot.url else { throw LoadingError.noRoot }
             guard let hostID = HostIdentity.current() else { throw LoadingError.noIdentity }
             let store = PortableLibraryStore(root: root, hostID: hostID)
+            try store.data.requireAvailableStorage()
+            var selectedFolder = folder
             var cache = store.cache()
             let originalCache = cache
             // One-time, read-only migration of this Mac's legacy library; never write back to it.
             #if os(macOS)
             if cache.tracks.isEmpty, store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.contains(where: { $0.id == hostID }) != true {
-                let legacy = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/iPod Pro Max/library.json")
+                let legacy = legacyLibraryURL ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/iPod Pro Max/library.json")
                 if let bytes = try? Data(contentsOf: legacy), let doc = try? JSONDecoder().decode(iPodKit.LibraryDocument.self, from: bytes) {
                     cache = PortableLibraryCache(tracks: doc.tracks, playlists: doc.playlists)
+                    if selectedFolder == nil, let path = doc.musicFolderPath { selectedFolder = URL(fileURLWithPath: path) }
                     let oldArt = legacy.deletingLastPathComponent().appendingPathComponent("Artwork")
                     if FileManager.default.fileExists(atPath: oldArt.path), !FileManager.default.fileExists(atPath: store.artwork.path) {
                         try FileManager.default.createDirectory(at: store.hostFolder.url, withIntermediateDirectories: true)
@@ -31,9 +34,9 @@ enum PortableLoading {
                 }
             }
             #endif
-            let host = try store.register(name: ProcessInfo.processInfo.hostName, musicFolder: folder)
+            let host = try store.register(name: ProcessInfo.processInfo.hostName, musicFolder: selectedFolder)
             if try store.data.readChecked(PortableSettings.self, from: "settings.json") == nil { try store.data.write(PortableSettings(), to: "settings.json") }
-            if refresh || folder != nil {
+            if (refresh || folder != nil), host.sources.contains(where: { $0.kind == .music }) {
                 var tracks: [LibraryTrack] = []
                 for source in host.sources where source.kind == .music {
                     let previousRoot = cache.sourcePaths?[source.id.uuidString]

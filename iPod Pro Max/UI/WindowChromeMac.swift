@@ -49,6 +49,14 @@
         func install(on window: NSWindow) {
             guard self.window !== window else { return }
             self.window = window
+            MacWindowLifecycle.shared.beforeTerminate = { try await ApplicationLifecycle.shared.prepareForExit() }
+            MacWindowLifecycle.shared.onTerminationError = { ApplicationLifecycle.shared.report($0) }
+            MacWindowLifecycle.shared.afterHide = {
+                Task {
+                    do { try await ApplicationLifecycle.shared.savePreferences() }
+                    catch { ApplicationLifecycle.shared.report(error) }
+                }
+            }
             MacWindowLifecycle.shared.install(on: window)
             // The portable app does not persist window state in the host's defaults.
             _ = window.setFrameAutosaveName("")

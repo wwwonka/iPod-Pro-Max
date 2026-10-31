@@ -7,9 +7,12 @@ public struct TransferManifest: Codable, Equatable, Sendable {
         public var sourceID: UUID
         public var fingerprint: String
         public var references: [String]
-        public init(dbid: UInt64, owner: String, sourceID: UUID, fingerprint: String, references: [String]) {
+        public var relativePath: String?
+        public var sourceRootID: UUID?
+        public init(dbid: UInt64, owner: String, sourceID: UUID, fingerprint: String, references: [String], relativePath: String? = nil, sourceRootID: UUID? = nil) {
             self.dbid = dbid; self.owner = owner; self.sourceID = sourceID
             self.fingerprint = fingerprint; self.references = references
+            self.relativePath = relativePath; self.sourceRootID = sourceRootID
         }
     }
     public var version = 1

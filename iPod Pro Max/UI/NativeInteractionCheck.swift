@@ -58,8 +58,36 @@ func checkNativeMusicInteractions() {
     precondition(rotor.animation(forKey: "syncRotation") == nil)
     precondition(rotor.isHidden)
 
-    let row = NeutralSidebarRow(frame: NSRect(x: 0, y: 0, width: 100, height: 28))
-    row.isTargetForDropOperation = true
+    let outline = MusicDropOutlineView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    outline.addTableColumn(NSTableColumn(identifier: .init("sidebar")))
+    outline.headerView = nil
+    let destination = Sidebar.Coordinator()
+    let target = Sidebar.Node(title: "Test iPod", icon: "ipod", item: .device("test-device"), ejectable: true)
+    let music = Sidebar.Node(title: "Music", icon: "music.note", item: .music)
+    destination.sections = [Sidebar.Node(title: "iPods", children: [target]), Sidebar.Node(title: "Library", children: [music])]
+    outline.dataSource = destination
+    outline.delegate = destination
+    let window = NSWindow(contentRect: outline.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = outline
+    outline.reloadData()
+    outline.expandItem(nil, expandChildren: true)
+    window.makeKeyAndOrderFront(nil)
+    defer { window.close() }
+    let info = CheckDraggingInfo()
+    info.draggingDestinationWindow = window
+    info.draggingPasteboard = board
+    board.clearContents()
+    let token = TrackDrag.begin(rows.map(\.id))!
+    let item = NSPasteboardItem(); item.setString(token, forType: .string)
+    precondition(board.writeObjects([item]))
+    let targetRow = outline.row(forItem: target)
+    let targetRect = outline.rect(ofRow: targetRow)
+    info.draggingLocation = outline.convert(NSPoint(x: 60, y: targetRect.midY), to: nil)
+    precondition(destination.outlineView(outline, validateDrop: info, proposedItem: nil, proposedChildIndex: -1) == .copy)
+    guard let row = outline.rowView(atRow: targetRow, makeIfNecessary: true) as? NeutralSidebarRow else { fatalError("Missing real drop row") }
+    log("[check] real delegate feedback: native=\(row.isTargetForDropOperation), explicit=\(row.isMusicDropTarget)")
+    precondition(row.isMusicDropTarget, "Delegate did not activate drop feedback")
     precondition(row.interiorBackgroundStyle == .emphasized)
     let rendered = NSImage(size: row.bounds.size)
     rendered.lockFocus()
@@ -79,8 +107,34 @@ func checkNativeMusicInteractions() {
     precondition(abs(actual.redComponent - accent.redComponent) < 0.03
         && abs(actual.greenComponent - accent.greenComponent) < 0.03
         && abs(actual.blueComponent - accent.blueComponent) < 0.03, "Drop target was not painted with accent color")
-    row.isTargetForDropOperation = false
-    precondition(row.interiorBackgroundStyle == .normal)
+    outline.draggingExited(info)
+    precondition(!row.isMusicDropTarget && row.interiorBackgroundStyle == .normal, "Exit left drop feedback active")
+    _ = destination.outlineView(outline, validateDrop: info, proposedItem: nil, proposedChildIndex: -1)
+    precondition(destination.outlineView(outline, acceptDrop: info, item: target, childIndex: -1))
+    precondition(!row.isMusicDropTarget, "Drop left feedback active")
+    precondition(Set(received) == Set(rows.map(\.id)))
+    info.draggingLocation = outline.convert(NSPoint(x: 60, y: outline.rect(ofRow: outline.row(forItem: music)).midY), to: nil)
+    precondition(destination.outlineView(outline, validateDrop: info, proposedItem: nil, proposedChildIndex: -1).isEmpty)
+    TrackDrag.end()
     log("PASS: native 3-track pasteboard drop, whole-artist drop, external payload rejection, centered spinning glyph/resize lifecycle, accent drop feedback and busy eject guard")
 }
+@MainActor final class CheckDraggingInfo: NSObject, NSDraggingInfo {
+    var draggingDestinationWindow: NSWindow?
+    var draggingSourceOperationMask: NSDragOperation = .copy
+    var draggingLocation = NSPoint.zero
+    var draggedImageLocation = NSPoint.zero
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingPasteboard = NSPasteboard(name: .init("ipod-check"))
+    var draggingSource: Any? = nil
+    var draggingSequenceNumber = 1
+    var draggingFormation = NSDraggingFormation.none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 3
+    var springLoadingHighlight = NSSpringLoadingHighlight.none
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+}
+
 #endif

@@ -6,6 +6,10 @@ import AppKit
 @MainActor
 final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
     static let shared = MacWindowLifecycle()
+    var beforeTerminate: (() async throws -> Void)?
+    var afterHide: (() -> Void)?
+    var onTerminationError: (Error) -> Void = { _ in }
+    private var terminationTask: Task<Void, Never>?
     private var originalApplicationDelegate: (any NSApplicationDelegate)?
     private var windows: [ObjectIdentifier: CloseDelegate] = [:]
     private weak var lastHiddenWindow: NSWindow?
@@ -19,6 +23,7 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         guard windows[id] == nil else { return }
         let proxy = CloseDelegate(window: window, inner: window.delegate, onHide: { [weak self] window in
             self?.lastHiddenWindow = window
+            self?.afterHide?()
         }, onClose: { [weak self] window in
             self?.windows[ObjectIdentifier(window)] = nil
             if self?.lastHiddenWindow === window { self?.lastHiddenWindow = nil }
@@ -35,6 +40,24 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         return false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let beforeTerminate else { return originalApplicationDelegate?.applicationShouldTerminate?(sender) ?? .terminateNow }
+        guard terminationTask == nil else { return .terminateLater }
+        terminationTask = Task {
+            defer { terminationTask = nil }
+            do {
+                try await beforeTerminate()
+                let reply = originalApplicationDelegate?.applicationShouldTerminate?(sender) ?? .terminateNow
+                if reply != .terminateLater { sender.reply(toApplicationShouldTerminate: reply == .terminateNow) }
+            } catch {
+                onTerminationError(error)
+                lastHiddenWindow?.makeKeyAndOrderFront(nil)
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
     }
 
     // Keep SwiftCrossUI's application callbacks (including open URLs) and window callbacks.

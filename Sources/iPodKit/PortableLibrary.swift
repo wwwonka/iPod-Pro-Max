@@ -18,12 +18,25 @@ public struct KnownHost: Codable, Equatable, Sendable {
     public init(id: String, name: String, sources: [KnownSource] = []) {
         self.id = id; self.name = name; self.sources = sources
     }
+    private enum CodingKeys: String, CodingKey { case id, name, sources }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? id
+        sources = try values.decodeIfPresent([KnownSource].self, forKey: .sources) ?? []
+    }
 }
 
 public struct KnownHosts: Codable, Sendable {
     public var version = 1
     public var hosts: [KnownHost] = []
     public init() {}
+    private enum CodingKeys: String, CodingKey { case version, hosts }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        hosts = try values.decodeIfPresent([KnownHost].self, forKey: .hosts) ?? []
+    }
 }
 
 public struct PortableLibraryCache: Codable, Equatable, Sendable {
@@ -34,6 +47,14 @@ public struct PortableLibraryCache: Codable, Equatable, Sendable {
     public init(tracks: [LibraryTrack] = [], playlists: [LibraryPlaylist] = []) {
         self.tracks = tracks; self.playlists = playlists
     }
+    private enum CodingKeys: String, CodingKey { case version, tracks, playlists, sourcePaths }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        tracks = try values.decodeIfPresent([LibraryTrack].self, forKey: .tracks) ?? []
+        playlists = try values.decodeIfPresent([LibraryPlaylist].self, forKey: .playlists) ?? []
+        sourcePaths = try values.decodeIfPresent([String: String].self, forKey: .sourcePaths)
+    }
 }
 
 public struct PortableSettings: Codable, Sendable {
@@ -41,6 +62,13 @@ public struct PortableSettings: Codable, Sendable {
     public var syncArtwork = true
     public var musicViewMode = "All Songs"
     public init() {}
+    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        syncArtwork = try values.decodeIfPresent(Bool.self, forKey: .syncArtwork) ?? true
+        musicViewMode = try values.decodeIfPresent(String.self, forKey: .musicViewMode) ?? "All Songs"
+    }
 }
 
 /// All library, artwork and conversion data belongs to the launching iPod.
@@ -56,6 +84,7 @@ public struct PortableLibraryStore: Sendable {
         data = DeviceDataFolder(mountPoint: root); self.hostID = hostID
     }
     public func register(name: String, musicFolder: URL? = nil) throws -> KnownHost {
+        try data.requireAvailableStorage()
         var registry = try data.readChecked(KnownHosts.self, from: "known_hosts.json") ?? KnownHosts()
         guard registry.version == 1 else { throw IPodDBError.unsupported("Unsupported known_hosts.json version") }
         var host = registry.hosts.first { $0.id == hostID } ?? KnownHost(id: hostID, name: name)
@@ -72,5 +101,5 @@ public struct PortableLibraryStore: Sendable {
     public func cache() -> PortableLibraryCache {
         hostFolder.read(PortableLibraryCache.self, from: "library.json") ?? PortableLibraryCache()
     }
-    public func save(_ cache: PortableLibraryCache) throws { try hostFolder.write(cache, to: "library.json") }
+    public func save(_ cache: PortableLibraryCache) throws { try data.requireAvailableStorage(); try hostFolder.write(cache, to: "library.json") }
 }
