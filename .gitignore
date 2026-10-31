@@ -24,3 +24,4 @@ Docs/.obsidian/*
 # Local agent settings and worktrees
 .claude/worktrees/
 .claude/settings.local.json
+.build-x86_64/

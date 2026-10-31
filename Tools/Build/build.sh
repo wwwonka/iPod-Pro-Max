@@ -44,16 +44,26 @@ WINDOWS_SRC='\\Mac\Home\'"${REL//\//\\}"
 # Universal (arm64 + x86_64) app and command-line tool for macOS 10.15.4 and later. One build per
 # architecture, then lipo: SwiftPM's multi-architecture build can't build SwiftCrossUI's macros.
 build_mac() {
+    # The two architectures build at the same time (a release build is mostly single-threaded):
+    # x86_64 in its own scratch folder, since SwiftPM locks .build while it builds.
     swift package resolve
     Tools/Build/patch-dependencies.sh .build
-    local arch product
-    for arch in arm64 x86_64; do
+    local x86=.build-x86_64
+    swift package resolve --scratch-path "$x86"
+    Tools/Build/patch-dependencies.sh "$x86"
+    build_arch() { # <arch> <scratch>
+        local product
         for product in iPodProMaxApp ipodpromax; do
-            swift build -c release --triple "$arch-apple-macosx10.15.4" --product "$product"
+            swift build -c release --scratch-path "$2" --triple "$1-apple-macosx10.15.4" --product "$product" 2>&1 | sed -u "s/^/[mac $1] /"
+            [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
         done
-    done
+    }
+    build_arch arm64 .build & local arm_pid=$!
+    build_arch x86_64 "$x86" & local x86_pid=$!
+    wait "$arm_pid" || { wait "$x86_pid" || true; return 1; }
+    wait "$x86_pid" || return 1
     universal() { # <product> <output>
-        lipo -create ".build/arm64-apple-macosx/release/$1" ".build/x86_64-apple-macosx/release/$1" -output "$2"
+        lipo -create ".build/arm64-apple-macosx/release/$1" "$x86/x86_64-apple-macosx/release/$1" -output "$2"
     }
     # Swift concurrency is in macOS 12 and later; before that it comes with the app (found through
     # the executables' @loader_path rpath).
@@ -195,17 +205,18 @@ show_vm() {
     open -a "Parallels Desktop" || true
 }
 
-# The Mac builds first (it is the quickest feedback), then both VMs build at the same time.
+# Linux and Windows start first, in the background (Docker and the VM do the work); the Mac builds
+# meanwhile, so the total is the slowest of the three rather than their sum.
 pids=(); names=()
-for t in "${TARGETS[@]}"; do
-    case $t in
-        mac) build_mac 2>&1 | sed -u 's/^/[mac] /' ;;
-        *)
-            ( set -o pipefail; "build_$t" 2>&1 | sed -u "s/^/[$t] /" | tee "$WORK/$t.log" ) &
-            pids+=($!); names+=("$t") ;;
-    esac
+for t in linux windows; do
+    [[ " ${TARGETS[*]} " == *" $t "* ]] || continue
+    ( set -o pipefail; "build_$t" 2>&1 | sed -u "s/^/[$t] /" | tee "$WORK/$t.log" ) &
+    pids+=($!); names+=("$t")
 done
-status=0
+if [[ " ${TARGETS[*]} " == *" mac "* ]]; then
+    build_mac 2>&1 | sed -u 's/^/[mac] /' || status_mac=1
+fi
+status=${status_mac:-0}
 for ((i = 0; i < ${#names[@]}; i++)); do
     if wait "${pids[$i]}"; then echo "[${names[$i]}] OK"; else echo "[${names[$i]}] FAILED (.build-work/${names[$i]}.log)"; status=1; fi
 done

@@ -39,12 +39,16 @@ if [ ! -f "$SDK_FILE" ]; then
 fi
 [ "$(shasum -a 256 "$SDK_FILE" | cut -d' ' -f1)" = "$SDK_SHA256" ] || { echo "Checksum mismatch: $SDK_FILE" >&2; rm -f "$SDK_FILE"; exit 1; }
 
-for arch in "${ARCHS[@]}"; do
+# Both architectures build at the same time, each in its own container (a release build is mostly
+# single-threaded); the cross-compiled Windows ffmpeg is arch-independent, so only the first builds it.
+build_arch() { # <arch> <build the Windows ffmpeg here: 1|0>
+    local arch=$1 winff=$2 platform ffarch
     case $arch in
         x86_64) platform=linux/amd64 ffarch=x64 ;;
         aarch64) platform=linux/arm64 ffarch=arm64 ;;
-        *) echo "Unknown architecture: $arch (x86_64 or aarch64)" >&2; exit 2 ;;
+        *) echo "Unknown architecture: $arch (x86_64 or aarch64)" >&2; return 2 ;;
     esac
+    local image cache
     image="ipodpromax-linux-build:$arch"
     # GTK 4 for the app; what Tools/FFmpeg/build.sh needs (compilers, static libstdc++, nasm).
     docker build -q --platform "$platform" -t "$image" - >/dev/null <<EOF
@@ -58,7 +62,7 @@ EOF
     echo "Building for Linux ${arch}…"
     docker run --rm --platform "$platform" \
         -v "$ROOT:/src:ro" -v "$cache:/work" -v "$WORK:/out" -v "$SDK_FILE:/sdk.tar.gz:ro" \
-        -e ARCH="$arch" -e FFARCH="$ffarch" "$image" bash -euo pipefail -c '
+        -e ARCH="$arch" -e FFARCH="$ffarch" -e WINFF="$winff" "$image" bash -euo pipefail -c '
         # A copy of the sources: building on the Mac share is slow, and .build must stay per architecture.
         rsync -a --delete --exclude /.build/ --exclude /.build-gtk/ --exclude /Build/ --exclude /.build-work/ \
             --exclude /Refs/ --exclude /Docs/ --exclude /.git/ --exclude /.claude/ --exclude /.scratch/ \
@@ -72,7 +76,7 @@ EOF
         fi
         # And the Windows ones (x64, arm64), cross-compiled with llvm-mingw: assemble-ipod.sh puts
         # them next to the Windows executables.
-        if [ ! -f /out/FFmpeg/windows-arm64/ffmpeg.exe ] || [ ! -f /out/FFmpeg/windows-x64/ffmpeg.exe ]; then
+        if [ "$WINFF" = 1 ] && { [ ! -f /out/FFmpeg/windows-arm64/ffmpeg.exe ] || [ ! -f /out/FFmpeg/windows-x64/ffmpeg.exe ]; }; then
             IPPM_FFMPEG_CACHE=/work/ffmpeg-cache Tools/FFmpeg/build.sh windows
             mkdir -p /out/FFmpeg && rsync -a .build-work/FFmpeg/ /out/FFmpeg/
         fi
@@ -81,20 +85,35 @@ EOF
         export SCUI_DEFAULT_BACKEND=GtkBackend
         swift package resolve
         bash Tools/Build/patch-dependencies.sh .build
+        # The command-line tool (musl, fully static) builds at the same time in its own scratch folder.
+        swift sdk list --swift-sdks-path /work/sdks 2>/dev/null | grep -q static-linux \
+            || swift sdk install /sdk.tar.gz --swift-sdks-path /work/sdks
+        (
+            swift package resolve --scratch-path /work/build-cli
+            bash Tools/Build/patch-dependencies.sh /work/build-cli
+            swift build -c release --scratch-path /work/build-cli --swift-sdks-path /work/sdks --swift-sdk $ARCH-swift-linux-musl --product ipodpromax 2>&1 | sed -u "s/^/[cli] /"
+            exit ${PIPESTATUS[0]}
+        ) & cli=$!
         swift build -c release --static-swift-stdlib --product iPodProMaxApp
         bin=$(swift build -c release --static-swift-stdlib --show-bin-path)
         rsync -a --delete --include iPodProMaxApp --include "*.resources/***" --exclude "*" "$bin/" /out/linux/$ARCH/
         strip /out/linux/$ARCH/iPodProMaxApp
         cp /out/FFmpeg/linux-$FFARCH/ffmpeg /out/linux/$ARCH/ffmpeg
-
-        # The command-line tool: musl, fully static.
-        swift sdk list --swift-sdks-path /work/sdks 2>/dev/null | grep -q static-linux \
-            || swift sdk install /sdk.tar.gz --swift-sdks-path /work/sdks
-        swift build -c release --swift-sdks-path /work/sdks --swift-sdk $ARCH-swift-linux-musl --product ipodpromax
+        wait $cli
         rm -rf /out/linux-cli/$ARCH && mkdir -p /out/linux-cli/$ARCH
-        cp .build/$ARCH-swift-linux-musl/release/ipodpromax /out/linux-cli/$ARCH/
+        cp /work/build-cli/$ARCH-swift-linux-musl/release/ipodpromax /out/linux-cli/$ARCH/
         strip /out/linux-cli/$ARCH/ipodpromax
         cp /out/FFmpeg/linux-$FFARCH/ffmpeg /out/linux-cli/$ARCH/ffmpeg
         echo "OK: Linux $ARCH"
     '
+}
+
+pids=()
+first=1
+for arch in "${ARCHS[@]}"; do
+    build_arch "$arch" $first 2>&1 | sed -u "s/^/[$arch] /" &
+    pids+=($!); first=0
 done
+status=0
+for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+exit $status
