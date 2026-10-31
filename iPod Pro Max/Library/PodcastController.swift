@@ -22,6 +22,8 @@ final class PodcastController {
     private var saveChain: Task<Void, Error>?
     private var dirty = false
     private var lastProgressPublish = Date.distantPast
+    /// Bumped by changes to the shows' content, not by download progress: the episode list rebuilds on this.
+    private(set) var contentRevision = 0
 
     /// The cover file of a show, nil until it has been downloaded.
     func artworkURL(for show: PodcastShow) -> URL? {
@@ -43,6 +45,7 @@ final class PodcastController {
         do {
             let loaded = try await Task.detached(priority: .userInitiated) { try store.loadPodcasts() }.value
             shows = loaded
+            contentRevision &+= 1
             onChange()
         } catch { onError("Couldn't read the podcasts: \(error.localizedDescription)") }
     }
@@ -141,7 +144,10 @@ final class PodcastController {
         progress[episodeID] = 0
         let task = Task { [weak self] in
             do {
+                // Throttled where the callbacks arrive: thousands per download would each wake the main actor.
+                let gate = ProgressGate(interval: 0.25)
                 let file = try await PodcastSources.download(episode, of: show, into: directory) { fraction in
+                    guard gate.shouldPublish() else { return }
                     Task { @MainActor in self?.publishProgress(episodeID, fraction) }
                 }
                 let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
@@ -194,6 +200,8 @@ final class PodcastController {
         return shows.compactMap { show in
             var copy = show
             copy.episodes = show.episodes.filter { episodeIDs.contains($0.id) && $0.isDownloaded }
+            // Picked by hand: the show's "keep the latest N" rule and any "never sync" mark don't apply.
+            for i in copy.episodes.indices { copy.episodes[i].syncOverride = true }
             copy.syncEnabled = true
             return copy.episodes.isEmpty ? nil : copy
         }
@@ -221,6 +229,7 @@ final class PodcastController {
     // MARK: Saving
 
     private func changed() {
+        contentRevision &+= 1
         dirty = true
         onChange()
         saveTask?.cancel()
@@ -234,15 +243,30 @@ final class PodcastController {
     /// Before a transfer and on exit: the file on the iPod matches what the screen shows.
     func flush() async throws {
         saveTask?.cancel()
-        guard dirty, let store else { return }
-        dirty = false
-        let snapshot = shows
-        let previous = saveChain
-        let write = Task.detached(priority: .utility) { () -> Void in
-            _ = try? await previous?.value
-            try store.savePodcasts(snapshot)
+        if dirty, let store {
+            dirty = false
+            let snapshot = shows
+            let previous = saveChain
+            saveChain = Task.detached(priority: .utility) { () -> Void in
+                _ = try? await previous?.value
+                try store.savePodcasts(snapshot)
+            }
         }
-        saveChain = write
-        do { try await write.value } catch { dirty = true; throw error }
+        // Also waits for a debounced save that already started: its `dirty` is false but the file isn't written yet.
+        do { try await saveChain?.value } catch { dirty = true; throw error }
+    }
+}
+
+private final class ProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let interval: TimeInterval
+    private var last = Date.distantPast
+    init(interval: TimeInterval) { self.interval = interval }
+    func shouldPublish() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        guard now.timeIntervalSince(last) >= interval else { return false }
+        last = now
+        return true
     }
 }

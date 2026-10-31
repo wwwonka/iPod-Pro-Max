@@ -192,11 +192,15 @@ enum KeepRule: Int, CaseIterable, CustomStringConvertible {
 /// changed (download progress, for one, doesn't), so the table doesn't reload and lose its selection.
 final class PodcastRowsCache {
     private var showID: UUID?
+    private var revision = -1
     private var rows: [TrackRow] = []
 
+    /// Rebuilt only when the show or the content revision changes (not on download progress ticks).
     @MainActor
-    func rows(for show: PodcastShow?) -> [TrackRow] {
+    func rows(for show: PodcastShow?, revision: Int) -> [TrackRow] {
         guard let show else { showID = nil; rows = []; return rows }
+        if showID == show.id, self.revision == revision { return rows }
+        self.revision = revision
         let fresh = show.sortedEpisodes.map { episode -> TrackRow in
             var year = ""
             if let date = episode.publishedAt {

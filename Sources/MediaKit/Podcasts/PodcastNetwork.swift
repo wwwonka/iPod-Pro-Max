@@ -369,8 +369,10 @@ enum YouTubeFeed {
 
     static func downloadAudio(videoID: String, to dest: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
         guard let bin = binaryPath() else { throw missingBinaryError }
-        try await runStreaming(bin, ["-f", "bestaudio", "--extract-audio", "--audio-format", "m4a", "--no-warnings", "--newline",
-                                     "-o", dest.path, "https://www.youtube.com/watch?v=\(videoID)"], progress: progress)
+        // Extracting audio needs ffmpeg: ours, wherever yt-dlp would look.
+        let ffmpeg = FFmpeg.binaryPath().map { ["--ffmpeg-location", $0] } ?? []
+        try await runStreaming(bin, ffmpeg + ["-f", "bestaudio", "--extract-audio", "--audio-format", "m4a", "--no-warnings", "--newline",
+                                              "-o", dest.path, "https://www.youtube.com/watch?v=\(videoID)"], progress: progress)
         guard FileManager.default.fileExists(atPath: dest.path) else {
             throw IPodDBError.io("yt-dlp didn't produce an audio file for this video.")
         }
@@ -405,19 +407,41 @@ enum YouTubeFeed {
         return candidates.first { fm.isExecutableFile(atPath: $0) }
     }
 
+    /// Both pipes are drained while yt-dlp runs: a channel listing is far more than a pipe buffer, and a full
+    /// pipe would block yt-dlp forever.
     private static func run(_ binary: String, _ arguments: [String]) async throws -> String {
-        try await withCheckedThrowingContinuation { cont in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: binary)
-            process.arguments = arguments
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-            process.terminationHandler = { _ in
-                cont.resume(returning: String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+        let box = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: binary)
+                process.arguments = arguments
+                let out = Pipe(), err = Pipe()
+                process.standardOutput = out
+                process.standardError = err
+                let collected = DataBox()
+                out.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if !data.isEmpty { collected.append(data) }
+                }
+                err.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+                process.terminationHandler = { _ in
+                    out.fileHandleForReading.readabilityHandler = nil
+                    err.fileHandleForReading.readabilityHandler = nil
+                    collected.append(out.fileHandleForReading.readDataToEndOfFile())
+                    cont.resume(returning: String(decoding: collected.data, as: UTF8.self))
+                }
+                box.set(process)
+                do { try process.run() } catch { cont.resume(throwing: error) }
             }
-            do { try process.run() } catch { cont.resume(throwing: error) }
-        }
+        } onCancel: { box.cancel() }
+    }
+
+    private final class DataBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var buffer = Data()
+        func append(_ d: Data) { lock.lock(); buffer.append(d); lock.unlock() }
+        var data: Data { lock.lock(); defer { lock.unlock() }; return buffer }
     }
 
     /// Progress comes from yt-dlp's own "NN.N% of" lines; a failure reports its last output line

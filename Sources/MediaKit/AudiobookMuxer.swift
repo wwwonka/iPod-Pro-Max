@@ -71,10 +71,12 @@ public enum AudiobookMuxer {
         let concatenated = workDir.appendingPathComponent("concatenated.m4a")
         try await FFmpeg.run(ffmpeg, ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", FileOps.nativePath(listURL), "-vn", "-c", "copy", FileOps.nativePath(concatenated)])
 
-        // Written next to the destination and renamed, so a cancelled or failed merge never leaves half a book.
+        // Written in the work folder beside the destination, then renamed: a cancelled or failed merge never leaves half a book.
         let partial = workDir.appendingPathComponent("book.m4b")
         try await FFmpeg.run(ffmpeg, ["-y", "-v", "error", "-i", FileOps.nativePath(concatenated), "-i", FileOps.nativePath(metaURL), "-map", "0:a", "-map_metadata", "1", "-map_chapters", "1", "-codec", "copy", "-f", "ipod", FileOps.nativePath(partial)])
-        try FileOps.writeReplacing(try Data(contentsOf: partial), to: destination)
+        // `workDir` sits next to the destination, so this is a rename on the same volume, not a copy.
+        if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+        try FileManager.default.moveItem(at: partial, to: destination)
     }
 
     // MARK: Pieces

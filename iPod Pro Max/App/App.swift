@@ -437,7 +437,7 @@ struct ContentView: View {
         case .playlist(let id):
             return library.rowsByPlaylist[id] ?? []
         case .podcasts:
-            return filtered(podcastRows.rows(for: currentShow))
+            return filtered(podcastRows.rows(for: currentShow, revision: PodcastController.shared.contentRevision))
         case .audiobooks:
             return filtered(audiobookRows)
         default:

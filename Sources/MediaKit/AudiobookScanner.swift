@@ -106,6 +106,8 @@ public enum AudiobookScanner {
             let author = chapters.compactMap(\.artist).first { !$0.isEmpty } ?? "Unknown Author"
             let cover = chapters.compactMap(\.artworkKey).first
             for i in chapters.indices {
+                // Cached chapters keep what they were read with: numbers follow the files that are there now.
+                if chapters.count > 1 { chapters[i].trackNumber = i + 1; chapters[i].trackCount = chapters.count }
                 chapters[i].artist = author
                 chapters[i].albumArtist = author
                 if chapters[i].artworkKey == nil { chapters[i].artworkKey = cover }

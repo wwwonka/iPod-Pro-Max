@@ -91,6 +91,7 @@ final class MusicTransfer {
         cancelled.remove(device.id)
         tasks[device.id] = Task {
             var changed = false
+            var failures: [String] = []
             defer { tasks[device.id] = nil; engines[device.id] = nil; queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil; onActivityChanged(runningDeviceIDs); if changed { onDeviceFinished(device) }; onFinished() }
             while !Task.isCancelled {
                 do {
@@ -119,11 +120,16 @@ final class MusicTransfer {
                         }) { changed = changed || result.photosWritten > 0 }
                     } else { break }
                 } catch {
-                    onStatus(Task.isCancelled || cancelled.contains(device.id) ? "Transfer cancelled" : "Transfer failed: \(error.localizedDescription)")
-                    queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil
-                    break
+                    if Task.isCancelled || cancelled.contains(device.id) {
+                        onStatus("Transfer cancelled")
+                        queues[device.id] = nil; podcastJobs[device.id] = nil; photoJobs[device.id] = nil
+                        break
+                    }
+                    // The failed job is already off its queue: the others still run.
+                    failures.append(error.localizedDescription)
                 }
             }
+            if !failures.isEmpty, !cancelled.contains(device.id) { onStatus("Transfer failed: " + failures.joined(separator: " · ")) }
         }
         onActivityChanged(runningDeviceIDs)
     }

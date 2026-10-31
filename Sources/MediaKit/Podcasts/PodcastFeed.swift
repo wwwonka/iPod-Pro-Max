@@ -120,7 +120,7 @@ public final class PodcastFeedParser: NSObject, XMLParserDelegate {
             case "itunes:season": current?.seasonNumber = Int(value)
             default: break
             }
-        } else if parent == "channel" || path.count <= 3 {
+        } else if parent == "channel" || parent == "image" || path.count <= 3 {
             switch name {
             case "title": if feed.title.isEmpty && parent == "channel" { feed.title = Self.stripHTML(value) }
             case "itunes:author": if feed.author == nil { feed.author = value }
