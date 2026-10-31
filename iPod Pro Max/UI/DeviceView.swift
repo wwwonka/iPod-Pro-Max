@@ -7,45 +7,52 @@ import iPodKit
 
 /// The iPod page, copied from the SwiftUI app's `DeviceView`: header, support banner, capacity bar,
 /// sync panel, sync options and actions. Read from the iPod itself with iPodKit (name, contents,
-/// space); the sync options live in the view only, and Sync, Import and Forget are shown but not
-/// wired up: the prototype has no sync records or sync engine behind it. Eject and Show in Finder work.
+/// space). Options are saved on the device. Full Sync, Import and Forget remain deferred;
+/// music can be added by dropping a selection onto the sidebar device.
 struct DeviceView: View {
     var device: IPodDevice
     var library: Library
+    var revision: Int = 0
     var onEject: () -> Void
+    var onRename: (String) -> Void = { _ in }
 
-    @State var contents: DeviceContents?
-    @State var isRenaming = false
-    @State var newName = ""
-    @State var renamed: String?
+    /// One publication when changing devices: no cascade of per-option view updates.
+    struct PageState {
+        var device: IPodDevice
+        var contents: DeviceContents?
+        var savedOptions: DeviceOptions?
+        var isRenaming = false
+        var newName = ""
+        var renamed: String?
+        var musicChoice: MusicChoice? = .entireLibrary
+        var selectedPlaylists: Set<String> = []
+        var syncPodcasts = true
+        var syncVideos = true
+        var syncAudiobooks = true
+        var syncPhotos = true
+        var removeUnknownTracks = false
+        var albumArtistGrouping = true
 
-    // Sync options, as in the app's DeviceSyncRecord (defaults included).
-    @State var musicChoice: MusicChoice? = .entireLibrary
-    @State var selectedPlaylists: Set<String> = []
-    @State var syncPodcasts = true
-    @State var syncVideos = true
-    @State var syncAudiobooks = true
-    @State var syncPhotos = true
-    @State var removeUnknownTracks = false
-    @State var albumArtistGrouping = true
-    /// The options as last read from or written to the iPod's `device.json`; nil until read, so the
-    /// defaults never overwrite the saved choices.
-    @State var savedOptions: DeviceOptions?
+        init(device: IPodDevice, snapshot: DevicePageCache.Snapshot?) {
+            self.device = device
+            contents = snapshot?.contents
+            savedOptions = snapshot?.options
+            let o = snapshot?.options ?? DeviceOptions()
+            musicChoice = o.syncAllMusic ? .entireLibrary : .selectedPlaylists
+            selectedPlaylists = Set(o.selectedPlaylistIDs)
+            syncPodcasts = o.syncPodcasts; syncVideos = o.syncVideos
+            syncAudiobooks = o.syncAudiobooks; syncPhotos = o.syncPhotos
+            removeUnknownTracks = o.removeUnknownTracks
+            albumArtistGrouping = o.useAlbumArtistForGrouping
+        }
+    }
+    @State var page: PageState
+    typealias DeviceContents = DeviceContentsSummary
 
-    struct DeviceContents {
-        var songs = 0
-        var podcasts = 0
-        var videos = 0
-        var audiobooks = 0
-        var musicBytes: Int64 = 0
-        var podcastBytes: Int64 = 0
-        var videoBytes: Int64 = 0
-        var audiobookBytes: Int64 = 0
-        var photoBytes: Int64 = 0
-        var photos = 0
-        var name = ""
-        var readError: String?
-        var stats = IPodDevice.VolumeStats(total: 0, free: 0)
+    init(device: IPodDevice, library: Library, revision: Int = 0, onEject: @escaping () -> Void, onRename: @escaping (String) -> Void = { _ in }) {
+        self.device = device; self.library = library; self.revision = revision
+        self.onEject = onEject; self.onRename = onRename
+        _page = State(wrappedValue: PageState(device: device, snapshot: DevicePageCache.shared.cached(for: device)))
     }
 
     enum MusicChoice: String, CaseIterable, CustomStringConvertible {
@@ -65,53 +72,36 @@ struct DeviceView: View {
                 }
                 capacity
                 syncPanel
-                optionsPanel
+                optionsPanel.disabled(page.savedOptions == nil)
                 actionsPanel
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task(id: device.id) { await loadContents() }
+        .task(id: device.id + "-\(revision)") { await loadContents() }
         .task(id: options) { await saveOptions() }
     }
 
     /// The sync options as stored on the iPod.
     private var options: DeviceOptions {
-        DeviceOptions(syncAllMusic: musicChoice != .selectedPlaylists, selectedPlaylistIDs: selectedPlaylists.sorted(),
-                      syncPodcasts: syncPodcasts, syncVideos: syncVideos, syncAudiobooks: syncAudiobooks,
-                      syncPhotos: syncPhotos, removeUnknownTracks: removeUnknownTracks,
-                      useAlbumArtistForGrouping: albumArtistGrouping)
+        DeviceOptions(syncAllMusic: page.musicChoice != .selectedPlaylists, selectedPlaylistIDs: page.selectedPlaylists.sorted(),
+                      syncPodcasts: page.syncPodcasts, syncVideos: page.syncVideos, syncAudiobooks: page.syncAudiobooks,
+                      syncPhotos: page.syncPhotos, removeUnknownTracks: page.removeUnknownTracks,
+                      useAlbumArtistForGrouping: page.albumArtistGrouping)
     }
 
-    private func apply(_ o: DeviceOptions) {
-        musicChoice = o.syncAllMusic ? .entireLibrary : .selectedPlaylists
-        selectedPlaylists = Set(o.selectedPlaylistIDs)
-        syncPodcasts = o.syncPodcasts
-        syncVideos = o.syncVideos
-        syncAudiobooks = o.syncAudiobooks
-        syncPhotos = o.syncPhotos
-        removeUnknownTracks = o.removeUnknownTracks
-        albumArtistGrouping = o.useAlbumArtistForGrouping
-    }
-
-    /// Writes the options to the iPod 2 s after the last change: the task restarts on each change,
-    /// so a burst of clicks wakes the iPod's disk once.
+    /// The connection-owned cache saves a burst once, even if this page disappears meanwhile.
     private func saveOptions() async {
         let current = options
-        guard let saved = savedOptions, saved != current else { return }
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        guard !Task.isCancelled else { return }
-        let folder = DeviceDataFolder(mountPoint: device.mountPoint)
-        let written = await Task.detached(priority: .utility) { () -> Bool in
-            (try? folder.write(current, to: DeviceOptions.fileName)) != nil
-        }.value
-        if written { savedOptions = current } else { log("[app] couldn't save \(DeviceOptions.fileName) on \(device.displayName)") }
+        guard page.device == device, let saved = page.savedOptions, saved != current else { return }
+        DevicePageCache.shared.stage(current, for: device)
+        page.savedOptions = current
     }
 
     private var displayName: String {
-        if let renamed { return renamed }
-        if let n = contents?.name, !n.isEmpty { return n }
+        if let renamed = page.renamed { return renamed }
+        if let n = page.contents?.name, !n.isEmpty { return n }
         return device.displayName
     }
 
@@ -122,20 +112,20 @@ struct DeviceView: View {
             Symbol(name: "ipod", size: 80, pointSize: 56, tint: .accent)
                 .background(RoundedRectangle(cornerRadius: 16).fill(MacColor.accent.opacity(0.1)))
             VStack(alignment: .leading, spacing: 4) {
-                if isRenaming {
+                if page.isRenaming {
                     HStack(spacing: 8) {
-                        TextField("Name", text: $newName)
+                        TextField("Name", text: $page.newName)
                             .frame(width: 260)
                             .onSubmit { rename() }
                         Button("Rename") { rename() }
-                        Button("Cancel") { isRenaming = false }
+                        Button("Cancel") { page.isRenaming = false }
                     }
                 } else {
                     HStack(spacing: 8) {
                         Text(displayName).font(.system(size: 26, weight: .bold))
                         Button {
-                            newName = displayName
-                            isRenaming = true
+                            page.newName = displayName
+                            page.isRenaming = true
                         } label: {
                             Symbol(name: "pencil", size: 16, pointSize: 13, tint: .secondary)
                         }
@@ -188,12 +178,12 @@ struct DeviceView: View {
     }
 
     private var capacity: some View {
-        let stats = contents?.stats ?? IPodDevice.VolumeStats(total: 0, free: 0)
-        let music = contents?.musicBytes ?? 0
-        let podcasts = contents?.podcastBytes ?? 0
-        let videos = contents?.videoBytes ?? 0
-        let audiobooks = contents?.audiobookBytes ?? 0
-        let photos = contents?.photoBytes ?? 0
+        let stats = page.contents?.stats ?? IPodDevice.VolumeStats(total: 0, free: 0)
+        let music = page.contents?.musicBytes ?? 0
+        let podcasts = page.contents?.podcastBytes ?? 0
+        let videos = page.contents?.videoBytes ?? 0
+        let audiobooks = page.contents?.audiobookBytes ?? 0
+        let photos = page.contents?.photoBytes ?? 0
         let used = max(stats.used, music + podcasts + videos + audiobooks + photos)
         let other = max(used - music - podcasts - videos - audiobooks - photos, 0)
         let segments: [(Color, Int64)] = [
@@ -214,17 +204,17 @@ struct DeviceView: View {
             .frame(height: 18)
             .cornerRadius(6)
             HStack(spacing: 18) {
-                legend(MacColor.blue, "Music", bytes(music), detail: contents.map { "\($0.songs) songs" })
-                legend(MacColor.purple, "Podcasts", bytes(podcasts), detail: contents.map { "\($0.podcasts) episodes" })
-                if videos > 0 { legend(MacColor.orange, "Videos", bytes(videos), detail: contents.map { "\($0.videos)" }) }
-                if audiobooks > 0 { legend(MacColor.pink, "Audiobooks", bytes(audiobooks), detail: contents.map { "\($0.audiobooks)" }) }
-                if photos > 0 { legend(MacColor.green, "Photos", bytes(photos), detail: contents.map { "\($0.photos)" }) }
+                legend(MacColor.blue, "Music", bytes(music), detail: page.contents.map { "\($0.songs) songs" })
+                legend(MacColor.purple, "Podcasts", bytes(podcasts), detail: page.contents.map { "\($0.podcasts) episodes" })
+                if videos > 0 { legend(MacColor.orange, "Videos", bytes(videos), detail: page.contents.map { "\($0.videos)" }) }
+                if audiobooks > 0 { legend(MacColor.pink, "Audiobooks", bytes(audiobooks), detail: page.contents.map { "\($0.audiobooks)" }) }
+                if photos > 0 { legend(MacColor.green, "Photos", bytes(photos), detail: page.contents.map { "\($0.photos)" }) }
                 legend(MacColor.gray, "Other", bytes(other))
                 legend(MacColor.secondaryText.opacity(0.3), "Free", bytes(stats.free))
                 if stats.total > 0 { Text("\(bytes(stats.total)) total").foregroundColor(MacColor.secondaryText).legendFixedSize() }
             }
             .font(.system(size: 10))
-            if let e = contents?.readError {
+            if let e = page.contents?.readError {
                 HStack(spacing: 4) {
                     Symbol(name: "exclamationmark.triangle", size: 12, pointSize: 10, tint: .color(MacColor.orangeTint))
                     Text(e).foregroundColor(MacColor.orange)
@@ -253,7 +243,7 @@ struct DeviceView: View {
                 }
                 Spacer()
                 ProminentButton(title: "Sync", icon: "arrow.triangle.2.circlepath", enabled: false) {}
-                    .help("Syncing isn't available yet")
+                    .help("Full sync will be available with song checkboxes. Drag songs onto the iPod to add them.")
             }
         }
     }
@@ -261,8 +251,8 @@ struct DeviceView: View {
     private var planSummary: String {
         let songs = library.allRows.count
         var parts = ["\(songs) song\(songs == 1 ? "" : "s")"]
-        if syncPhotos && device.generation.supportsPhotos { parts.append("photos from your whole library") }
-        let playlists = musicChoice == .selectedPlaylists ? selectedPlaylists.count : library.playlists.count
+        if page.syncPhotos && device.generation.supportsPhotos { parts.append("photos from your whole library") }
+        let playlists = page.musicChoice == .selectedPlaylists ? page.selectedPlaylists.count : library.playlists.count
         if playlists > 0 { parts.append("\(playlists) playlist\(playlists == 1 ? "" : "s")") }
         return parts.joined(separator: ", ")
     }
@@ -272,18 +262,18 @@ struct DeviceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Text("Music:")
-                    RadioGroup(options: MusicChoice.allCases, selection: $musicChoice)
+                    RadioGroup(options: MusicChoice.allCases, selection: $page.musicChoice)
                 }
-                if musicChoice == .selectedPlaylists {
+                if page.musicChoice == .selectedPlaylists {
                     if library.playlists.isEmpty {
                         Caption("No playlists yet. Create one from the Music view.").padding(.leading, 20)
                     } else {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(library.playlists, id: \.id) { pl in
                                 CheckboxRow(title: pl.name, isOn: Binding(
-                                    get: { selectedPlaylists.contains(pl.id) },
+                                    get: { page.selectedPlaylists.contains(pl.id) },
                                     set: { on in
-                                        if on { selectedPlaylists.insert(pl.id) } else { selectedPlaylists.remove(pl.id) }
+                                        if on { page.selectedPlaylists.insert(pl.id) } else { page.selectedPlaylists.remove(pl.id) }
                                     }))
                             }
                         }
@@ -291,20 +281,20 @@ struct DeviceView: View {
                     }
                 }
                 Divider()
-                CheckboxRow(title: "Sync podcasts", isOn: $syncPodcasts).disabled(!device.supportsPodcasts)
+                CheckboxRow(title: "Sync podcasts", isOn: $page.syncPodcasts).disabled(!device.supportsPodcasts)
                 if !device.supportsPodcasts {
                     Caption("This iPod's firmware has no Podcasts menu.")
                 }
-                CheckboxRow(title: "Sync videos", isOn: $syncVideos)
-                CheckboxRow(title: "Sync audiobooks", isOn: $syncAudiobooks)
-                CheckboxRow(title: "Sync photos", isOn: $syncPhotos).disabled(!device.generation.supportsPhotos)
+                CheckboxRow(title: "Sync videos", isOn: $page.syncVideos)
+                CheckboxRow(title: "Sync audiobooks", isOn: $page.syncAudiobooks)
+                CheckboxRow(title: "Sync photos", isOn: $page.syncPhotos).disabled(!device.generation.supportsPhotos)
                 if !device.generation.supportsPhotos {
                     Caption("This iPod has no color screen for photos.")
                 }
-                CheckboxRow(title: "Remove songs that aren't in this library", isOn: $removeUnknownTracks)
+                CheckboxRow(title: "Remove songs that aren't in this library", isOn: $page.removeUnknownTracks)
                 Caption("When on, songs that were put on the iPod by iTunes or another Mac are deleted during sync so the iPod mirrors this library. Turn it off to keep them.")
                 Divider()
-                CheckboxRow(title: "Use Album Artist for Grouping", isOn: $albumArtistGrouping)
+                CheckboxRow(title: "Use Album Artist for Grouping", isOn: $page.albumArtistGrouping)
                 Caption("Replaces the Artist tag with Album Artist on this iPod so albums stay grouped in the Artists view. Your library files are not modified.")
             }
         }
@@ -326,61 +316,36 @@ struct DeviceView: View {
     // MARK: Actions
 
     private func loadContents() async {
-        let dev = device
-        savedOptions = nil
-        let (read, stored) = await Task.detached(priority: .utility) {
-            (Self.readContents(of: dev), DeviceDataFolder(mountPoint: dev.mountPoint).read(DeviceOptions.self, from: DeviceOptions.fileName))
-        }.value
-        contents = read
-        let loaded = stored ?? DeviceOptions()
-        apply(loaded)
-        savedOptions = loaded
-    }
-
-    /// The same reading as the app's `DeviceView.loadContents`, plus the volume's space.
-    private nonisolated static func readContents(of dev: IPodDevice) -> DeviceContents {
-        var c = DeviceContents()
-        c.stats = dev.volumeStats()
-        do {
-            let db = try dev.readDatabase()
-            c.name = db.name
-            for t in db.tracks {
-                if t.isPodcast { c.podcasts += 1; c.podcastBytes += Int64(t.fileSize) }
-                else if t.mediaType & IPodMediaType.movie != 0 || t.mediaType & IPodMediaType.musicVideo != 0 || t.mediaType & IPodMediaType.tvShow != 0 { c.videos += 1; c.videoBytes += Int64(t.fileSize) }
-                else if t.mediaType & IPodMediaType.audiobook != 0 { c.audiobooks += 1; c.audiobookBytes += Int64(t.fileSize) }
-                else { c.songs += 1; c.musicBytes += Int64(t.fileSize) }
-            }
-            let photosDir = dev.mountPoint.appendingPathComponent("Photos")
-            if let e = FileManager.default.enumerator(at: photosDir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
-                while let f = e.nextObject() as? URL {
-                    c.photoBytes += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-                }
-            }
-            if let data = try? Data(contentsOf: photosDir.appendingPathComponent("Photo Database")), data.count > 0x84 {
-                let r = ByteReader(data)
-                // mhfd → first mhsd (type 1) → mhli holds the photo count.
-                let mhsd = Int(r.u32(4))
-                if r.hasHeader("mhsd", at: mhsd), r.hasHeader("mhli", at: mhsd + 0x60) { c.photos = Int(r.u32(mhsd + 0x60 + 8)) }
-            }
-        } catch {
-            c.readError = "The iPod's database couldn't be read (\(error.localizedDescription)). Syncing will rebuild it."
+        if let snapshot = DevicePageCache.shared.cached(for: device) {
+            page = PageState(device: device, snapshot: snapshot)
+            return
         }
-        return c
+        if page.device != device { page = PageState(device: device, snapshot: nil) }
+        guard let snapshot = await DevicePageCache.shared.load(device), !Task.isCancelled else { return }
+        page = PageState(device: device, snapshot: snapshot)
     }
 
     /// Written to the iPod at once, as the app does, so the new name shows even without a sync.
     private func rename() {
-        let name = newName.trimmingCharacters(in: .whitespaces)
-        isRenaming = false
+        let name = page.newName.trimmingCharacters(in: .whitespaces)
+        page.isRenaming = false
         guard !name.isEmpty else { return }
-        renamed = name
+        page.renamed = name
         let dev = device
-        Task.detached(priority: .utility) {
-            guard var db = try? dev.readDatabase() else { return }
-            db.name = name
-            guard let out = try? ITunesDBWriter(database: db, checksum: dev.checksumType, firewireID: dev.firewireIDBytes).write() else { return }
-            try? FileManager.default.createDirectory(at: dev.iTunesDir, withIntermediateDirectories: true)
-            try? out.data.write(to: dev.iTunesDBURL, options: .atomic)
+        Task {
+            let written = await Task.detached(priority: .utility) { () -> Bool in
+                do {
+                    var db = try dev.readDatabase()
+                    db.name = name
+                    let out = try ITunesDBWriter(database: db, checksum: dev.checksumType, firewireID: dev.firewireIDBytes).write()
+                    try FileOps.writeReplacing(out.data, to: dev.iTunesDBURL)
+                    return true
+                } catch { return false }
+            }.value
+            if written {
+                DevicePageCache.shared.renamed(dev, to: name)
+                onRename(name)
+            } else if page.device == dev { page.renamed = nil }
         }
     }
 }

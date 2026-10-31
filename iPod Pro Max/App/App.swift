@@ -11,6 +11,13 @@ import iPodKit
 #endif
 
 struct ContentView: View {
+    @Environment(\.chooseFile) private var chooseFile
+    @State var portableLibrary: LoadedPortableLibrary?
+    @State var transferStatus = ""
+    @State var scanning = false
+    @State var settingsLoaded = false
+    @State var didBenchDevices = false
+    @State var contentRevision = 0
     @State var library: Library?
     @State var ipods: [IPodDevice] = []
     /// The iPods' names, for the sidebar.
@@ -34,44 +41,91 @@ struct ContentView: View {
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
         .task {
-            let start = Date()
-            let loaded = await Library.load(arguments: CommandLine.arguments)
-            library = loaded
-            log("[app] \(loaded.allRows.count) tracks from \(loaded.source)")
-            log("[app] decode \(loaded.loadMs) ms, index \(loaded.indexMs) ms, "
-                + "ready \(Int(Date().timeIntervalSince(start) * 1000)) ms after first render")
-            if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil { await benchSidebar() }
-
+            MusicTransfer.shared.onStatus = { transferStatus = $0 }
+            MusicTransfer.shared.onDeviceFinished = { device in
+                DevicePageCache.shared.invalidate(device)
+                contentRevision += 1
+            }
+            MusicTransfer.shared.onDrop = { ids, name in
+                guard let device = ipod(named: name), let loaded = portableLibrary else { return false }
+                MusicTransfer.shared.enqueue(ids: ids.compactMap(UUID.init(uuidString:)), device: device, loaded: loaded)
+                return true
+            }
+            if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil {
+                library = await Library.load(arguments: CommandLine.arguments)
+                await benchSidebar()
+            } else {
+                await loadPortable(refresh: false)
+                await loadPortable(refresh: true)
+            }
         }
         .task {
             await watchIPods { found in
-                let names = found.map(\.displayName)
+                let names = found.map(\.id)
+                ConnectedDeviceTitles.names = Dictionary(found.map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
                 if names != devices { log("[app] iPods: \(names.isEmpty ? "none" : names.joined(separator: ", "))") }
                 // As in the app: show an iPod as it's plugged in; back to Music when the shown one leaves.
-                let added = found.first { d in !ipods.contains { $0.id == d.id && $0.mountPoint == d.mountPoint } }
+                let additions = found.filter { d in !ipods.contains { $0.id == d.id && $0.mountPoint == d.mountPoint } }
+                let added = additions.first
+                if !additions.isEmpty { Task { await DevicePageCache.shared.prefetch(additions) } }
+                for removed in ipods where !found.contains(where: { $0.id == removed.id && $0.mountPoint == removed.mountPoint }) {
+                    MusicTransfer.shared.cancel(removed)
+                    DevicePageCache.shared.forget(removed)
+                }
                 ipods = found
                 devices = names
                 if let added {
-                    selection = .device(added.displayName)
+                    selection = .device(added.id)
                 } else if case .device(let name) = selection, !names.contains(name) {
                     selection = .music
                 }
             }
         }
+        .task(id: deviceBenchmarkReady) {
+            guard deviceBenchmarkReady, !didBenchDevices else { return }
+            didBenchDevices = true
+            await benchDevicePages()
+        }
+        .task(id: mode?.rawValue ?? "") {
+            guard settingsLoaded, let store = portableLibrary?.store, let mode else { return }
+            let value = mode.rawValue
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                try await Task.detached(priority: .utility) {
+                    var settings = store.data.read(PortableSettings.self, from: "settings.json") ?? PortableSettings()
+                    settings.musicViewMode = value
+                    try store.data.write(settings, to: "settings.json")
+                }.value
+            } catch { transferStatus = error.localizedDescription }
+        }
         .alert($ejectError) {}
     }
 
     private func ipod(named name: String) -> IPodDevice? {
-        ipods.first { $0.displayName == name }
+        ipods.first { $0.id == name }
     }
 
     /// The sidebar's eject buttons and the iPod page's Eject. The volume watcher then removes the
     /// iPod from the sidebar.
     private func eject(_ item: SidebarItem) {
         guard case .device(let name) = item, let device = ipod(named: name) else { return }
+        guard !MusicTransfer.shared.isRunning(device) else {
+            transferStatus = "Cancel or finish the transfer before ejecting."
+            return
+        }
         log("[app] ejecting \(name)")
         Task {
             do {
+                try await DevicePageCache.shared.flush(device)
+                if let store = portableLibrary?.store, let mode {
+                    let currentMode = mode.rawValue
+                    try await Task.detached(priority: .utility) {
+                        var settings = store.data.read(PortableSettings.self, from: "settings.json") ?? PortableSettings()
+                        settings.musicViewMode = currentMode
+                        try store.data.write(settings, to: "settings.json")
+                    }.value
+                }
                 try await Ejector.eject(device)
             } catch {
                 ejectError = "Couldn't eject \(name): \(error.localizedDescription)"
@@ -98,9 +152,63 @@ struct ContentView: View {
         exit(0)
     }
 
+    private var deviceBenchmarkReady: Bool {
+        ProcessInfo.processInfo.environment["IPPM_BENCH_DEVICES"] != nil && library != nil && !scanning && ipods.count >= 2
+    }
+
+    /// Development-only benchmark: real native page layout, after connection data is ready.
+    private func benchDevicePages() async {
+        let targets = ipods
+        await DevicePageCache.shared.prefetch(targets)
+        let reads = DevicePageCache.shared.readCount
+        var times: [Double] = []
+        for _ in 0..<10 {
+            for device in targets {
+                let start = Date()
+                selection = .device(device.id)
+                let idle = await mainThreadIdle()
+                times.append(idle.timeIntervalSince(start) * 1000)
+            }
+        }
+        let sorted = times.sorted()
+        log("[bench] device pages: \(times.count) switches, median \(sorted[sorted.count / 2]) ms, max \(sorted.last ?? 0) ms; additional reads \(DevicePageCache.shared.readCount - reads)")
+        exit(0)
+    }
+
     @State var mode: MusicMode? = .allSongs
     @State var search = ""
     @State var selectedArtist: String?
+
+    private func configureMusic() async {
+        guard !scanning else { return }
+        guard let folder = await chooseFile(title: "Choose Music Folder", defaultButtonLabel: "Use Folder",
+            allowSelectingFiles: false, allowSelectingDirectories: true) else { return }
+        await loadPortable(folder: folder, refresh: true)
+    }
+
+    private func loadPortable(folder: URL? = nil, refresh: Bool) async {
+        guard !scanning else { return }
+        scanning = true
+        defer { scanning = false }
+        do {
+            var configuredFolder = folder
+            if configuredFolder == nil, let i = CommandLine.arguments.firstIndex(of: "--music-folder"), i + 1 < CommandLine.arguments.count {
+                configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            }
+            let loaded = try await PortableLoading.load(folder: configuredFolder, refresh: refresh)
+            let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path) }.value
+            portableLibrary = loaded; library = indexed
+            if !settingsLoaded {
+                let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
+                mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
+                settingsLoaded = true
+            }
+            if !loaded.configured { transferStatus = "Choose your music folder with +." }
+        } catch {
+            if library == nil { library = Library.portable(PortableLibraryCache(), source: "") }
+            transferStatus = error.localizedDescription
+        }
+    }
 
     /// One layout for every section, so switching never tears the track table down: detaching
     /// an NSTableView from the window is what made each sidebar click cost ~60 ms. Sections
@@ -121,14 +229,30 @@ struct ContentView: View {
                     // clicks that pick an artist.
                     ZStack {
                         TrackTable(rows: tableRows(library))
-                        if case .device(let name) = selection, let device = ipod(named: name) {
-                            DeviceView(device: device, library: library, onEject: { eject(.device(name)) })
+                        if case .device(let id) = selection, let device = ipod(named: id) {
+                            DeviceView(device: device, library: library, revision: contentRevision,
+                                onEject: { eject(.device(device.id)) }, onRename: { name in
+                                    ConnectedDeviceTitles.names[device.id] = name
+                                    contentRevision += 1
+                                })
                                 .background(WindowBackground())
+                        }
+                        if case .device = selection {
+                            if case .device(let id) = selection, ipod(named: id) == nil, let cover = cover(library) {
+                                cover.background(WindowBackground())
+                            }
                         } else if let cover = cover(library) {
                             cover.background(WindowBackground())
                         }
                     }
                 }
+                HStack {
+                    Text(scanning ? "Checking music folders…" : transferStatus).font(.system(size: 12))
+                    Spacer()
+                    if let device = ipods.first(where: { MusicTransfer.shared.isRunning($0) }) {
+                        Button("Cancel Transfer") { MusicTransfer.shared.cancel(device) }
+                    }
+                }.padding(8)
             }
             .background(WindowBackground())
         } else {
@@ -155,9 +279,14 @@ struct ContentView: View {
         return DetailHeader(title: title, subtitle: subtitle) {
             if selection == .music {
                 SegmentedControl(options: MusicMode.allCases, selection: $mode)
-                ToolbarButton(icon: "plus")
-                ToolbarButton(icon: "square.and.arrow.down")
+                ToolbarButton(icon: "plus") { Task { await configureMusic() } }
+                ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
                 SearchField(prompt: "Search songs", text: $search)
+            } else if case .device(let id) = selection, let device = ipod(named: id) {
+                ToolbarButton(icon: "arrow.clockwise") {
+                    DevicePageCache.shared.invalidate(device)
+                    contentRevision += 1
+                }
             }
         }
     }
@@ -400,27 +529,29 @@ func songCount(_ n: Int) -> String {
     n == 1 ? "1 song" : "\(n) songs"
 }
 
-/// Windows apps started from Explorer have no console: they always log to %TEMP%\\ippm.log.
+/// Optional diagnostic output; the default Windows log also stays on the portable volume.
 private let logFile: String? = {
     if let path = ProcessInfo.processInfo.environment["IPPM_LOG"] { return path }
     #if os(Windows)
-        let path = (ProcessInfo.processInfo.environment["TEMP"] ?? "C:\\Windows\\Temp") + "\\ippm.log"
-        // Appended to on every launch: start over past 1 MB rather than grow forever.
-        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber, size.intValue > 1_000_000 {
-            try? FileManager.default.removeItem(atPath: path)
-        }
-        return path
+        return PortableRoot.url?.appendingPathComponent("iPod Pro Max/Persistent Data/Logs/app.log").path
     #else
         return nil
     #endif
 }()
+private let logQueue = DispatchQueue(label: "ipodpromax.log", qos: .utility)
 
 /// stderr is unbuffered, so timings show up even when stdout is piped. `IPPM_LOG=<file>` also
 /// appends to a file, for apps started from a desktop shell (no console to read).
 func log(_ message: String) {
-    if let path = logFile, let file = fopen(path, "a") {
-        fputs(message + "\n", file)
-        fclose(file)
+    if let path = logFile {
+        logQueue.async {
+            let url = URL(fileURLWithPath: path)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber, size.intValue > 1_000_000 {
+                try? FileManager.default.removeItem(at: url)
+            }
+            if let file = fopen(path, "a") { fputs(message + "\n", file); fclose(file) }
+        }
     }
     // A Windows app started from Explorer has no console: writing to the missing handle traps in
     // Foundation (the launch crash) or stalls in the C runtime, so only write when there is one.

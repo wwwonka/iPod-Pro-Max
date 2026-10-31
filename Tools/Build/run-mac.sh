@@ -3,7 +3,8 @@
 # ./run-mac.sh gtk   -> GTK 4 via Homebrew, to preview the Linux look on the Mac
 set -e
 cd "$(dirname "$0")/../.."
-if [ "$1" = "gtk" ]; then
+export IPPM_PORTABLE_ROOT="$PWD/Build"
+if [ "${1:-}" = "gtk" ]; then
     export SCUI_DEFAULT_BACKEND=GtkBackend
     export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig"
     swift package resolve --scratch-path .build-gtk

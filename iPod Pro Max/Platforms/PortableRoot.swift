@@ -5,7 +5,7 @@ import iPodKit
 /// (Docs/Données/Sur l'iPod.md). What's saved there, in `iPod Pro Max/Persistent Data/`, is shared by
 /// the macOS, Windows and Linux apps.
 ///
-/// In order: `--portable-root <path>` (passed by LAUNCHER.bat, which runs a local copy of the app),
+/// In order: `--portable-root <path>` (passed by the launcher, which runs the app from the iPod),
 /// `IPPM_PORTABLE_ROOT`, then the app's own location when it runs straight from
 /// `<root>/iPod Pro Max/Applications/…`. Nil when the app runs from anywhere else.
 enum PortableRoot {
@@ -49,7 +49,7 @@ enum PortableRoot {
 
 /// An iPod's sync choices, in `iPod Pro Max/Persistent Data/device.json` on that iPod: they travel
 /// with it, so every computer and every OS shows the same ones.
-struct DeviceOptions: Codable, Equatable {
+struct DeviceOptions: Codable, Equatable, Sendable {
     static let fileName = "device.json"
 
     var syncAllMusic = true

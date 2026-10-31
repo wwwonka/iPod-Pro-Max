@@ -178,9 +178,9 @@ func info(_ args: Arguments) {
     }
 }
 
-func cacheRoot() -> URL {
-    let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-    return base.appendingPathComponent("iPodProMax", isDirectory: true).appendingPathComponent("cli", isDirectory: true)
+func cacheRoot(for device: IPodDevice) -> URL {
+    guard let hostID = HostIdentity.current() else { fail("This computer could not be identified; no local cache was created.") }
+    return DeviceDataFolder(mountPoint: device.mountPoint).url.appendingPathComponent("Hosts/\(hostID)/CLI Cache", isDirectory: true)
 }
 
 func sync(_ args: Arguments) async {
@@ -197,7 +197,7 @@ func sync(_ args: Arguments) async {
     print("iPod: \(describe(device))")
 
     // 1. Read the folder.
-    let cache = cacheRoot()
+    let cache = cacheRoot(for: device)
     let artworkDir = cache.appendingPathComponent("Artwork", isDirectory: true)
     let started = Date()
     let imported = await FolderImporter.scan(folder: folder, artworkDir: artworkDir) { done, total in

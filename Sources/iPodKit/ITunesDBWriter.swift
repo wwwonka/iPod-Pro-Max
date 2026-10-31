@@ -107,8 +107,6 @@ public struct ITunesDBWriter: Sendable {
             let mpl = db.playlists.remove(at: idx)
             db.playlists.insert(mpl, at: 0)
         }
-        // Smart playlists cannot be round-tripped; drop them.
-        db.playlists.removeAll { $0.isSmart }
         // Master playlist must contain every non-podcast track.
         if let idx = db.playlists.firstIndex(where: { $0.isMaster }) {
             let existing = Set(db.playlists[idx].memberDBIDs)
@@ -467,7 +465,7 @@ public struct ITunesDBWriter: Sendable {
         w.header("mhyp")
         w.u32(108)
         w.u32(0)
-        w.u32(isMPLWithMembers ? 12 : 2)
+        w.u32((isMPLWithMembers ? 12 : 2) + UInt32(pl.smartMetadata.count))
         w.u32(0) // mhip count, later
         w.u8(pl.isMaster ? 1 : 0)
         w.u8(pl.flag1)
@@ -494,6 +492,8 @@ public struct ITunesDBWriter: Sendable {
                 Self.writeLibraryIndexMHODs(&w, sort: sort, tracks: tracks)
             }
         }
+
+        for metadata in pl.smartMetadata { w.append(metadata) }
 
         var mhipCount: UInt32 = 0
         if pl.isPodcasts && mhsdType == 3 {

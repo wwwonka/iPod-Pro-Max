@@ -48,7 +48,7 @@
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.onEject = onEject
-            let key = devices + ["|"] + playlists.map { $0.id + $0.name }
+            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name }
             if key != coordinator.key {
                 coordinator.key = key
                 coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists))
@@ -123,7 +123,11 @@
                                       me, nil, GConnectFlags(rawValue: 0))
                 g_signal_connect_data(cast(list), "keynav-failed", unsafeBitCast(keynavFailed, to: GCallback.self),
                                       me, nil, GConnectFlags(rawValue: 0))
-                for row in section.rows { gtk_list_box_append(cast(list), makeRow(row)) }
+                for row in section.rows {
+                    let widget = makeRow(row)
+                    if case .device(let name) = row.item { installMusicDrop(on: widget, device: name) }
+                    gtk_list_box_append(cast(list), widget)
+                }
 
                 let revealer = gtk_revealer_new()!
                 gtk_revealer_set_transition_type(cast(revealer), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN)

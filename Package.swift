@@ -31,7 +31,7 @@ let package = Package(
         .executableTarget(
             name: "iPodProMaxApp",
             dependencies: [
-                "iPodKit", "DeviceKit",
+                "iPodKit", "DeviceKit", "MediaKit",
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
             ],

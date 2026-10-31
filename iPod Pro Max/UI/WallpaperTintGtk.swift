@@ -102,9 +102,8 @@
         nonisolated private static let width = 96
 
         nonisolated private static func cacheDirectory() -> URL {
-            let base = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"].map { URL(fileURLWithPath: $0) }
-                ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cache")
-            return base.appendingPathComponent("iPodProMax", isDirectory: true)
+            let root = PortableRoot.url ?? URL(fileURLWithPath: "/dev/null")
+            return root.appendingPathComponent("iPod Pro Max/Persistent Data/UI Cache", isDirectory: true)
         }
 
         nonisolated private static func path(fromURI uri: String?) -> String? {

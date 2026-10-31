@@ -193,6 +193,8 @@ public struct IPodPlaylist: Identifiable, Hashable, Sendable {
     public var isMaster: Bool = false
     public var isPodcasts: Bool = false
     public var isSmart: Bool = false
+    /// Smart-playlist preference/rule MHODs retained verbatim across a rewrite.
+    public var smartMetadata: [Data] = []
     public var flag1: UInt8 = 0
     public var flag2: UInt8 = 0
     public var flag3: UInt8 = 0

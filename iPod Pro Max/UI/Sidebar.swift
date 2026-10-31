@@ -1,6 +1,11 @@
 import SwiftCrossUI
 
 /// Same items as the SwiftUI app's `SidebarItem`.
+@MainActor
+enum ConnectedDeviceTitles {
+    static var names: [String: String] = [:]
+}
+
 enum SidebarItem: Hashable {
     case device(String)
     case music, podcasts, audiobooks, videos, photos
@@ -10,9 +15,9 @@ enum SidebarItem: Hashable {
     static let library: [SidebarItem] = [.music, .podcasts, .audiobooks, .videos, .photos]
 
     /// Title of a library row; devices and playlists are titled by their name.
-    var title: String {
+    @MainActor var title: String {
         switch self {
-        case .device(let name): name
+        case .device(let id): ConnectedDeviceTitles.names[id] ?? "iPod"
         case .music: "Music"
         case .podcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
@@ -51,13 +56,14 @@ struct SidebarSection {
 }
 
 /// The sidebar's sections, the same on every platform.
+@MainActor
 func sidebarSections(devices: [String], playlists: [Playlist]) -> [SidebarSection] {
     [
         SidebarSection(
             title: "iPods",
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
-                : devices.map { .init(title: $0, icon: "ipod", item: .device($0), ejectable: true) }),
+                : devices.map { .init(title: ConnectedDeviceTitles.names[$0] ?? "iPod", icon: "ipod", item: .device($0), ejectable: true) }),
         SidebarSection(title: "Library", rows: SidebarItem.library.map { .init(title: $0.title, icon: $0.icon, item: $0) }),
         SidebarSection(
             title: "Playlists",

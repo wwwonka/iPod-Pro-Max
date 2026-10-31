@@ -45,6 +45,17 @@ public struct DeviceDataFolder: Sendable {
         return nil
     }
 
+    /// Identity/ownership registries must never be silently replaced after both copies are damaged.
+    public func readChecked<T: Decodable>(_ type: T.Type, from name: String) throws -> T? {
+        if let value = read(type, from: name) { return value }
+        for folder in [url] + (legacyURL.map { [$0] } ?? []) {
+            for candidate in [name, name + ".bak"] where FileManager.default.fileExists(atPath: folder.appendingPathComponent(candidate).path) {
+                throw IPodDBError.corrupt("Could not read \(name) or its backup.")
+            }
+        }
+        return nil
+    }
+
     public func write<T: Encodable>(_ value: T, to name: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]

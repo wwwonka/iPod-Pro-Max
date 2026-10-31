@@ -1,4 +1,5 @@
 import Foundation
+import iPodKit
 
 /// The subset of the real app's `LibraryTrack` the prototype needs. Unknown keys in
 /// `library.json` are ignored, so the real file decodes as is.
@@ -27,6 +28,7 @@ private struct LibraryDocument: Decodable {
 
 /// Preformatted row for `Table`, whose columns only take `String` key paths.
 struct TrackRow {
+    var id: String = ""
     var title: String
     var artist: String
     var album: String
@@ -50,6 +52,16 @@ struct Library {
     var rowsByPlaylist: [String: [TrackRow]]
     var loadMs: Int
     var indexMs: Int
+
+    static func portable(_ cache: PortableLibraryCache, source: String) -> Library {
+        let tracks = cache.tracks.filter { $0.kind == nil || $0.kind == .song }.map {
+            Track(id: $0.id.uuidString, title: $0.title, artist: $0.artist, album: $0.album,
+                  albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
+                  discNumber: $0.discNumber, durationMs: $0.durationMs)
+        }
+        let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
+        return index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
+    }
 
     static func load(arguments: [String]) async -> Library {
         await Task.detached(priority: .userInitiated) {
@@ -114,7 +126,7 @@ struct Library {
         byID.reserveCapacity(sorted.count)
         for t in sorted {
             let row = TrackRow(
-                title: t.title,
+                id: t.id, title: t.title,
                 artist: t.artist ?? "Unknown Artist",
                 album: t.album ?? "Unknown Album",
                 number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "",

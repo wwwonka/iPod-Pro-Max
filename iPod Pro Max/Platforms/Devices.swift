@@ -6,7 +6,9 @@ import iPodKit
 /// started from when it looks like one (`Build/`, see PortableRoot). Touches the disk: call it off
 /// the main thread.
 func connectedIPods() -> [IPodDevice] {
-    var found = DeviceScanner.scan()
+    let benchmarkFolder = ProcessInfo.processInfo.environment["IPPM_BENCH_DEVICES"] != nil
+        ? ProcessInfo.processInfo.environment["IPPM_BENCH_DEVICE_FOLDER"] : nil
+    var found = DeviceScanner.scan(simulatedFolders: benchmarkFolder.map { [URL(fileURLWithPath: $0)] } ?? [])
     if let simulated = PortableRoot.simulatedIPod(besides: found) { found.append(simulated) }
     return found.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 }

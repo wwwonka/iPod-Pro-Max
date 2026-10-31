@@ -1,5 +1,7 @@
 # ADR-001 Bibliothèque sur l'hôte, données de l'iPod sur l'iPod
 
+> Remplacée le 2026-10-31 par [[ADR-006 Application entièrement portable]] : bibliothèque et caches sur l'iPod, aucune donnée persistante créée sur l'hôte.
+
 - **Statut** : acceptée, le 2026-10-22
 - **Contexte** : l'app doit être portable. Mettre toute la bibliothèque sur l'iPod obligerait à lire et écrire sur un disque dur lent et souvent en veille, et à gérer des chemins de fichiers sources qui n'existent que sur un ordi donné.
 - **Décision** :

@@ -124,7 +124,7 @@ public final class IThumbWriter {
 
     private func append(pixels: [UInt8], format: ArtworkFormat, scaledWidth: Int, scaledHeight: Int) throws -> ThumbnailRef {
         guard var s = states[format.id] else { throw IPodDBError.io("unknown artwork format \(format.id)") }
-        if s.handle == nil || Int(s.offset) + pixels.count > Self.maxFileSize {
+        while s.handle == nil || Int(s.offset) + pixels.count > Self.maxFileSize {
             if s.handle != nil {
                 try? s.handle?.close()
                 s.fileIndex += 1
@@ -135,6 +135,7 @@ public final class IThumbWriter {
             }
             s.handle = try FileHandle(forWritingTo: url)
             let end = try s.handle?.seekToEnd() ?? 0
+            guard end <= UInt32.max else { throw IPodDBError.io("Artwork thumbnail file is too large") }
             s.offset = UInt32(end)
         }
         try s.handle?.write(contentsOf: pixels)
@@ -298,5 +299,51 @@ public enum ArtworkDBWriter: Sendable {
             w.fixTotalLength(headerStart: m)
         }
         w.fixTotalLength(headerStart: s)
+    }
+}
+
+/// Keeps foreign artwork records byte-for-byte when adding music. No thumbnail decoding needed.
+enum ExistingArtwork {
+    static func records(_ data: Data) throws -> [(id: UInt32, dbid: UInt64, bytes: Data)] {
+        let r = ByteReader(data)
+        guard r.hasHeader("mhfd", at: 0), r.u32(8) == data.count else { throw IPodDBError.corrupt("ArtworkDB header") }
+        var section = Int(r.u32(4))
+        while section + 16 <= data.count {
+            let length = Int(r.u32(section + 8))
+            guard r.hasHeader("mhsd", at: section), length >= 16, section + length <= data.count else { throw IPodDBError.corrupt("ArtworkDB section") }
+            if r.u16(section + 12) == 1 {
+                let list = section + Int(r.u32(section + 4))
+                guard r.hasHeader("mhli", at: list) else { throw IPodDBError.corrupt("ArtworkDB image list") }
+                var offset = list + Int(r.u32(list + 4))
+                var result: [(UInt32, UInt64, Data)] = []
+                for _ in 0..<Int(r.u32(list + 8)) {
+                    let size = Int(r.u32(offset + 8))
+                    guard r.hasHeader("mhii", at: offset), size >= 52, offset + size <= section + length else { throw IPodDBError.corrupt("ArtworkDB image") }
+                    result.append((r.u32(offset + 16), r.u64(offset + 20), data.subdata(in: offset..<(offset + size))))
+                    offset += size
+                }
+                return result
+            }
+            section += length
+        }
+        throw IPodDBError.corrupt("ArtworkDB image section missing")
+    }
+
+    static func merge(_ old: Data, into fresh: Data) throws -> Data {
+        let records = try records(old)
+        guard !records.isEmpty else { return fresh }
+        let r = ByteReader(fresh)
+        let section = Int(r.u32(4))
+        let list = section + Int(r.u32(section + 4))
+        let insert = list + Int(r.u32(list + 4))
+        let raw = records.reduce(into: Data()) { $0.append($1.bytes) }
+        var merged = fresh
+        merged.insert(contentsOf: raw, at: insert)
+        var writer = ByteWriter(); writer.append(merged)
+        writer.patchU32(UInt32(merged.count), at: 8)
+        writer.patchU32(max(r.u32(28), records.map(\.id).max() ?? 0), at: 28)
+        writer.patchU32(r.u32(section + 8) + UInt32(raw.count), at: section + 8)
+        writer.patchU32(r.u32(list + 8) + UInt32(records.count), at: list + 8)
+        return writer.data
     }
 }

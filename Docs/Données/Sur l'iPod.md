@@ -20,12 +20,16 @@ Ce qui concerne **l'iPod lui-même** voyage avec lui. Décision : [[ADR-001 Bibl
    │  ├─ Windows/x64|arm64/ipodpromax.exe   + DLL du runtime Swift + ffmpeg.exe
    │  └─ Linux/x86_64|aarch64/ipodpromax    entièrement statique (musl), + ffmpeg
    ├─ version.txt           change à chaque build : le lanceur recopie alors l'app
-   └─ Persistent Data/      réglages et registres, partagés par les 3 OS
+   └─ Persistent Data/      bibliothèques, caches, réglages et registres, partagés par les 3 OS
       ├─ device.json     options de sync de cet iPod (en place)
       ├─ cli-sync.json   registre de sync de la CLI (en place)
-      ├─ settings.json   réglages portables (à venir)
-      ├─ manifest.json   propriété des pistes (dbid → hôte, empreinte, id source)
-      └─ podcasts.json   abonnements
+      ├─ settings.json   préférences communes aux trois interfaces
+      ├─ known_hosts.json   identité, nom et dossiers sources de chaque hôte
+      ├─ manifest.json   transferts : dbid, propriétaire, empreinte source et références
+      └─ Hosts/<hostID>/
+         ├─ library.json   cache des pistes accessibles, playlists et chemins sources
+         ├─ Artwork/       pochettes dédupliquées
+         └─ Transcodes/    conversions audio réutilisables
 ```
 
 ffmpeg est posé à côté de chaque exécutable (là où `FFmpeg.binaryPath()` regarde en premier) : la copie locale faite par le lanceur l'emporte avec elle, et chaque architecture a le sien. `Persistent Data/` s'appelait `Data/` jusqu'au 2026-10-31 ; l'ancien dossier est encore lu, jamais écrit.
@@ -41,13 +45,15 @@ ffmpeg est posé à côté de chaque exécutable (là où `FFmpeg.binaryPath()` 
 L'app lancée depuis `Build/` (par le lanceur ou directement) y voit un iPod simulé : `PortableRoot` dans `iPod Pro Max/Platforms/`.
 
 ## Contenu de `Persistent Data/`
-- **`settings.json`** : ce qui est aujourd'hui dans `UserDefaults` et `@AppStorage`, à savoir `ejectAfterSync`, `syncArtwork`, `defaultKeepLatest`, `youtubeCookiesBrowser`, `scanLibraryOnLaunch`, `musicViewMode` et l'ordre de la sidebar. L'état de fenêtre (taille, dernier onglet) reste dans les préférences de l'hôte.
-- **`device.json`** : la partie « choix » de `DeviceSyncRecord` (`syncAllMusic`, `selectedPlaylistIDs`, `syncPodcasts`, `syncVideos`, `syncPhotos`, `syncAudiobooks`, `useAlbumArtistForGrouping`). Les correspondances UUID → dbid passent dans le manifeste.
-- **`manifest.json`** : voir [[Manifeste et propriété des pistes]].
-- **`podcasts.json`** : on s'abonne une fois, et tous les ordis rafraîchissent les mêmes émissions. Les épisodes téléchargés transitent par le cache de l'hôte (voir [[Sur l'hôte]]).
+
+Voir [[ADR-006 Application entièrement portable]]. Tout le stockage de l'application voyage sur l'iPod. `known_hosts.json` conserve les dossiers par catégorie (musique, audiolivres, vidéos, photos); seule la musique est raccordée dans cette livraison. Le bouton + configure son dossier et la flèche circulaire relance le scan. Les pistes inaccessibles disparaissent, leurs chemins sources restent connus.
+
+`manifest.json` mémorise les transferts et évite les doublons de fichiers identiques entre hôtes. Le dépôt de chansons ajoute uniquement la sélection et conserve les autres pistes, playlists et pochettes. Le bouton Sync reste désactivé en attendant les crochets par chanson.
+
+`device.json` et `cli-sync.json` restent compatibles. Les réglages actuellement partagés par `settings.json` sont le mode d'affichage musical et l'activation des pochettes; les fonctions futures ajouteront leurs préférences lorsqu'elles seront raccordées.
 
 ## Réactivité
-- Ces fichiers sont petits (quelques centaines de Ko au plus). On les lit **une fois au branchement**, en arrière-plan, et on les garde en mémoire.
+- Les réglages et registres sont petits; le cache de bibliothèque peut atteindre plusieurs Mo. On les lit en arrière-plan et on les garde en mémoire. Le cache est vérifié contre les sources au démarrage puis sur action explicite.
 - On les écrit **par lots** : avant une sync, avant une éjection et à la fermeture. Jamais à chaque modification, parce que le disque dur de l'iPod se met en veille et le réveiller coûte des secondes.
 - **Écriture sûre** (FAT32 n'a pas de journal) : on écrit `x.json.tmp`, on fait `fsync`, on renomme, et on garde `x.json.bak` (génération précédente). Au chargement, si `x.json` est illisible, on prend `.bak`.
 

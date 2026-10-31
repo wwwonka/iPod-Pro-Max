@@ -32,6 +32,7 @@
             outline.outlineTableColumn = column
             outline.dataSource = context.coordinator
             outline.delegate = context.coordinator
+            outline.registerForDraggedTypes([.string])
 
             let scroll = NSScrollView()
             scroll.documentView = outline
@@ -51,7 +52,7 @@
             let coordinator = context.coordinator
             coordinator.onSelect = { item in selection = item }
             coordinator.onEject = onEject
-            let key = devices + ["|"] + playlists.map { $0.id + $0.name }
+            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name }
             if key != coordinator.key {
                 coordinator.key = key
                 coordinator.sections = Self.sections(devices: devices, playlists: playlists)
@@ -139,6 +140,19 @@
             var onSelect: (SidebarItem) -> Void = { _ in }
             var onEject: (SidebarItem) -> Void = { _ in }
             private var isSyncingSelection = false
+
+            func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+                let point = outlineView.convert(info.draggingLocation, from: nil)
+                guard let node = outlineView.item(atRow: outlineView.row(at: point)) as? Node,
+                      case .device = node.item, let payload = TrackDrag.payload,
+                      info.draggingPasteboard.string(forType: .string) == payload else { return [] }
+                outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+                return .copy
+            }
+            func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+                guard let node = item as? Node, case .device(let id) = node.item else { return false }
+                return TrackDrag.accept(info.draggingPasteboard.string(forType: .string), device: id)
+            }
 
             func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
                 (item as? Node)?.children.count ?? sections.count

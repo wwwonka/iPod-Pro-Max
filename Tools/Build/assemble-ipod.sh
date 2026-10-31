@@ -12,7 +12,7 @@
 #   iPod Pro Max/
 #     Applications/macOS/iPod Pro Max.app, Applications/Windows/<x64|arm64>/, Applications/Linux/<x86_64|aarch64>/
 #     Command Line/macOS/, Command Line/Windows/<arch>/, Command Line/Linux/<arch>/
-#     version.txt                           a new one per assembly: the launcher recopies the app
+#     version.txt                           a new one per assembly: identifies the portable distribution
 #     Persistent Data/                      settings and records written by the app and the CLI
 set -euo pipefail
 cd "$(dirname "$0")/../.."

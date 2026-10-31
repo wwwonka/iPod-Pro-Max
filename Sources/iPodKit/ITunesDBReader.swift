@@ -282,6 +282,7 @@ public struct ITunesDBReader: Sendable {
                 pl.name = readString(at: seek + hl)
             } else if type == MHODType.smartPlaylistRules || type == MHODType.smartPlaylistPrefs {
                 pl.isSmart = true
+                if mlen >= hl, seek + mlen <= s + tlen { pl.smartMetadata.append(Data(r.slice(seek, mlen))) }
             }
             guard mlen > 0 else { break }
             seek += mlen

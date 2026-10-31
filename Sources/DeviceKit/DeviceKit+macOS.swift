@@ -41,18 +41,23 @@ enum Platform {
         var entry: io_registry_entry_t = media
         IOObjectRetain(entry)
         defer { IOObjectRelease(entry) }
+        var candidate: USBDeviceIdentity?
         for _ in 0..<24 {
             if let vendor = property(entry, "idVendor") as? Int, let product = property(entry, "idProduct") as? Int {
                 let serial = property(entry, "USB Serial Number") as? String ?? property(entry, "kUSBSerialNumberString") as? String
                 let name = property(entry, "USB Product Name") as? String ?? property(entry, "kUSBProductString") as? String
-                return USBDeviceIdentity(vendorID: vendor, productID: product, serialNumber: serial, productName: name)
+                let identity = USBDeviceIdentity(vendorID: vendor, productID: product, serialNumber: serial, productName: name)
+                // A storage/interface node can repeat the USB IDs without the serial. Keep
+                // walking to IOUSBHostDevice, which carries the FireWire GUID used by hash58.
+                if let serial, !serial.isEmpty { return identity }
+                candidate = identity
             }
             var parent: io_registry_entry_t = IO_OBJECT_NULL
-            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS, parent != IO_OBJECT_NULL else { return nil }
+            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS, parent != IO_OBJECT_NULL else { return candidate }
             IOObjectRelease(entry)
             entry = parent
         }
-        return nil
+        return candidate
     }
 
     private static func property(_ entry: io_registry_entry_t, _ key: String) -> Any? {

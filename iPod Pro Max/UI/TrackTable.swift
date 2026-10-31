@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import Foundation
 
 // SwiftCrossUI's `Table` builds a widget per cell and lays every row out on each update: 5,000
 // songs meant 30,000 views and seconds per sidebar click. On macOS the tracks go in a plain
@@ -38,6 +39,7 @@ extension Array {
             if #available(macOS 11, *) { table.style = .inset }
             table.usesAlternatingRowBackgroundColors = true
             table.allowsMultipleSelection = true
+            table.setDraggingSourceOperationMask(.copy, forLocal: true)
             table.columnAutoresizingStyle = .noColumnAutoresizing
             for (i, column) in columns.enumerated() {
                 let c = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("\(i)"))
@@ -63,9 +65,27 @@ extension Array {
             (scroll.documentView as? NSTableView)?.reloadData()
         }
 
+        @MainActor
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var rows: [TrackRow] = []
             private let cellID = NSUserInterfaceItemIdentifier("cell")
+
+            private var dragPayload: String?
+            func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+                if dragPayload == nil {
+                    let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
+                    let ids = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
+                    dragPayload = TrackDrag.begin(ids)
+                }
+                guard let dragPayload else { return nil }
+                let item = NSPasteboardItem()
+                item.setString(dragPayload, forType: .string)
+                return item
+            }
+            func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+                dragPayload = nil
+                TrackDrag.end()
+            }
 
             func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
@@ -131,7 +151,16 @@ extension Array {
             // The selection takes the model's reference (transfer full): give it one of its own,
             // so the coordinator's unref in deinit stays balanced.
             g_object_ref(cast(coordinator.model))
-            let view = gtk_column_view_new(gtk_multi_selection_new(cast(coordinator.model)))!
+            let selection = gtk_multi_selection_new(cast(coordinator.model))!
+            coordinator.selection = selection
+            let view = gtk_column_view_new(selection)!
+            let drag = gtk_drag_source_new()!
+            gtk_drag_source_set_actions(drag, GDK_ACTION_COPY)
+            g_signal_connect_data(cast(drag), "prepare", unsafeBitCast(prepareMusicDrag, to: GCallback.self),
+                Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
+            g_signal_connect_data(cast(drag), "drag-end", unsafeBitCast(endMusicDrag, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            g_signal_connect_data(cast(drag), "drag-begin", unsafeBitCast(beginMusicDrag, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            gtk_widget_add_controller(view, cast(drag))
             gtk_column_view_set_show_column_separators(cast(view), 0)
             gtk_widget_add_css_class(view, "data-table")
             for (index, column) in columns.enumerated() {
@@ -166,6 +195,7 @@ extension Array {
 
         final class Coordinator {
             let model = gtk_string_list_new(nil)!
+            var selection: OpaquePointer?
             var rows: [TrackRow] = []
 
             /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
@@ -198,6 +228,33 @@ extension Array {
     }
 
 
+    private let prepareMusicDrag: @convention(c) (OpaquePointer?, Double, Double, gpointer?) -> UnsafeMutablePointer<GdkContentProvider>? = { _, _, _, data in
+        guard let data else { return nil }
+        return MainActor.assumeIsolated { () -> UnsafeMutablePointer<GdkContentProvider>? in
+            let c = Unmanaged<TrackTable.Coordinator>.fromOpaque(data).takeUnretainedValue()
+            guard let selection = c.selection else { return nil }
+            let ids = c.rows.indices.filter { gtk_selection_model_is_selected(selection, UInt32($0)) != 0 }.map { c.rows[$0].id }
+            guard let text = TrackDrag.begin(ids) else { return nil }
+            var value = GValue()
+            g_value_init(&value, g_type_from_name("gchararray"))
+            g_value_set_string(&value, text)
+            defer { g_value_unset(&value) }
+            return gdk_content_provider_new_for_value(&value)
+        }
+    }
+    private let beginMusicDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, drag, _ in
+        MainActor.assumeIsolated {
+            guard let drag else { return }
+            let icon = gtk_drag_icon_get_for_drag(cast(drag))
+            let label = gtk_label_new("\(TrackDrag.ids.count) songs")
+            gtk_widget_add_css_class(label, "card")
+            gtk_drag_icon_set_child(cast(icon), label)
+        }
+    }
+    private let endMusicDrag: @convention(c) (OpaquePointer?, OpaquePointer?, gboolean, gpointer?) -> Void = { _, _, _, _ in
+        MainActor.assumeIsolated { TrackDrag.end() }
+    }
+
     private let releaseBinding: @convention(c) (gpointer?, UnsafeMutablePointer<GClosure>?) -> Void = { data, _ in
         guard let data else { return }
         Unmanaged<TrackTable.CellBinding>.fromOpaque(data).release()
@@ -221,6 +278,7 @@ extension Array {
 
 #elseif canImport(WinUIBackend)
     import WindowsFoundation
+    import UWP
     import WinUI
     import WinUIBackend
 
@@ -249,6 +307,26 @@ extension Array {
 
             let list = WinUI.ListView()
             list.selectionMode = .extended
+            list.canDragItems = true
+            list.dragItemsStarting.addHandler { [weak coordinator, weak list] _, args in
+                guard let coordinator, let list, let args else { return }
+                MainActor.assumeIsolated {
+                    var ids: [String] = []
+                    for index in 0..<list.selectedRanges.size {
+                        guard let range = list.selectedRanges.getAt(index), range.firstIndex >= 0,
+                              Int(range.firstIndex) < coordinator.rows.count else { continue }
+                        let end = min(Int(range.lastIndex), coordinator.rows.count - 1)
+                        if end >= Int(range.firstIndex) {
+                            ids.append(contentsOf: coordinator.rows[Int(range.firstIndex)...end].map(\.id))
+                        }
+                    }
+                    guard let payload = TrackDrag.begin(ids) else { args.cancel = true; return }
+                    do { try args.data.setText(payload) } catch { TrackDrag.end(); args.cancel = true; return }
+                    args.data.properties.title = "\(ids.count) songs"
+                    args.data.requestedOperation = .copy
+                }
+            }
+            list.dragItemsCompleted.addHandler { _, _ in MainActor.assumeIsolated { TrackDrag.end() } }
             // Interim: rows use WinUI's default item rendering (a string per row, virtualized).
             // Filling our own column grid into the containers left the rows blank (see the
             // project card); until that's solved, one readable line per song.

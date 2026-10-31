@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
+int ipm_machine_id(uint16_t *buffer, size_t capacity);
 /// Vendor id, product id and serial number of the USB device hosting `drive` ('E' for E:).
 /// Returns 1 when found. `serial` gets a NUL-terminated UTF-16 string (empty when the device has none).
 int ipm_usb_identity(uint16_t drive, uint32_t *vendor, uint32_t *product, uint16_t *serial, size_t serialCapacity);

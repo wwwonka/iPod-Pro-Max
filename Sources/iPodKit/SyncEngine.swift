@@ -9,6 +9,7 @@
 import Foundation
 
 public struct SyncOptions: Sendable {
+    public var additiveOnly = false
     public var removeUnknownTracks = true
     public var writeArtwork = true
     public var syncPodcasts = true
@@ -136,6 +137,14 @@ public final class SyncEngine: @unchecked Sendable {
         var record = request.record
         var result = SyncResult(record: record)
         let fm = FileManager.default
+        var allocatedFiles: [URL] = []
+        var referencedFiles = Set<URL>()
+        var databaseCommitted = false
+        defer {
+            if request.options.additiveOnly {
+                for file in allocatedFiles where !databaseCommitted || !referencedFiles.contains(file) { try? fm.removeItem(at: file) }
+            }
+        }
 
         switch device.supportLevel {
         case .unsupported:
@@ -172,7 +181,7 @@ public final class SyncEngine: @unchecked Sendable {
                 continue
             }
             if let dbid = record.trackDBIDs[t.id], dbidsOnDevice.contains(dbid), deviceFileExists(db, dbid: dbid) {
-                if needsLyricsFix(t, record: record) {
+                if !request.options.additiveOnly && needsLyricsFix(t, record: record) {
                     note("Re-copying “\(t.title)” to fix its lyrics tag on this iPod.")
                 } else {
                     desiredDBIDs.insert(dbid)
@@ -207,7 +216,7 @@ public final class SyncEngine: @unchecked Sendable {
 
         // 3. Removals.
         var removals: [IPodTrack] = []
-        for t in db.tracks where !desiredDBIDs.contains(t.dbid) {
+        for t in db.tracks where !request.options.additiveOnly && !desiredDBIDs.contains(t.dbid) {
             if ourDBIDs.contains(t.dbid) {
                 removals.append(t)
             } else if request.options.removeUnknownTracks {
@@ -284,6 +293,7 @@ public final class SyncEngine: @unchecked Sendable {
                     record.lyricsFixedDates[t.id] = t.dateModified ?? Date()
                 }
                 let (ipodPath, destURL) = try allocateDestination(device: device, folderCount: folderCount, ext: ext)
+                if request.options.additiveOnly { allocatedFiles.append(destURL) }
                 try fm.copyItem(at: source, to: destURL)
                 let realSize = (try? destURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? add.estimatedSize
                 copied += add.estimatedSize
@@ -292,6 +302,7 @@ public final class SyncEngine: @unchecked Sendable {
                 var track: IPodTrack
                 if let t = add.libraryTrack {
                     track = makeTrack(from: t, ipodPath: ipodPath, fileSize: UInt32(clamping: realSize), extOnDevice: ext)
+                    if request.options.additiveOnly, let reserved = record.trackDBIDs[t.id] { track.dbid = reserved }
                     record.trackDBIDs[t.id] = track.dbid
                     trackIDByDBID[track.dbid] = t.id
                 } else if let (show, ep) = add.episode {
@@ -299,7 +310,9 @@ public final class SyncEngine: @unchecked Sendable {
                     record.episodeDBIDs[ep.id] = track.dbid
                     episodeIDByDBID[track.dbid] = ep.id
                 } else { continue }
+                if request.options.additiveOnly { db.tracks.removeAll { $0.dbid == track.dbid } }
                 db.tracks.append(track)
+                referencedFiles.insert(destURL)
                 desiredDBIDs.insert(track.dbid)
                 result.added += 1
             } catch let e as SyncError {
@@ -346,13 +359,15 @@ public final class SyncEngine: @unchecked Sendable {
 
         // 8. Playlists.
         report("Playlists", "Rebuilding playlists…")
-        rebuildPlaylists(db: &db, record: &record, trackIDByDBID: trackIDByDBID, episodeIDByDBID: episodeIDByDBID)
+        if !request.options.additiveOnly {
+            rebuildPlaylists(db: &db, record: &record, trackIDByDBID: trackIDByDBID, episodeIDByDBID: episodeIDByDBID)
+        }
 
         // 9. Artwork.
         if request.options.writeArtwork && device.supportsArtwork {
             report("Artwork", "Preparing album art…", fraction: 0)
             try await writeArtwork(device: device, db: &db, trackIDByDBID: trackIDByDBID, episodeIDByDBID: episodeIDByDBID, libraryByID: libraryByID, episodeByID: episodeByID)
-        } else {
+        } else if !request.options.additiveOnly {
             for i in db.tracks.indices { db.tracks[i].hasArtwork = 0x02; db.tracks[i].mhiiLink = 0; db.tracks[i].artworkCount = 0 }
         }
 
@@ -374,7 +389,13 @@ public final class SyncEngine: @unchecked Sendable {
         let writer = ITunesDBWriter(database: db, checksum: device.checksumType, firewireID: device.firewireIDBytes)
         let output = try writer.write()
         try fm.createDirectory(at: device.iTunesDir, withIntermediateDirectories: true)
+        if request.options.additiveOnly, fm.fileExists(atPath: device.iTunesDBURL.path) {
+            let backup = device.iTunesDBURL.appendingPathExtension("bak")
+            if fm.fileExists(atPath: backup.path) { try fm.removeItem(at: backup) }
+            try fm.copyItem(at: device.iTunesDBURL, to: backup)
+        }
         try FileOps.writeReplacing(output.data, to: device.iTunesDBURL)
+        databaseCommitted = true
         // Old-style extra files that would confuse the firmware if left stale.
         for stale in ["iTunesDB.ext", "iTunesCDB"] {
             let u = device.iTunesDir.appendingPathComponent(stale)
@@ -732,9 +753,14 @@ public final class SyncEngine: @unchecked Sendable {
                               libraryByID: [UUID: LibraryTrack], episodeByID: [UUID: (PodcastShow, PodcastEpisode)]) async throws {
         let formats = device.coverArtFormats
         let writer = IThumbWriter(artworkDir: device.artworkDir, formats: formats)
-        try writer.removeExistingFiles()
+        let oldData = request.options.additiveOnly && FileManager.default.fileExists(atPath: device.artworkDBURL.path)
+            ? try Data(contentsOf: device.artworkDBURL) : nil
+        let oldRecords = try oldData.map { try ExistingArtwork.records($0) } ?? []
+        let preserved = Set(oldRecords.map(\.dbid))
+        if !request.options.additiveOnly { try writer.removeExistingFiles() }
+        defer { writer.finish() }
         var entries: [ArtworkEntry] = []
-        var nextID = ArtworkDBWriter.firstImageID
+        var nextID = max(ArtworkDBWriter.firstImageID, (oldRecords.map(\.id).max() ?? 0) + 1)
         var sizeCache: [String: UInt32] = [:]
 
         var keyByIndex: [Int: String] = [:]
@@ -742,6 +768,7 @@ public final class SyncEngine: @unchecked Sendable {
         var seen = Set<String>()
         for i in db.tracks.indices {
             let dbid = db.tracks[i].dbid
+            if preserved.contains(dbid) { continue }
             var key: String? = nil
             if let tid = trackIDByDBID[dbid] { key = libraryByID[tid]?.artworkKey }
             else if let eid = episodeIDByDBID[dbid] { key = episodeByID[eid]?.0.artworkKey }
@@ -793,7 +820,9 @@ public final class SyncEngine: @unchecked Sendable {
         }
 
         for i in db.tracks.indices {
+            if preserved.contains(db.tracks[i].dbid) { continue }
             guard let key = keyByIndex[i], let thumbs = thumbsByKey[key] else {
+                if request.options.additiveOnly { continue }
                 db.tracks[i].hasArtwork = 0x02
                 db.tracks[i].mhiiLink = 0
                 db.tracks[i].artworkCount = 0
@@ -811,9 +840,10 @@ public final class SyncEngine: @unchecked Sendable {
             db.tracks[i].mhiiLink = imageID
         }
         writer.finish()
-        let data = ArtworkDBWriter.write(entries: entries, formats: formats, tzOffset: db.tzOffset)
+        var data = ArtworkDBWriter.write(entries: entries, formats: formats, tzOffset: db.tzOffset)
+        if let oldData { data = try ExistingArtwork.merge(oldData, into: data) }
         try FileManager.default.createDirectory(at: device.artworkDir, withIntermediateDirectories: true)
-        try data.write(to: device.artworkDBURL, options: .atomic)
+        try FileOps.writeReplacing(data, to: device.artworkDBURL)
         note("Wrote artwork for \(entries.count) tracks (\(writer.uniqueImageCount) unique images).")
     }
 }

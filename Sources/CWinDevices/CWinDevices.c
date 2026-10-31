@@ -139,3 +139,11 @@ void ipm_watch_stop(void *handle) {
     free(w);
 }
 #endif
+
+#if defined(_WIN32)
+int ipm_machine_id(uint16_t *buffer, size_t capacity) {
+    DWORD bytes = (DWORD)(capacity * sizeof(uint16_t));
+    return RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Cryptography", L"MachineGuid",
+        RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, NULL, buffer, &bytes) == ERROR_SUCCESS;
+}
+#endif

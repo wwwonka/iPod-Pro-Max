@@ -3,6 +3,7 @@
     import SwiftCrossUI
     import UWP
     import WinUI
+    import UWP
     import WinUIBackend
     import WindowsFoundation
 
@@ -46,7 +47,7 @@
             coordinator.onSelect = { selection = $0 }
             coordinator.onEject = onEject
             let dark = context.environment.colorScheme == .dark
-            let key = devices + ["|"] + playlists.map { $0.id + $0.name } + [dark ? "dark" : "light"]
+            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name } + [dark ? "dark" : "light"]
             if key != coordinator.key {
                 coordinator.key = key
                 coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists), dark: dark)
@@ -241,6 +242,22 @@
                 }
 
                 let item = ListViewItem()
+                if case .device(let name) = row.item {
+                    item.allowDrop = true
+                    item.dragOver.addHandler { _, args in
+                        MainActor.assumeIsolated {
+                            guard let args, TrackDrag.payload != nil else { return }
+                            args.acceptedOperation = .copy
+                            args.handled = true
+                        }
+                    }
+                    item.drop.addHandler { _, args in
+                        MainActor.assumeIsolated {
+                            guard let args else { return }
+                            if TrackDrag.accept(TrackDrag.payload, device: name) { args.acceptedOperation = .copy; args.handled = true }
+                        }
+                    }
+                }
                 item.content = cell
                 item.height = M.rowHeight
                 item.minHeight = 0

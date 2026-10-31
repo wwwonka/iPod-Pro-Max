@@ -46,11 +46,12 @@ public enum FolderImporter {
     /// Reads every media file of `folder`. Track ids are derived from the path relative to `folder`,
     /// so the same folder keeps the same ids from one run (and one computer) to the next.
     /// `progress(done, total)` is called from worker threads.
-    public static func scan(folder: URL, artworkDir: URL, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async -> FolderImport {
-        let files = mediaFiles(in: folder)
+    public static func scan(folder: URL, artworkDir: URL, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }, cached: [LibraryTrack] = [], namespace: String? = nil, musicOnly: Bool = false) async -> FolderImport {
+        let files = mediaFiles(in: folder).filter { !musicOnly || (MetadataExtractor.isAudioFile($0) && !["m4b", "aa"].contains($0.pathExtension.lowercased())) }
         try? FileManager.default.createDirectory(at: artworkDir, withIntermediateDirectories: true)
         let artwork = ArtworkStore(directory: artworkDir)
         let base = folder.standardizedFileURL.path
+        let cachedByPath = Dictionary(cached.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
         var tracks: [Int: LibraryTrack] = [:]
         var failed: [String] = []
         let workers = max(ProcessInfo.processInfo.activeProcessorCount, 1)
@@ -64,7 +65,12 @@ public enum FolderImporter {
                 next += 1
                 group.addTask {
                     let relative = relativePath(of: url, base: base)
-                    return (index, await makeTrack(from: url, id: stableID(for: relative), artwork: artwork))
+                    let old = cachedByPath[url.path]
+                    let attrs = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    if let old, old.fileSize == Int64(attrs?.fileSize ?? -1), old.dateModified == attrs?.contentModificationDate {
+                        return (index, old)
+                    }
+                    return (index, await makeTrack(from: url, id: old?.id ?? stableID(for: (namespace.map { $0 + ":" } ?? "") + relative), artwork: artwork))
                 }
             }
             for _ in 0..<min(workers, files.count) { addNext() }

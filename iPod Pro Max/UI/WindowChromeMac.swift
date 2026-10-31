@@ -49,6 +49,9 @@
         func install(on window: NSWindow) {
             guard self.window !== window else { return }
             self.window = window
+            // The portable app does not persist window state in the host's defaults.
+            _ = window.setFrameAutosaveName("")
+            window.isRestorable = false
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
