@@ -1,8 +1,8 @@
 #!/bin/bash
-# Double-click in Finder: builds the SwiftCrossUI prototype for macOS, then opens it.
-# Same as: prototypes/swiftcrossui/build.sh mac --run
+# Double-click in Finder: builds the SwiftCrossUI application for macOS, then opens it.
+# Same as: Tools/Build/build.sh mac --run
 cd "$(dirname "$0")"
-if prototypes/swiftcrossui/build.sh mac --run; then
+if Tools/Build/build.sh mac --run; then
     echo; echo "Done."
 else
     echo; echo "Build failed (see above)."

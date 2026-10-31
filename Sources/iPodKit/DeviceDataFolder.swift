@@ -3,7 +3,7 @@
 //  iPod Pro Max
 //
 //  The `iPod Pro Max/Data/` folder on the iPod, where what belongs to the iPod travels with it
-//  (docs/Données/Sur l'iPod.md). Small JSON files, written safely: FAT32 has no journal, so each file
+//  (Docs/Données/Sur l'iPod.md). Small JSON files, written safely: FAT32 has no journal, so each file
 //  is written aside, flushed and renamed, and the previous generation is kept as `.bak`.
 //
 

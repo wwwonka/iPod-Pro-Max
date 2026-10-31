@@ -1,14 +1,14 @@
 // swift-tools-version:6.0
 
-// The portable core of iPod Pro Max, built with `swift build` on macOS, Linux and Windows.
-// See docs/Architecture/Modules.md.
+// iPod Pro Max: SwiftCrossUI application, portable libraries and command-line tool.
+// See Docs/Architecture/Modules.md.
 //
 //   iPodKit     iTunesDB, ArtworkDB, PhotoDB, Play Counts, hash58, the sync engine. Foundation only.
 //   MediaKit    tags, artwork decoding, transcoding: AVFoundation/ImageIO on macOS, pure Swift + ffmpeg elsewhere.
 //   DeviceKit   finds, watches, identifies and ejects iPods (one implementation per OS).
 //   ipodpromax  command-line tool: list, info, sync <folder>, eject, watch.
 //
-// The Xcode app consumes these libraries as a local package.
+// The former SwiftUI app in Refs/SwiftUI/ consumes these libraries as a local package.
 
 import PackageDescription
 
@@ -16,16 +16,28 @@ let package = Package(
     name: "iPodProMax",
     platforms: [.macOS(.v15)],
     products: [
+        .executable(name: "iPodProMaxApp", targets: ["iPodProMaxApp"]),
         .library(name: "iPodKit", targets: ["iPodKit"]),
         .library(name: "MediaKit", targets: ["MediaKit"]),
         .library(name: "DeviceKit", targets: ["DeviceKit"]),
         .executable(name: "ipodpromax", targets: ["ipodpromax"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/moreSwift/swift-cross-ui", exact: "0.10.0"),
         // JPEG/PNG/WebP decoding and JPEG encoding off macOS (ImageIO does it on the Mac).
         .package(url: "https://github.com/stackotter/swift-image-formats", from: "0.5.0"),
     ],
     targets: [
+        .executableTarget(
+            name: "iPodProMaxApp",
+            dependencies: [
+                "iPodKit", "DeviceKit",
+                .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
+                .product(name: "DefaultBackend", package: "swift-cross-ui"),
+            ],
+            path: "iPod Pro Max",
+            exclude: ["Resources"]
+        ),
         .target(name: "iPodKit"),
         .target(
             name: "MediaKit",

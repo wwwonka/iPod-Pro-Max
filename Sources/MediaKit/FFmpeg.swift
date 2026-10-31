@@ -27,12 +27,12 @@ public enum FFmpeg {
     static let architecture = "x64"
     #endif
 
-    /// Our own ffmpeg, which ships inside the app (Tools/ffmpeg/build.sh): never one the user would
+    /// Our own ffmpeg, which ships inside the app (Tools/FFmpeg/build.sh): never one the user would
     /// have to install, and never whatever version happens to be on the PATH. First match wins:
     /// `IPODPROMAX_FFMPEG`, next to the running executable (also `Contents/MacOS` in a Mac app), a
     /// `Tools/<OS>/` folder next to it or up to two levels up (the layout on the iPod, see
-    /// docs/Données/Sur l'iPod.md), then, for development builds run from the repository
-    /// (`.build/<config>/`), `Tools/ffmpeg/dist/<os>-<arch>/`.
+    /// Docs/Données/Sur l'iPod.md), then, for development builds run from the repository
+    /// (`.build/<config>/`), `Build/FFmpeg/<os>-<arch>/`.
     public static func binaryPath() -> String? {
         let fm = FileManager.default
         var candidates: [String] = []
@@ -49,7 +49,7 @@ public enum FFmpeg {
         // Development: <repo>/.build/<triple>/<config>/ipodpromax or <repo>/.build/<config>/ipodpromax.
         var dir = exeDir
         for _ in 0..<4 {
-            let devCopy = dir.appendingPathComponent("Tools/ffmpeg/dist/\(platformFolder.lowercased())-\(architecture)/\(executableName)")
+            let devCopy = dir.appendingPathComponent("Build/FFmpeg/\(platformFolder.lowercased())-\(architecture)/\(executableName)")
             candidates.append(devCopy.path)
             dir = dir.deletingLastPathComponent()
         }
@@ -69,7 +69,7 @@ public enum FFmpeg {
     public static func requireBinary(for job: String) throws -> String {
         if let path = binaryPath() { return path }
         throw IPodDBError.unsupported("\(job) needs the ffmpeg that comes with iPod Pro Max, and this copy doesn't have it. "
-            + "Reinstall iPod Pro Max (developers: run Tools/ffmpeg/build.sh).")
+            + "Reinstall iPod Pro Max (developers: run Tools/FFmpeg/build.sh).")
     }
 
     /// Runs ffmpeg and waits. stdout lines go to `onOutput` (used with `-progress pipe:1`).

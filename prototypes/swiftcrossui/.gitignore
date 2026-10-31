@@ -1,5 +1,0 @@
-.build/
-.build-gtk/
-.swiftpm/
-dist/
-local/

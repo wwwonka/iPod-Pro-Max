@@ -1,31 +1,25 @@
-# Xcode
-build/
+# Generated output and local resources
+.DS_Store
+/Build/
+/iPod Pro Max/Resources/Local/
+/.scratch/
+/.build/
+/.build-gtk/
+/.swiftpm/
 DerivedData/
 *.xcuserstate
 xcuserdata/
 *.xcworkspace/xcuserdata/
-.DS_Store
-# Local tooling output
-Tools/dbtest/build/
+Tools/DbTest/build/
+Tools/FFmpeg/.cache/
+Refs/Site/node_modules/
+Refs/Site/.wrangler/
+Refs/Site/public/downloads/*.dmg
 
-dist/
-build/
-Site/node_modules/
-Site/.wrangler/
-Site/public/downloads/*.dmg
+# Obsidian: keep only shared vault settings
+Docs/.obsidian/*
+!Docs/.obsidian/app.json
 
-# Obsidian vault (docs/): keep only shared settings
-docs/.obsidian/*
-!docs/.obsidian/app.json
-
-# Claude Code: local worktrees and settings
+# Local agent settings and worktrees
 .claude/worktrees/
 .claude/settings.local.json
-
-# Swift package (Package.swift at the root)
-/.build/
-/.swiftpm/
-
-# ffmpeg built by Tools/ffmpeg/build.sh (sources and outputs, never committed)
-Tools/ffmpeg/.cache/
-Tools/ffmpeg/dist/

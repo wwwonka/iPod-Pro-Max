@@ -4,7 +4,7 @@
 //
 //  Finds mounted iPods, tells when volumes come and go, identifies the USB device behind a volume
 //  and ejects it. One implementation per OS (DeviceKit+macOS/Linux/Windows.swift), all event-driven:
-//  nothing runs while no disk is plugged in or removed. See docs/Architecture/DeviceKit.md.
+//  nothing runs while no disk is plugged in or removed. See Docs/Architecture/DeviceKit.md.
 //
 
 import Foundation

@@ -1,30 +1,33 @@
-//
-//  DeviceView.swift
-//  iPod Pro Max
-//
-
-import SwiftUI
+import Foundation
+import SwiftCrossUI
 import iPodKit
-import MediaKit
-import DeviceKit
+#if canImport(AppKit)
+    import AppKit
+#endif
 
+/// The iPod page, copied from the SwiftUI app's `DeviceView`: header, support banner, capacity bar,
+/// sync panel, sync options and actions. Read from the iPod itself with iPodKit (name, contents,
+/// space); the sync options live in the view only, and Sync, Import and Forget are shown but not
+/// wired up: the prototype has no sync records or sync engine behind it. Eject and Show in Finder work.
 struct DeviceView: View {
-    let device: IPodDevice
-    @Environment(LibraryStore.self) private var envLibrary: LibraryStore?
-    private var library: LibraryStore { envLibrary ?? AppServices.shared.library }
-    @Environment(DeviceMonitor.self) private var envDevices: DeviceMonitor?
-    private var devices: DeviceMonitor { envDevices ?? AppServices.shared.devices }
-    @Environment(SyncCoordinator.self) private var envSync: SyncCoordinator?
-    private var sync: SyncCoordinator { envSync ?? AppServices.shared.sync }
-    @Environment(AppState.self) private var envAppState: AppState?
-    private var appState: AppState { envAppState ?? AppServices.shared.appState }
+    var device: IPodDevice
+    var library: Library
+    var onEject: () -> Void
 
-    @State private var contents: DeviceContents?
-    @State private var isRenaming = false
-    @State private var newName = ""
-    @State private var confirmImport = false
-    @State private var confirmForget = false
-    @State private var showLog = false
+    @State var contents: DeviceContents?
+    @State var isRenaming = false
+    @State var newName = ""
+    @State var renamed: String?
+
+    // Sync options, as in the app's DeviceSyncRecord (defaults included).
+    @State var musicChoice: MusicChoice? = .entireLibrary
+    @State var selectedPlaylists: Set<String> = []
+    @State var syncPodcasts = true
+    @State var syncVideos = true
+    @State var syncAudiobooks = true
+    @State var syncPhotos = true
+    @State var removeUnknownTracks = false
+    @State var albumArtistGrouping = true
 
     struct DeviceContents {
         var songs = 0
@@ -39,10 +42,14 @@ struct DeviceView: View {
         var photos = 0
         var name = ""
         var readError: String?
+        var stats = IPodDevice.VolumeStats(total: 0, free: 0)
     }
 
-    private var record: DeviceSyncRecord { library.record(for: device) }
-    private var status: SyncCoordinator.Status { sync.status(for: device) }
+    enum MusicChoice: String, CaseIterable, CustomStringConvertible {
+        case entireLibrary = "Entire library"
+        case selectedPlaylists = "Selected playlists"
+        var description: String { rawValue }
+    }
 
     var body: some View {
         ScrollView {
@@ -60,32 +67,14 @@ struct DeviceView: View {
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .navigationTitle(displayName)
         .task(id: device.id) { await loadContents() }
-        .onChange(of: status.finishedAt) { _, _ in Task { await loadContents() } }
-        .alert("Rename iPod", isPresented: $isRenaming) {
-            TextField("Name", text: $newName)
-            Button("Rename") { rename() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The new name is written to the iPod at the next sync.")
-        }
-        .confirmationDialog("Import songs from this iPod?", isPresented: $confirmImport) {
-            Button("Import to Library") { Task { await importFromDevice() } }
-        } message: {
-            Text("Every song and podcast on the iPod is copied into ~/Music/iPod Pro Max and added to your library.")
-        }
-        .confirmationDialog("Forget this iPod?", isPresented: $confirmForget) {
-            Button("Forget", role: .destructive) { library.forgetDevice(id: device.id) }
-        } message: {
-            Text("iPod Pro Max forgets what it synced to this iPod. Nothing on the iPod is changed until the next sync, which will then treat every track as new.")
-        }
     }
 
     private var displayName: String {
+        if let renamed { return renamed }
         if let n = contents?.name, !n.isEmpty { return n }
-        if !record.deviceName.isEmpty, library.deviceRecords[device.id] != nil { return record.deviceName }
         return device.displayName
     }
 
@@ -93,56 +82,76 @@ struct DeviceView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 18) {
-            Image(systemName: "ipod")
-                .font(.system(size: 56, weight: .thin))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 80, height: 80)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+            Symbol(name: "ipod", size: 80, pointSize: 56, tint: .accent)
+                .background(RoundedRectangle(cornerRadius: 16).fill(MacColor.accent.opacity(0.1)))
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(displayName).font(.title.bold())
-                    Button { newName = displayName; isRenaming = true } label: { Image(systemName: "pencil") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename")
+                if isRenaming {
+                    HStack(spacing: 8) {
+                        TextField("Name", text: $newName)
+                            .frame(width: 260)
+                            .onSubmit { rename() }
+                        Button("Rename") { rename() }
+                        Button("Cancel") { isRenaming = false }
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Text(displayName).font(.system(size: 26, weight: .bold))
+                        Button {
+                            newName = displayName
+                            isRenaming = true
+                        } label: {
+                            Symbol(name: "pencil", size: 16, pointSize: 13, tint: .secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Rename")
+                    }
                 }
-                Text([device.displayModelName, device.capacityLabel].compactMap { $0 }.joined(separator: " · ")).foregroundStyle(.secondary)
+                Text([device.displayModelName, device.capacityLabel].compactMap { $0 }.joined(separator: " · "))
+                    .foregroundColor(MacColor.secondaryText)
                 HStack(spacing: 12) {
                     if let s = device.serialNumber { Text("Serial \(s)") }
-                    if device.isSimulated { Label("Simulated iPod folder", systemImage: "folder") }
-                    if let last = record.lastSync { Text("Last synced \(Format.relative(last))") } else { Text("Never synced with iPod Pro Max") }
+                    if device.isSimulated {
+                        HStack(spacing: 4) {
+                            Symbol(name: "folder", size: 12, pointSize: 10, tint: .tertiary)
+                            Text("Simulated iPod folder")
+                        }
+                    }
+                    Text("Never synced with iPod Pro Max")
                 }
-                .font(.caption).foregroundStyle(.tertiary)
+                .font(.system(size: 10))
+                .foregroundColor(MacColor.tertiaryText)
             }
             Spacer()
         }
     }
 
     private var unsupportedBanner: some View {
-        banner(color: .red, icon: "xmark.octagon.fill", title: "This iPod isn't supported yet",
+        banner(color: MacColor.redTint, icon: "xmark.octagon.fill", title: "This iPod isn't supported yet",
                text: "\(device.displayModelName) needs a database signature that iPod Pro Max 1.0 can't produce. iPod Video, iPod nano (1st & 2nd gen), iPod photo, iPod mini, iPod classic and the original click-wheel iPods are fully supported.")
     }
 
     private var experimentalBanner: some View {
-        banner(color: .orange, icon: "flask.fill", title: "Experimental support",
+        banner(color: MacColor.orangeTint, icon: "flask.fill", title: "Experimental support",
                text: device.generation == .unknown
-               ? "iPod Pro Max couldn't identify this model from its SysInfo file. Syncing should work for classic click-wheel iPods, but album art may not display."
-               : "\(device.displayModelName) uses a signed database. iPod Pro Max signs it, but this model hasn't been verified yet. Keep a backup of anything important on the iPod.")
+                   ? "iPod Pro Max couldn't identify this model from its SysInfo file. Syncing should work for classic click-wheel iPods, but album art may not display."
+                   : "\(device.displayModelName) uses a signed database. iPod Pro Max signs it, but this model hasn't been verified yet. Keep a backup of anything important on the iPod.")
     }
 
-    private func banner(color: Color, icon: String, title: String, text: String) -> some View {
+    private func banner(color: SystemColor, icon: String, title: String, text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon).foregroundStyle(color).font(.title3)
+            Symbol(name: icon, size: 20, pointSize: 15, tint: .color(color))
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline)
-                Text(text).font(.callout).foregroundStyle(.secondary)
+                Text(title).font(.system(size: 13, weight: .bold))
+                Text(text).font(.system(size: 12)).foregroundColor(MacColor.secondaryText)
             }
+            Spacer()
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .background(RoundedRectangle(cornerRadius: 10).fill(color.color.opacity(0.08)))
     }
 
     private var capacity: some View {
-        let stats = device.volumeStats()
+        let stats = contents?.stats ?? IPodDevice.VolumeStats(total: 0, free: 0)
         let music = contents?.musicBytes ?? 0
         let podcasts = contents?.podcastBytes ?? 0
         let videos = contents?.videoBytes ?? 0
@@ -150,35 +159,40 @@ struct DeviceView: View {
         let photos = contents?.photoBytes ?? 0
         let used = max(stats.used, music + podcasts + videos + audiobooks + photos)
         let other = max(used - music - podcasts - videos - audiobooks - photos, 0)
+        let segments: [(Color, Int64)] = [
+            (MacColor.blue, music), (MacColor.purple, podcasts), (MacColor.orange, videos),
+            (MacColor.pink, audiobooks), (MacColor.green, photos), (MacColor.gray.opacity(0.6), other),
+        ]
         return VStack(alignment: .leading, spacing: 8) {
             GeometryReader { geo in
                 HStack(spacing: 1) {
                     if stats.total > 0 {
-                        Rectangle().fill(Color.blue).frame(width: geo.size.width * CGFloat(music) / CGFloat(stats.total))
-                        Rectangle().fill(Color.purple).frame(width: geo.size.width * CGFloat(podcasts) / CGFloat(stats.total))
-                        Rectangle().fill(Color.orange).frame(width: geo.size.width * CGFloat(videos) / CGFloat(stats.total))
-                        Rectangle().fill(Color.pink).frame(width: geo.size.width * CGFloat(audiobooks) / CGFloat(stats.total))
-                        Rectangle().fill(Color.green).frame(width: geo.size.width * CGFloat(photos) / CGFloat(stats.total))
-                        Rectangle().fill(Color.gray.opacity(0.6)).frame(width: geo.size.width * CGFloat(other) / CGFloat(stats.total))
+                        ForEach(segments.indices, id: \.self) { i in
+                            segments[i].0.frame(width: geo.size.width * Double(segments[i].1) / Double(stats.total), height: 18)
+                        }
                     }
-                    Rectangle().fill(Color.secondary.opacity(0.12))
+                    MacColor.secondaryText.opacity(0.12).frame(height: 18)
                 }
             }
             .frame(height: 18)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            FlowLayout(hSpacing: 18, vSpacing: 6) {
-                legend(.blue, "Music", Format.bytes(music), detail: contents.map { "\($0.songs) songs" })
-                legend(.purple, "Podcasts", Format.bytes(podcasts), detail: contents.map { "\($0.podcasts) episodes" })
-                if videos > 0 { legend(.orange, "Videos", Format.bytes(videos), detail: contents.map { "\($0.videos)" }) }
-                if audiobooks > 0 { legend(.pink, "Audiobooks", Format.bytes(audiobooks), detail: contents.map { "\($0.audiobooks)" }) }
-                if photos > 0 { legend(.green, "Photos", Format.bytes(photos), detail: contents.map { "\($0.photos)" }) }
-                legend(.gray, "Other", Format.bytes(other))
-                legend(Color.secondary.opacity(0.3), "Free", Format.bytes(stats.free))
-                if stats.total > 0 { Text("\(Format.bytes(stats.total)) total").foregroundStyle(.secondary).fixedSize() }
+            .cornerRadius(6)
+            HStack(spacing: 18) {
+                legend(MacColor.blue, "Music", bytes(music), detail: contents.map { "\($0.songs) songs" })
+                legend(MacColor.purple, "Podcasts", bytes(podcasts), detail: contents.map { "\($0.podcasts) episodes" })
+                if videos > 0 { legend(MacColor.orange, "Videos", bytes(videos), detail: contents.map { "\($0.videos)" }) }
+                if audiobooks > 0 { legend(MacColor.pink, "Audiobooks", bytes(audiobooks), detail: contents.map { "\($0.audiobooks)" }) }
+                if photos > 0 { legend(MacColor.green, "Photos", bytes(photos), detail: contents.map { "\($0.photos)" }) }
+                legend(MacColor.gray, "Other", bytes(other))
+                legend(MacColor.secondaryText.opacity(0.3), "Free", bytes(stats.free))
+                if stats.total > 0 { Text("\(bytes(stats.total)) total").foregroundColor(MacColor.secondaryText).legendFixedSize() }
             }
-            .font(.caption)
+            .font(.system(size: 10))
             if let e = contents?.readError {
-                Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                HStack(spacing: 4) {
+                    Symbol(name: "exclamationmark.triangle", size: 12, pointSize: 10, tint: .color(MacColor.orangeTint))
+                    Text(e).foregroundColor(MacColor.orange)
+                }
+                .font(.system(size: 10))
             }
         }
     }
@@ -188,140 +202,87 @@ struct DeviceView: View {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(name).bold()
             Text(value)
-            if let detail { Text("(\(detail))").foregroundStyle(.secondary) }
+            if let detail { Text("(\(detail))").foregroundColor(MacColor.secondaryText) }
         }
-        .fixedSize()
+        .legendFixedSize()
     }
 
     private var syncPanel: some View {
-        let plan = planSummary
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(status.isRunning ? status.phase : "Ready to sync").font(.headline)
-                        Text(status.isRunning ? status.detail : plan).foregroundStyle(.secondary).font(.callout).lineLimit(2)
-                    }
-                    Spacer()
-                    if status.isRunning {
-                        Button("Cancel") { sync.cancel(device) }
-                    } else {
-                        Button {
-                            sync.startSync(device)
-                        } label: {
-                            Label("Sync", systemImage: "arrow.triangle.2.circlepath").frame(minWidth: 80)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(device.supportLevel == .unsupported || library.isImporting)
-                    }
+        GroupBox {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Ready to sync").font(.system(size: 13, weight: .bold))
+                    Text(planSummary).foregroundColor(MacColor.secondaryText).font(.system(size: 12)).lineLimit(2)
                 }
-                if status.isRunning {
-                    ProgressView(value: status.fraction).progressViewStyle(.linear)
-                } else if let err = status.lastError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout)
-                } else if let summary = status.lastSummary {
-                    Label(summary, systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.callout)
-                }
-                if !status.log.isEmpty {
-                    DisclosureGroup("Details", isExpanded: $showLog) {
-                        ScrollView {
-                            Text(status.log.joined(separator: "\n")).font(.system(.caption, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 160)
-                    }
-                    .font(.callout)
-                }
+                Spacer()
+                ProminentButton(title: "Sync", icon: "arrow.triangle.2.circlepath", enabled: false) {}
+                    .help("Syncing isn't available yet")
             }
-            .padding(6)
         }
     }
 
     private var planSummary: String {
-        let all = library.tracksToSync(for: record)
-        let tracks = all.filter { !$0.isVideo && !$0.isAudiobook }
-        let videos = all.filter { $0.isVideo }
-        let audiobooks = all.filter { $0.isAudiobook }
-        let bytes = tracks.reduce(Int64(0)) { $0 + $1.fileSize }
-        var parts = ["\(tracks.count) song\(tracks.count == 1 ? "" : "s") (\(Format.bytes(bytes)))"]
-        if !videos.isEmpty { parts.append("\(videos.count) video\(videos.count == 1 ? "" : "s")") }
-        if !audiobooks.isEmpty { parts.append("\(audiobooks.count) audiobook\(audiobooks.count == 1 ? "" : "s")") }
-        if record.photosEnabled && device.generation.supportsPhotos && !library.photoSelection.isEmpty {
-            parts.append("photos from \(library.photoSelection.includeAllPhotos ? "your whole library" : "\(library.photoSelection.albumIDs.count) album\(library.photoSelection.albumIDs.count == 1 ? "" : "s")")")
-        }
-        if record.syncPodcasts && device.supportsPodcasts {
-            let eps = library.shows.reduce(0) { $0 + $1.episodesToSync().count }
-            parts.append("\(eps) podcast episode\(eps == 1 ? "" : "s")")
-        }
-        let pls = library.playlistsToSync(for: record).count
-        if pls > 0 { parts.append("\(pls) playlist\(pls == 1 ? "" : "s")") }
+        let songs = library.allRows.count
+        var parts = ["\(songs) song\(songs == 1 ? "" : "s")"]
+        if syncPhotos && device.generation.supportsPhotos { parts.append("photos from your whole library") }
+        let playlists = musicChoice == .selectedPlaylists ? selectedPlaylists.count : library.playlists.count
+        if playlists > 0 { parts.append("\(playlists) playlist\(playlists == 1 ? "" : "s")") }
         return parts.joined(separator: ", ")
     }
 
     private var optionsPanel: some View {
-        GroupBox("Sync Options") {
+        GroupBox(title: "Sync Options") {
             VStack(alignment: .leading, spacing: 10) {
-                Picker("Music", selection: Binding(get: { record.syncAllMusic }, set: { v in var r = record; r.syncAllMusic = v; library.updateRecord(r) })) {
-                    Text("Entire library").tag(true)
-                    Text("Selected playlists").tag(false)
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Music:")
+                    RadioGroup(options: MusicChoice.allCases, selection: $musicChoice)
                 }
-                .pickerStyle(.radioGroup)
-                if !record.syncAllMusic {
+                if musicChoice == .selectedPlaylists {
                     if library.playlists.isEmpty {
-                        Text("No playlists yet. Create one from the Music view.").font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
+                        Caption("No playlists yet. Create one from the Music view.").padding(.leading, 20)
                     } else {
                         VStack(alignment: .leading, spacing: 4) {
-                            ForEach(library.playlists) { pl in
-                                Toggle(pl.name, isOn: Binding(get: { record.selectedPlaylistIDs.contains(pl.id) }, set: { v in
-                                    var r = record
-                                    if v { r.selectedPlaylistIDs.insert(pl.id) } else { r.selectedPlaylistIDs.remove(pl.id) }
-                                    library.updateRecord(r)
-                                }))
+                            ForEach(library.playlists, id: \.id) { pl in
+                                CheckboxRow(title: pl.name, isOn: Binding(
+                                    get: { selectedPlaylists.contains(pl.id) },
+                                    set: { on in
+                                        if on { selectedPlaylists.insert(pl.id) } else { selectedPlaylists.remove(pl.id) }
+                                    }))
                             }
                         }
                         .padding(.leading, 20)
                     }
                 }
                 Divider()
-                Toggle("Sync podcasts", isOn: Binding(get: { record.syncPodcasts }, set: { v in var r = record; r.syncPodcasts = v; library.updateRecord(r) }))
-                    .disabled(!device.supportsPodcasts)
+                CheckboxRow(title: "Sync podcasts", isOn: $syncPodcasts).disabled(!device.supportsPodcasts)
                 if !device.supportsPodcasts {
-                    Text("This iPod's firmware has no Podcasts menu.").font(.caption).foregroundStyle(.secondary)
+                    Caption("This iPod's firmware has no Podcasts menu.")
                 }
-                Toggle("Sync videos", isOn: Binding(get: { record.videosEnabled }, set: { v in var r = record; r.syncVideos = v; library.updateRecord(r) }))
-                Toggle("Sync audiobooks", isOn: Binding(get: { record.audiobooksEnabled }, set: { v in var r = record; r.syncAudiobooks = v; library.updateRecord(r) }))
-                    .disabled(library.audiobooks.isEmpty)
-                Toggle("Sync photos", isOn: Binding(get: { record.photosEnabled }, set: { v in var r = record; r.syncPhotos = v; library.updateRecord(r) }))
-                    .disabled(!device.generation.supportsPhotos)
+                CheckboxRow(title: "Sync videos", isOn: $syncVideos)
+                CheckboxRow(title: "Sync audiobooks", isOn: $syncAudiobooks)
+                CheckboxRow(title: "Sync photos", isOn: $syncPhotos).disabled(!device.generation.supportsPhotos)
                 if !device.generation.supportsPhotos {
-                    Text("This iPod has no color screen for photos.").font(.caption).foregroundStyle(.secondary)
-                } else if library.photoSelection.isEmpty {
-                    Text("Choose albums in the Photos section of the sidebar.").font(.caption).foregroundStyle(.secondary)
+                    Caption("This iPod has no color screen for photos.")
                 }
-                Toggle("Remove songs that aren't in this library", isOn: Binding(get: { record.removeUnknownTracks }, set: { v in var r = record; r.removeUnknownTracks = v; library.updateRecord(r) }))
-                Text("When on, songs that were put on the iPod by iTunes or another Mac are deleted during sync so the iPod mirrors this library. Turn it off to keep them.")
-                    .font(.caption).foregroundStyle(.secondary)
+                CheckboxRow(title: "Remove songs that aren't in this library", isOn: $removeUnknownTracks)
+                Caption("When on, songs that were put on the iPod by iTunes or another Mac are deleted during sync so the iPod mirrors this library. Turn it off to keep them.")
                 Divider()
-                Toggle("Use Album Artist for Grouping", isOn: Binding(get: { record.albumArtistGroupingEnabled }, set: { v in var r = record; r.useAlbumArtistForGrouping = v; library.updateRecord(r) }))
-                Text("Replaces the Artist tag with Album Artist on this iPod so albums stay grouped in the Artists view. Your library files are not modified.")
-                    .font(.caption).foregroundStyle(.secondary)
+                CheckboxRow(title: "Use Album Artist for Grouping", isOn: $albumArtistGrouping)
+                Caption("Replaces the Artist tag with Album Artist on this iPod so albums stay grouped in the Artists view. Your library files are not modified.")
             }
-            .padding(6)
         }
     }
 
     private var actionsPanel: some View {
         HStack(spacing: 12) {
-            Button { Task { do { try await devices.eject(device) } catch { appState.alert = AlertMessage(title: "Couldn't Eject", message: error.localizedDescription) } } } label: {
-                Label(device.isSimulated ? "Detach Folder" : "Eject", systemImage: "eject")
-            }
-            .disabled(status.isRunning)
-            Button { confirmImport = true } label: { Label("Import Songs from iPod…", systemImage: "square.and.arrow.down") }
-                .disabled(status.isRunning || (contents?.songs ?? 0) + (contents?.podcasts ?? 0) == 0)
-            Button { NSWorkspace.shared.activateFileViewerSelecting([device.mountPoint]) } label: { Label("Show in Finder", systemImage: "folder") }
+            LabelButton(title: device.isSimulated ? "Detach Folder" : "Eject", icon: "eject") { onEject() }
+            LabelButton(title: "Import Songs from iPod…", icon: "square.and.arrow.down") {}
+                .disabled(true)
+                .help("Importing isn't available yet")
+            LabelButton(title: "Show in \(fileManagerName)", icon: "folder") { showInFileManager(device.mountPoint) }
             Spacer()
-            Button(role: .destructive) { confirmForget = true } label: { Text("Forget iPod") }
-                .disabled(status.isRunning || library.deviceRecords[device.id] == nil)
+            Button("Forget iPod") {}
+                .disabled(true)
         }
     }
 
@@ -329,50 +290,46 @@ struct DeviceView: View {
 
     private func loadContents() async {
         let dev = device
-        let result: DeviceContents = await Task.detached(priority: .utility) {
-            var c = DeviceContents()
-            do {
-                let db = try dev.readDatabase()
-                c.name = db.name
-                for t in db.tracks {
-                    if t.isPodcast { c.podcasts += 1; c.podcastBytes += Int64(t.fileSize) }
-                    else if t.mediaType & IPodMediaType.movie != 0 || t.mediaType & IPodMediaType.musicVideo != 0 || t.mediaType & IPodMediaType.tvShow != 0 { c.videos += 1; c.videoBytes += Int64(t.fileSize) }
-                    else if t.mediaType & IPodMediaType.audiobook != 0 { c.audiobooks += 1; c.audiobookBytes += Int64(t.fileSize) }
-                    else { c.songs += 1; c.musicBytes += Int64(t.fileSize) }
-                }
-                let photosDir = dev.mountPoint.appendingPathComponent("Photos")
-                if let e = FileManager.default.enumerator(at: photosDir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
-                    while let f = e.nextObject() as? URL {
-                        c.photoBytes += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-                    }
-                }
-                if let data = try? Data(contentsOf: photosDir.appendingPathComponent("Photo Database")), data.count > 0x84 {
-                    let r = ByteReader(data)
-                    // mhfd → first mhsd (type 1) → mhli holds the photo count.
-                    let mhsd = Int(r.u32(4))
-                    if r.hasHeader("mhsd", at: mhsd), r.hasHeader("mhli", at: mhsd + 0x60) { c.photos = Int(r.u32(mhsd + 0x60 + 8)) }
-                }
-            } catch {
-                c.readError = "The iPod's database couldn't be read (\(error.localizedDescription)). Syncing will rebuild it."
-            }
-            return c
-        }.value
-        contents = result
-        if !result.name.isEmpty, record.deviceName != result.name {
-            var r = record
-            r.deviceName = result.name
-            library.updateRecord(r)
-        }
+        contents = await Task.detached(priority: .utility) { Self.readContents(of: dev) }.value
     }
 
+    /// The same reading as the app's `DeviceView.loadContents`, plus the volume's space.
+    private nonisolated static func readContents(of dev: IPodDevice) -> DeviceContents {
+        var c = DeviceContents()
+        c.stats = dev.volumeStats()
+        do {
+            let db = try dev.readDatabase()
+            c.name = db.name
+            for t in db.tracks {
+                if t.isPodcast { c.podcasts += 1; c.podcastBytes += Int64(t.fileSize) }
+                else if t.mediaType & IPodMediaType.movie != 0 || t.mediaType & IPodMediaType.musicVideo != 0 || t.mediaType & IPodMediaType.tvShow != 0 { c.videos += 1; c.videoBytes += Int64(t.fileSize) }
+                else if t.mediaType & IPodMediaType.audiobook != 0 { c.audiobooks += 1; c.audiobookBytes += Int64(t.fileSize) }
+                else { c.songs += 1; c.musicBytes += Int64(t.fileSize) }
+            }
+            let photosDir = dev.mountPoint.appendingPathComponent("Photos")
+            if let e = FileManager.default.enumerator(at: photosDir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) {
+                while let f = e.nextObject() as? URL {
+                    c.photoBytes += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+                }
+            }
+            if let data = try? Data(contentsOf: photosDir.appendingPathComponent("Photo Database")), data.count > 0x84 {
+                let r = ByteReader(data)
+                // mhfd → first mhsd (type 1) → mhli holds the photo count.
+                let mhsd = Int(r.u32(4))
+                if r.hasHeader("mhsd", at: mhsd), r.hasHeader("mhli", at: mhsd + 0x60) { c.photos = Int(r.u32(mhsd + 0x60 + 8)) }
+            }
+        } catch {
+            c.readError = "The iPod's database couldn't be read (\(error.localizedDescription)). Syncing will rebuild it."
+        }
+        return c
+    }
+
+    /// Written to the iPod at once, as the app does, so the new name shows even without a sync.
     private func rename() {
         let name = newName.trimmingCharacters(in: .whitespaces)
+        isRenaming = false
         guard !name.isEmpty else { return }
-        var r = record
-        r.deviceName = name
-        library.updateRecord(r)
-        contents?.name = name
-        // Write the name immediately so it also shows up if the user never syncs.
+        renamed = name
         let dev = device
         Task.detached(priority: .utility) {
             guard var db = try? dev.readDatabase() else { return }
@@ -382,13 +339,186 @@ struct DeviceView: View {
             try? out.data.write(to: dev.iTunesDBURL, options: .atomic)
         }
     }
+}
 
-    private func importFromDevice() async {
-        do {
-            let n = try await sync.importFromDevice(device)
-            appState.alert = AlertMessage(title: "Import Complete", message: "Added \(n) song\(n == 1 ? "" : "s") to your library.")
-        } catch {
-            appState.alert = AlertMessage(title: "Import Failed", message: error.localizedDescription)
+// MARK: Pieces of the page
+
+/// The Mac's system colors, which the app's page uses, for every platform.
+enum MacColor {
+    static let accentTint = SystemColor(light: 0x007AFF, dark: 0x0A84FF)
+    static let purpleTint = SystemColor(light: 0xAF52DE, dark: 0xBF5AF2)
+    static let orangeTint = SystemColor(light: 0xFF9500, dark: 0xFF9F0A)
+    static let pinkTint = SystemColor(light: 0xFF2D55, dark: 0xFF375F)
+    static let greenTint = SystemColor(light: 0x28CD41, dark: 0x32D74B)
+    static let redTint = SystemColor(light: 0xFF3B30, dark: 0xFF453A)
+    static let whiteTint = SystemColor(0xFFFFFF)
+
+    static let accent = accentTint.color
+    static let blue = accentTint.color
+    static let purple = purpleTint.color
+    static let orange = orangeTint.color
+    static let pink = pinkTint.color
+    static let green = greenTint.color
+    static let red = redTint.color
+    static let gray = SystemColor(0x8E8E93).color
+    /// `secondaryLabelColor` and `tertiaryLabelColor`.
+    static let secondaryText = Color.adaptive(light: Color(white: 0, opacity: 0.5), dark: Color(white: 1, opacity: 0.55))
+    static let tertiaryText = Color.adaptive(light: Color(white: 0, opacity: 0.26), dark: Color(white: 1, opacity: 0.25))
+    /// A GroupBox's fill and border.
+    static let groupFill = Color.adaptive(light: Color(white: 0, opacity: 0.03), dark: Color(white: 1, opacity: 0.04))
+    static let groupBorder = Color.adaptive(light: Color(white: 0, opacity: 0.08), dark: Color(white: 1, opacity: 0.08))
+}
+
+/// SwiftUI's GroupBox on macOS: an optional title above a rounded, lightly filled box.
+struct GroupBox<Content: View>: View {
+    var title: String?
+    var content: Content
+
+    init(title: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title { Text(title).font(.system(size: 13, weight: .bold)).padding(.leading, 2) }
+            content
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6).fill(MacColor.groupFill)
+                        RoundedRectangle(cornerRadius: 6).stroke(MacColor.groupBorder)
+                    }
+                )
         }
     }
+}
+
+struct Caption: View {
+    var text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text).font(.system(size: 10)).foregroundColor(MacColor.secondaryText)
+    }
+}
+
+/// A Mac checkbox: the box, then its title (SwiftCrossUI's Toggle puts the title first, so its
+/// own title stays empty).
+struct CheckboxRow: View {
+    var title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Toggle("", isOn: $isOn).toggleStyle(.checkbox)
+            Text(title).onTapGesture { isOn.toggle() }
+        }
+    }
+}
+
+/// Radio buttons: native on macOS and Windows; drawn on GTK, whose backend has none.
+struct RadioGroup<Value: Equatable & CustomStringConvertible>: View {
+    var options: [Value]
+    @Binding var selection: Value?
+
+    var body: some View {
+        #if canImport(GtkBackend)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(0..<options.count), id: \.self) { (i: Int) in
+                    HStack(spacing: 6) {
+                        ZStack {
+                            Circle().stroke(MacColor.secondaryText).frame(width: 14, height: 14)
+                            if selection == options[i] { Circle().fill(MacColor.accent).frame(width: 8, height: 8) }
+                        }
+                        Text(options[i].description)
+                    }
+                    .onTapGesture { selection = options[i] }
+                }
+            }
+        #else
+            Picker(of: options, selection: $selection).pickerStyle(.radioGroup)
+        #endif
+    }
+}
+
+/// A bordered button with a symbol before its title, like SwiftUI's `Label` in a Button.
+struct LabelButton: View {
+    var title: String
+    var icon: String
+    var action: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Symbol(name: icon, size: 14, pointSize: 12, tint: .primary)
+                Text(title)
+            }
+        }
+    }
+}
+
+/// `.borderedProminent` at `.large` size: accent fill, white title and symbol.
+struct ProminentButton: View {
+    var title: String
+    var icon: String
+    var enabled = true
+    var action: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Symbol(name: icon, size: 16, pointSize: 13, tint: .color(MacColor.whiteTint))
+            Text(title).font(.system(size: 13)).foregroundColor(.white)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(minWidth: 80)
+        .background(RoundedRectangle(cornerRadius: 7).fill(enabled ? MacColor.accent : MacColor.accent.opacity(0.45)))
+        .onTapGesture { if enabled { action() } }
+    }
+}
+
+extension View {
+    /// The legend's items keep their width instead of truncating, as in the app. Not on WinUI:
+    /// there `fixedSize` inside the page overflows the stack (layout recursion) when it appears.
+    @ViewBuilder
+    func legendFixedSize() -> some View {
+        #if os(Windows)
+            self
+        #else
+            fixedSize()
+        #endif
+    }
+}
+
+func bytes(_ b: Int64) -> String {
+    ByteCountFormatter.string(fromByteCount: b, countStyle: .file)
+}
+
+var fileManagerName: String {
+    #if os(macOS)
+        "Finder"
+    #elseif os(Windows)
+        "Explorer"
+    #else
+        "Files"
+    #endif
+}
+
+/// Opens the iPod in the system's file manager.
+func showInFileManager(_ url: URL) {
+    #if os(macOS)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    #else
+        let process = Process()
+        #if os(Windows)
+            process.executableURL = URL(fileURLWithPath: "C:\\Windows\\explorer.exe")
+            process.arguments = [FileOps.nativePath(url)]
+        #else
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/xdg-open")
+            process.arguments = [url.path]
+        #endif
+        try? process.run()
+    #endif
 }

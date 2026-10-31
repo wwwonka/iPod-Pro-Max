@@ -1,4 +1,5 @@
 #!/bin/zsh
+# Legacy SwiftUI app only. For the main app use Tools/Build/build.sh.
 # Builds a Release app, signs it (Developer ID when available), optionally notarizes, and packages a DMG.
 #
 # Usage:  Tools/release.sh [--notarize]
@@ -12,13 +13,13 @@ cd "$ROOT"
 NOTARIZE=0
 [[ "${1:-}" == "--notarize" ]] && NOTARIZE=1
 
-BUILD="$ROOT/build/release"
-DIST="$ROOT/dist"
+BUILD="$ROOT/Build/LegacyRelease"
+DIST="$ROOT/Build/Legacy"
 rm -rf "$BUILD"
 mkdir -p "$BUILD" "$DIST"
 
 echo "▶ Building Release…"
-xcodebuild -project "iPod Pro Max.xcodeproj" -scheme "iPod Pro Max" -configuration Release \
+xcodebuild -project "Refs/SwiftUI/iPod Pro Max.xcodeproj" -scheme "iPod Pro Max" -configuration Release \
   -destination 'platform=macOS' -derivedDataPath "$BUILD/DerivedData" build \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES 2>&1 | grep -E "error:|warning: .*deprecated|BUILD" | grep -v "^warning" || true
 
@@ -40,7 +41,7 @@ else
   [[ -z "$IDENTITY" ]] && IDENTITY="-"
 fi
 codesign --force --deep --options runtime --timestamp \
-  --entitlements "iPod Pro Max/iPod Pro Max.entitlements" \
+  --entitlements "Refs/SwiftUI/iPod Pro Max/iPod Pro Max.entitlements" \
   --sign "$IDENTITY" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
