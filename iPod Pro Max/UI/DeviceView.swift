@@ -69,9 +69,6 @@ struct DeviceView: View {
 
     @ViewBuilder
     private var devicePage: some View {
-        #if canImport(AppKitBackend)
-            MacDevicePage(device: device, library: library, page: $page, isBusy: isBusy, onEject: onEject, onRename: { rename($0) })
-        #else
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
@@ -89,7 +86,6 @@ struct DeviceView: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        #endif
     }
 
     /// The sync options as stored on the iPod.

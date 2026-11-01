@@ -405,7 +405,11 @@ struct ContentView: View {
                                     ConnectedDeviceTitles.names[device.id] = name
                                     contentRevision += 1
                                 })
+                                #if canImport(AppKitBackend)
+                                .background(DevicePageBackground())
+                                #else
                                 .background(WindowBackground())
+                                #endif
                             }
                         }
                         if selection == .music && mode == .byArtist,

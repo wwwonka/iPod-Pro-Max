@@ -145,6 +145,21 @@ extension Array {
 
         func updateNSView(_ box: NSBox, context: Context) {}
     }
+
+    /// The iPod page and the surface exposed while it slides use exactly the same color.
+    let devicePageBackgroundColor = NSColor(srgbRed: 40.0 / 255, green: 40.0 / 255, blue: 40.0 / 255, alpha: 1)
+
+    struct DevicePageBackground: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSBox {
+            let box = NSBox()
+            box.boxType = .custom
+            box.borderWidth = 0
+            box.fillColor = devicePageBackgroundColor
+            return box
+        }
+
+        func updateNSView(_ box: NSBox, context: Context) {}
+    }
 #elseif canImport(GtkBackend)
     import CGtk
     import Gtk

@@ -43,6 +43,7 @@
         private var splitDelegate: CollapsibleSplitDelegate?
         private var expandedWidth = sidebarWidth
         private var slide: SidebarSlide?
+        var isSliding: Bool { slide != nil }
         private var timer: Timer?
         /// A sidebar slide resizes the complete detail hierarchy.  Keeping this at the standard
         /// 60 Hz avoids spending every ProMotion (120 Hz) tick relaying out controls on the iPod
@@ -165,9 +166,11 @@
             guard var slide, let split = splitView else { return }
             let (width, done) = slide.width(after: elapsed)
             let layoutStart = CACurrentMediaTime()
+            // The final divider layout must update the retained page at its new width.
+            if done { self.slide = nil }
             split.setPosition(width, ofDividerAt: 0)
             slide.record(layout: CACurrentMediaTime() - layoutStart)
-            self.slide = slide
+            if !done { self.slide = slide }
             guard done else { return }
             timer?.invalidate()
             timer = nil
