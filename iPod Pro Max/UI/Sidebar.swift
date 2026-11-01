@@ -101,10 +101,11 @@ enum SidebarMetrics {
     static let ejectTrailing = 4.0
 }
 
-/// Selected row: `selectedContentBackgroundColor` while the sidebar has focus,
-/// `unemphasizedSelectedContentBackgroundColor` otherwise.
-func sidebarSelectionRGB(focused: Bool, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8) {
-    dark ? (0x46, 0x46, 0x46) : (0xDC, 0xDC, 0xDC)
+/// Translucent neutral selection, calibrated against Finder on a tinted sidebar.
+/// Blending over the sidebar preserves its glass or wallpaper tint.
+func sidebarSelectionRGBA(dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8, alpha: Double) {
+    let component: UInt8 = dark ? 255 : 0
+    return (component, component, component, 0.14)
 }
 
 /// The SwiftUI sidebar's selection when the list isn't focused: a neutral gray, not the accent color.

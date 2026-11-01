@@ -341,16 +341,15 @@
                 }
             }
 
-            /// The Mac's selection: accent with white text while the sidebar has focus, gray otherwise.
+            /// A translucent neutral selection lets the sidebar's material show through.
             private func paintSelection() {
-                let focused = focusedList != nil
-                let selectionRGB = sidebarSelectionRGB(focused: focused, dark: dark)
+                let selection = sidebarSelectionRGBA(dark: dark)
                 for section in sections {
                     let selected = Int(section.list.selectedIndex)
                     for (index, entry) in section.cells.enumerated() {
                         let isSelected = index == selected
                         let emphasized = dropTarget != nil && entry.row.item == dropTarget
-                        entry.cell.background = emphasized ? brush(0x00, 0x7A, 0xFF) : isSelected ? brush(selectionRGB.r, selectionRGB.g, selectionRGB.b) : nil
+                        entry.cell.background = emphasized ? brush(0x00, 0x7A, 0xFF) : isSelected ? brush(selection.r, selection.g, selection.b, alpha: selection.alpha) : nil
                         entry.label.foreground = emphasized ? brush(255, 255, 255) : textBrush(secondary: entry.row.item == nil)
                         // White glyph on the accent: the primary tint in dark mode is white.
                         showSymbol(entry.row.icon, in: entry.glyph, pointSize: 13,

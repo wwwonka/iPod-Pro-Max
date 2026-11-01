@@ -329,15 +329,20 @@
         override func drawBackground(in dirtyRect: NSRect) {
             super.drawBackground(in: dirtyRect)
             if dropActive { drawHighlight(.controlAccentColor) }
-            else if isSelected { drawHighlight(.unemphasizedSelectedContentBackgroundColor) }
+            else if isSelected {
+                let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                let color = sidebarSelectionRGBA(dark: dark)
+                drawHighlight(NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255,
+                                      blue: CGFloat(color.b) / 255, alpha: color.alpha))
+            }
         }
         override var interiorBackgroundStyle: NSView.BackgroundStyle {
             dropActive ? .emphasized : .normal
         }
         override func drawSelection(in dirtyRect: NSRect) {
-            drawHighlight(dropActive ? .controlAccentColor : .unemphasizedSelectedContentBackgroundColor)
+            if dropActive { drawHighlight(.controlAccentColor) }
         }
-        override var isSelected: Bool { didSet { if oldValue != isSelected { needsDisplay = true } } }
+        override var isSelected: Bool { didSet { if oldValue != isSelected { refreshFeedback() } } }
         override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {
             if dropActive { drawHighlight(.controlAccentColor) }
         }

@@ -291,10 +291,8 @@
             .ippm-dim > label { color: alpha(currentColor, 0.5); }
             .ippm-dim > .ippm-icon { color: #8A8A8E; }
             .ippm-dark .ippm-dim > .ippm-icon { color: #98989D; }
-            .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: false, dark: false))); }
-            .ippm-dark .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: false, dark: true))); }
-            .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: false))); }
-            .ippm-dark .ippm-sidebar:focus-within .ippm-list > row:selected > .ippm-cell { background-color: \(css(sidebarSelectionRGB(focused: true, dark: true))); }
+            .ippm-list > row:selected > .ippm-cell { background-color: \(selectionCSS(dark: false)); }
+            .ippm-dark .ippm-list > row:selected > .ippm-cell { background-color: \(selectionCSS(dark: true)); }
             .ippm-eject { min-width: \(Int(M.ejectSize))px; min-height: \(Int(M.ejectSize))px; padding: 0;
                 border: none; background: none; box-shadow: none; outline: none; color: \(css(ejectButtonRGB(.normal, dark: false))); }
             .ippm-eject:hover { color: \(css(ejectButtonRGB(.hover, dark: false))); }
@@ -315,6 +313,11 @@
             .ippm-sync image { animation: ippm-sync-turn 1s linear infinite; }
             """)
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), cast(provider), 800)
+    }
+
+    private func selectionCSS(dark: Bool) -> String {
+        let color = sidebarSelectionRGBA(dark: dark)
+        return "rgba(\(color.r), \(color.g), \(color.b), \(color.alpha))"
     }
 
     func css(_ rgb: (r: UInt8, g: UInt8, b: UInt8)) -> String {
