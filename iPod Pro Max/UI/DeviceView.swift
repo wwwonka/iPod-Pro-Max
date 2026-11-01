@@ -63,15 +63,6 @@ struct DeviceView: View {
     }
 
     var body: some View {
-        devicePage
-            .task(id: device.id + "-\(revision)") { await loadContents() }
-    }
-
-    @ViewBuilder
-    private var devicePage: some View {
-        #if canImport(AppKitBackend)
-            MacDevicePage(device: device, library: library, page: $page, isBusy: isBusy, onEject: onEject, onRename: { rename($0) })
-        #else
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
@@ -89,7 +80,7 @@ struct DeviceView: View {
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        #endif
+        .task(id: device.id + "-\(revision)") { await loadContents() }
     }
 
     /// The sync options as stored on the iPod.
@@ -342,8 +333,8 @@ struct DeviceView: View {
     }
 
     /// Written to the iPod at once, as the app does, so the new name shows even without a sync.
-    private func rename(_ proposedName: String? = nil) {
-        let name = (proposedName ?? page.newName).trimmingCharacters(in: .whitespaces)
+    private func rename() {
+        let name = page.newName.trimmingCharacters(in: .whitespaces)
         page.isRenaming = false
         guard !name.isEmpty else { return }
         page.renamed = name
