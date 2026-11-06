@@ -74,7 +74,9 @@ public enum FFmpeg {
 
     /// Runs ffmpeg and waits. stdout lines go to `onOutput` (used with `-progress pipe:1`).
     public static func run(_ binary: String, _ arguments: [String], onOutput: (@Sendable (String) -> Void)? = nil) async throws {
+        try Task.checkCancellation()
         let process = Process()
+        let cancellation = CancellableFFmpegProcess(process)
         process.executableURL = URL(fileURLWithPath: binary)
         // Without -nostdin, ffmpeg polls the console for keys and spins at 100 % CPU under Windows when
         // started without one.
@@ -107,10 +109,10 @@ public enum FFmpeg {
                         cont.resume(throwing: IPodDBError.io("ffmpeg failed: \(errorText.text.suffix(400))"))
                     }
                 }
-                do { try process.run() } catch { cont.resume(throwing: error) }
+                do { try cancellation.run() } catch { cont.resume(throwing: error) }
             }
         } onCancel: {
-            if process.isRunning { process.terminate() }
+            cancellation.cancel()
         }
     }
 
@@ -175,5 +177,23 @@ final class LineSplitter: @unchecked Sendable {
         }
         lock.unlock()
         for line in lines { onLine(line) }
+    }
+}
+
+/// Serializes cancellation with launch so a canceled waveform cannot start an orphan decoder.
+private final class CancellableFFmpegProcess: @unchecked Sendable {
+    private let process: Process
+    private let lock = NSLock()
+    private var canceled = false
+    init(_ process: Process) { self.process = process }
+    func run() throws {
+        lock.lock(); defer { lock.unlock() }
+        if canceled { throw CancellationError() }
+        try process.run()
+    }
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        canceled = true
+        if process.isRunning { process.terminate() }
     }
 }

@@ -268,6 +268,10 @@
 
             window.systemBackdrop = AcrylicBackdrop()
             // Gray traffic lights in an inactive window, as on macOS.
+            window.visibilityChanged.addHandler { _, args in
+                let visible = args?.visible ?? false
+                MainActor.assumeIsolated { PlaybackController.shared.setVisible(visible) }
+            }
             window.activated.addHandler { _, args in
                 let active = args?.windowActivationState != .deactivated
                 MainActor.assumeIsolated { WinUIChrome.shared.onActivation(active) }
@@ -378,6 +382,8 @@
         private var sidebarList: FrameworkElement?
         private var slide: SidebarSlide?
         private var slideStart: Date?
+        private var sidebarStoryboard: Storyboard?
+        private var detailTranslation: TranslateTransform?
         private var rendering: EventCleanup?
         /// Where the sidebar reopens: its width before it last closed, or as dragged.
         private var expandedWidth = sidebarWidth
@@ -386,7 +392,8 @@
 
         /// The sidebar's width right now, read by `TitleClearance` while SwiftCrossUI lays out.
         var currentSidebarWidth: Double {
-            splitView?.openPaneLength ?? sidebarWidth
+            guard let splitView else { return sidebarWidth }
+            return splitView.isPaneOpen ? splitView.openPaneLength : 0
         }
 
         /// Called by the sidebar once on screen: finds the split view holding it and opens the pane
@@ -422,43 +429,39 @@
 
         /// Slides the sidebar closed or open. The frame callback exists only for the slide.
         func toggleSidebar() {
-            guard let splitView, slide == nil else { return }
-            let from = splitView.openPaneLength
-            if from > 0 { expandedWidth = from }
-            slide = SidebarSlide(from: from, to: from > 0 ? 0 : expandedWidth)
-            slideStart = nil
-            sidebarList?.width = slide!.openWidth
-            sidebarList?.horizontalAlignment = .right
-            rendering = CompositionTarget.rendering.addHandler { _, _ in
-                MainActor.assumeIsolated { WinUIChrome.shared.tick() }
-            }
-        }
-
-        private func tick() {
-            guard var slide else { return }
-            let now = Date()
-            let start = slideStart ?? now
-            slideStart = start
-            let elapsed = now.timeIntervalSince(start)
-            let (width, done) = slide.width(after: elapsed)
-            // Over before the last frame lays out, so the resize handle comes back with it.
-            self.slide = done ? nil : slide
-            setSidebarWidth(width)
-            slide.record(layout: Date().timeIntervalSince(now))
-            if !done { self.slide = slide }
-            guard done else { return }
-            rendering?.dispose()
-            rendering = nil
-            // Fills the pane again.
-            sidebarList?.width = .nan
-            sidebarList?.horizontalAlignment = .stretch
-            slide.logResult(elapsed: elapsed)
+            guard let splitView else { return }
+            let from = currentSidebarWidth
+            let opening = !splitView.isPaneOpen
+            if !opening { expandedWidth = splitView.openPaneLength }
+            let translation = detailTranslation ?? TranslateTransform()
+            let interruptedX = translation.x
+            try? sidebarStoryboard?.stop()
+            detailTranslation = translation
+            splitView.content?.renderTransform = translation
+            splitView.isPaneOpen = opening
+            splitView.openPaneLength = expandedWidth
+            // One SwiftCrossUI layout; SplitView animates its pane natively.
+            splitView.sidebarResizeHandler?()
+            resizeHandle?.place(atSidebarWidth: currentSidebarWidth, sliding: false)
+            guard UWP.UISettings().animationsEnabled else { translation.x = 0; return }
+            let animation = DoubleAnimation()
+            animation.from = interruptedX + from - currentSidebarWidth
+            animation.to = 0
+            animation.duration = WinUI.Duration(timeSpan: WindowsFoundation.TimeSpan(duration: 2_000_000), type: .timeSpan)
+            let ease = CubicEase(); ease.easingMode = .easeOut; animation.easingFunction = ease
+            Storyboard.setTarget(animation, translation)
+            Storyboard.setTargetProperty(animation, "X")
+            let storyboard = Storyboard(); storyboard.children.append(animation)
+            sidebarStoryboard = storyboard
+            try? storyboard.begin()
+            log("[bench] sidebar native: one final layout, 200 ms compositor transition; no rendering callback")
         }
 
         /// Moves the pane's edge and lays the panes out at once (the backend's relayout hook).
         private func setSidebarWidth(_ width: Double) {
             guard let splitView else { return }
-            splitView.openPaneLength = width
+            splitView.isPaneOpen = width > 0
+            splitView.openPaneLength = width > 0 ? width : expandedWidth
             splitView.sidebarResizeHandler?()
             resizeHandle?.place(atSidebarWidth: width, sliding: slide != nil)
         }

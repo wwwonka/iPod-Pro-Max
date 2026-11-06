@@ -6,6 +6,7 @@ import iPodKit
 struct Track: Decodable {
     var id: String
     var title: String
+    var path: String? = nil
     var artist: String?
     var album: String?
     var albumArtist: String?
@@ -15,6 +16,8 @@ struct Track: Decodable {
     var durationMs: Int?
     var genre: String?
     var artworkKey: String?
+    var hasLyrics: Bool? = nil
+    var dateAdded: Date? = nil
 }
 
 struct Playlist: Decodable, Identifiable, Equatable {
@@ -37,6 +40,10 @@ struct TrackRow: Equatable {
     var number: String
     var year: String
     var duration: String
+    var path: String? = nil
+    var hasLyrics = false
+    var artworkKey: String? = nil
+    var dateAdded: Date? = nil
 }
 
 struct NamedGroup: Identifiable {
@@ -63,6 +70,7 @@ struct AlbumInfo: Identifiable {
     var artworkKey: String?
     var rows: [TrackRow]
     var durationMs: Int
+    var artist: String = ""
 }
 
 /// Everything the views need, computed once off the main thread so a render never regroups.
@@ -78,12 +86,14 @@ struct Library {
     var rowsByPlaylist: [String: [TrackRow]]
     var loadMs: Int
     var indexMs: Int
+    var recentRows: [TrackRow] = []
+    var albums: [AlbumInfo] = []
 
     static func portable(_ cache: PortableLibraryCache, source: String, artworkFolder: URL? = nil) -> Library {
         let tracks = cache.tracks.filter { $0.kind == nil || $0.kind == .song }.map {
-            Track(id: $0.id.uuidString, title: $0.title, artist: $0.artist, album: $0.album,
+            Track(id: $0.id.uuidString, title: $0.title, path: $0.path, artist: $0.artist, album: $0.album,
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
-                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey)
+                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded)
         }
         let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
@@ -117,7 +127,18 @@ struct Library {
         for url in candidateURLs(arguments: arguments) {
             guard let data = try? Data(contentsOf: url) else { continue }
             do {
-                let document = try JSONDecoder().decode(LibraryDocument.self, from: data)
+                let decoder = JSONDecoder()
+                let iso = ISO8601DateFormatter()
+                let fractionalISO = ISO8601DateFormatter()
+                fractionalISO.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                decoder.dateDecodingStrategy = .custom { decoder in
+                    let value = try decoder.singleValueContainer()
+                    if let number = try? value.decode(Double.self) { return Date(timeIntervalSinceReferenceDate: number) }
+                    let string = try value.decode(String.self)
+                    if let date = iso.date(from: string) ?? fractionalISO.date(from: string) { return date }
+                    throw DecodingError.dataCorruptedError(in: value, debugDescription: "Invalid track date")
+                }
+                let document = try decoder.decode(LibraryDocument.self, from: data)
                 // An empty library would leave nothing to scroll: fall through to the synthetic one.
                 if !document.tracks.isEmpty { return (document, url.path) }
             } catch {
@@ -170,7 +191,7 @@ struct Library {
                 album: t.album ?? "Unknown Album",
                 number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "",
                 year: (t.year ?? 0) > 0 ? "\(t.year!)" : "",
-                duration: formatDuration(t.durationMs ?? 0)
+                duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded
             )
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
@@ -190,11 +211,24 @@ struct Library {
             }
             .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
         }
-        return Library(source: source, allRows: all,
+        var library = Library(source: source, allRows: all,
                        artists: groups(byArtist), rowsByArtist: byArtist,
                        albumsByArtist: albums, artworkFolder: nil,
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
+        library.recentRows = all.enumerated().sorted {
+            let a = $0.element.dateAdded ?? .distantPast, b = $1.element.dateAdded ?? .distantPast
+            return a == b ? $0.offset < $1.offset : a > b
+        }.map(\.element)
+        library.albums = albums.keys.sorted().flatMap { artist in
+            (albums[artist] ?? []).map { album in
+                var album = album
+                album.artist = artist
+                album.id = "\(artist.utf8.count):\(artist)\(album.id)"
+                return album
+            }
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        return library
     }
 
     /// An artist's albums, newest first like the iPod's own list; the songs arrive in album order.
@@ -215,7 +249,7 @@ struct Library {
                 artworkKey: songs.compactMap(\.artworkKey).first,
                 rows: songs.map { t in
                     TrackRow(id: t.id, title: t.title, artist: t.artist ?? "Unknown Artist", album: t.album ?? "Unknown Album",
-                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0))
+                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey)
                 },
                 durationMs: songs.reduce(0) { $0 + ($1.durationMs ?? 0) })
         }

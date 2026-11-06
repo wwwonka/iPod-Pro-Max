@@ -148,6 +148,12 @@ index 9d31326f..98e5f81a 100644
  
          var usedHeight = size.y
          let lineHeight = environment.resolvedFont.lineHeight
+@@ -1468,4 +1533,4 @@
+     public func sidebarWidth(ofSplitView splitView: Widget) -> Int {
+         let splitView = splitView as! CustomSplitView
+-        return Int(splitView.openPaneLength.rounded(.towardZero))
++        return splitView.isPaneOpen ? Int(splitView.openPaneLength.rounded(.towardZero)) : 0
+     }
 @@ -1476,7 +1541,12 @@ public final class WinUIBackend:
          maximum maximumWidth: Int
      ) {

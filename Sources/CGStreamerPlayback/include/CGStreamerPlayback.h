@@ -1,0 +1,12 @@
+typedef struct IPPMAudio IPPMAudio;
+typedef void (*IPPMAudioEvent)(void *, int, const char *);
+IPPMAudio *ippm_audio_create(IPPMAudioEvent event, void *context);
+void ippm_audio_destroy(IPPMAudio *audio);
+void ippm_audio_load(IPPMAudio *audio, const char *uri);
+void ippm_audio_play(IPPMAudio *audio);
+void ippm_audio_pause(IPPMAudio *audio);
+void ippm_audio_stop(IPPMAudio *audio);
+void ippm_audio_seek(IPPMAudio *audio, double seconds);
+void ippm_audio_volume(IPPMAudio *audio, double volume);
+double ippm_audio_position(IPPMAudio *audio);
+double ippm_audio_duration(IPPMAudio *audio);

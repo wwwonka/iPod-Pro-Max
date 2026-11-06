@@ -1,3 +1,4 @@
+import Foundation
 import SwiftCrossUI
 
 // SF Symbols on every platform. macOS draws the real, vector symbols. GTK and WinUI draw glyphs
@@ -41,6 +42,18 @@ struct SystemColor: Hashable, Sendable {
 /// The font numbers its glyphs from U+E900 without names. These were matched by shape against
 /// the real symbols (scripts/match-glyph.swift); a missing name draws nothing.
 let symbolCodepoints: [String: UInt32] = [
+    "clock": 0xED2C,
+    "person.fill": 0xF254,
+    "square.stack": 0xF0D6,
+    "play.fill": 0xF17D,
+    "pause.fill": 0xF179,
+    "backward.end.fill": 0xF15D,
+    "forward.end.fill": 0xF161,
+    "shuffle": 0xF15A,
+    "repeat": 0xF157,
+    "repeat.1": 0xF154,
+    "speaker.wave.2.fill": 0xF140,
+
     "music.note": 0xF134,
     "music.note.list": 0xF133,
     "music.mic": 0xF12D,
@@ -68,6 +81,38 @@ let symbolCodepoints: [String: UInt32] = [
     "xmark": 0xEBE5,
     "arrow.up.left.and.arrow.down.right": 0xEB46,
 ]
+
+/// Local-only SF font; fall back to a readable label if this machine doesn't have it.
+private let localSymbolFontAvailable: Bool = {
+    #if os(Windows)
+    let base = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? ""
+    return FileManager.default.fileExists(atPath: base + "/Microsoft/Windows/Fonts/SF-SYMBOLS4.TTF")
+    #elseif os(Linux)
+    return FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.local/share/fonts/SF-SYMBOLS4.TTF")
+    #else
+    return true
+    #endif
+}()
+private func symbolFallback(_ name: String) -> String {
+    switch name {
+    case "play.fill": "Play"
+    case "pause.fill": "Pause"
+    case "backward.end.fill": "Prev"
+    case "forward.end.fill": "Next"
+    case "music.note": "Music"
+    case "ipod": "iPod"
+    case "person.fill": "Artists"
+    case "square.stack": "Albums"
+    case "clock": "Recent"
+    case "antenna.radiowaves.left.and.right": "Podcasts"
+    case "book": "Books"
+    case "film": "Video"
+    case "photo.on.rectangle.angled": "Photos"
+    case "plus": "+"
+    case "xmark": "×"
+    default: name.replacingOccurrences(of: ".fill", with: "")
+    }
+}
 
 /// The Mac system colors of each tint, for platforms drawing the font; nil means the text color.
 func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)? {
@@ -137,7 +182,9 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
     /// - Parameter tint: nil leaves the color to CSS.
     func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint?, dark: Bool) -> String {
-        guard let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else { return "" }
+        guard localSymbolFontAvailable, let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else {
+            return "<span size='8192'>\(symbolFallback(name))</span>"
+        }
         let foreground = tint.flatMap { symbolRGB($0, dark: dark) }.map { rgb in
             " foreground='#" + [rgb.r, rgb.g, rgb.b].map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + "'"
         } ?? ""
@@ -182,9 +229,9 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     /// the glyph out again.
     @MainActor
     func showSymbol(_ name: String, in text: TextBlock, pointSize: Double, tint: SymbolTint, dark: Bool) {
-        let glyph = symbolCodepoints[name].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? ""
+        let glyph = localSymbolFontAvailable ? (symbolCodepoints[name].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? symbolFallback(name)) : symbolFallback(name)
         if text.text != glyph {
-            text.fontFamily = symbolFont
+            if localSymbolFontAvailable { text.fontFamily = symbolFont }
             text.text = glyph
         }
         if text.fontSize != pointSize { text.fontSize = pointSize }

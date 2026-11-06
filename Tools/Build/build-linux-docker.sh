@@ -54,7 +54,7 @@ build_arch() { # <arch> <build the Windows ffmpeg here: 1|0>
     docker build -q --platform "$platform" -t "$image" - >/dev/null <<EOF
 FROM $SWIFT_IMAGE
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        libgtk-4-dev rsync build-essential nasm pkg-config curl xz-utils ca-certificates \
+        libgtk-4-dev libgstreamer1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav rsync build-essential nasm pkg-config curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 EOF
     cache="$WORK/linux-docker/$arch"

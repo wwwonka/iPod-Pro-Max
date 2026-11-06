@@ -152,6 +152,9 @@
             let pointer: UnsafeMutablePointer<GtkWindow> = cast(window.widgetPointer)
             guard self.window != pointer else { return }
             self.window = pointer
+            for signal in ["notify::visible", "notify::mapped"] {
+                g_signal_connect_data(cast(pointer), signal, unsafeBitCast(playbackWindowVisibility, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+            }
             Task { @MainActor in
                 await Task.yield()
                 guard self.window == pointer else { return }
@@ -338,6 +341,10 @@
         var sidebarContent: UnsafeMutablePointer<GtkWidget>?
         private var slide: SidebarSlide?
         private var slideStart: gint64 = 0
+        private var slideTickID: UInt32 = 0
+        private var transitionOverlay: UnsafeMutablePointer<GtkWidget>?
+        private var transitionSnapshot: UnsafeMutablePointer<GtkWidget>?
+        private var snapshotOrigin = graphene_point_t(x: 0, y: 0)
 
         /// The sidebar's width right now, read by `TitleClearance` while SwiftCrossUI lays out.
         var currentSidebarWidth: Double {
@@ -347,29 +354,81 @@
         /// Slides the sidebar closed or open: the divider moves every frame and its position
         /// signal lays the panes out (the sidebar accepts any width, so no minimum gets in the way).
         func toggleSidebar() {
-            guard slide == nil, let paned else { return }
-            let from = gtk_paned_get_position(paned)
-            let closing = from > 0
-            if closing { expandedWidth = from }
-            slide = SidebarSlide(from: Double(from), to: closing ? 0 : Double(expandedWidth))
-            if let sidebarContent { gtk_widget_set_size_request(sidebarContent, Int32(slide!.openWidth), -1) }
-            // The clock starts on the first frame: if that frame comes late, the slide still plays.
+            guard let paned, let window else { return }
+            let prior = slide
+            let current = prior.map { $0.width(after: slideStart == 0 ? 0 : Double(g_get_monotonic_time() - slideStart) / 1_000_000).width }
+                ?? Double(gtk_paned_get_position(paned))
+            let closing = prior.map { $0.to > 0 } ?? (current > 0)
+            if slideTickID != 0 { gtk_widget_remove_tick_callback(cast(paned), slideTickID); slideTickID = 0 }
+            if let snapshot = transitionSnapshot, let overlay = transitionOverlay {
+                gtk_overlay_remove_overlay(cast(overlay), snapshot); transitionSnapshot = nil
+            }
+            if closing, prior == nil { expandedWidth = max(1, Int32(current)) }
+            var enabled: gboolean = 1
+            if let settings = gtk_settings_get_default() {
+                var value = GValue()
+                g_object_get_property(cast(settings), "gtk-enable-animations", &value)
+                enabled = g_value_get_boolean(&value); g_value_unset(&value)
+            }
+            let target = closing ? 0 : Double(expandedWidth)
+            guard enabled != 0 else { slide = nil; gtk_paned_set_position(paned, Int32(target)); return }
+            if closing, let sidebar = gtk_paned_get_start_child(paned), gtk_widget_get_width(sidebar) > 0 {
+                if transitionOverlay == nil, let content = gtk_window_get_child(window) {
+                    g_object_ref(cast(content))
+                    gtk_window_set_child(window, nil)
+                    let overlay = gtk_overlay_new()!
+                    gtk_overlay_set_child(cast(overlay), content)
+                    gtk_window_set_child(window, overlay)
+                    g_object_unref(cast(content))
+                    transitionOverlay = overlay
+                }
+                if let overlay = transitionOverlay {
+                    let paintable = gtk_widget_paintable_new(sidebar)!
+                    let image = gdk_paintable_get_current_image(cast(paintable))!
+                    let picture = gtk_picture_new_for_paintable(image)!
+                    g_object_unref(cast(image)); g_object_unref(cast(paintable))
+                    gtk_widget_set_can_target(picture, 0)
+                    gtk_widget_set_halign(picture, GTK_ALIGN_START); gtk_widget_set_valign(picture, GTK_ALIGN_START)
+                    gtk_widget_set_size_request(picture, expandedWidth, gtk_widget_get_height(sidebar))
+                    var origin = graphene_point_t(x: 0, y: 0)
+                    _ = gtk_widget_compute_point(sidebar, overlay, &origin, &snapshotOrigin)
+                    gtk_overlay_add_overlay(cast(overlay), picture)
+                    transitionSnapshot = picture
+                }
+            }
+            slide = SidebarSlide(from: current, to: target, duration: 0.2)
             slideStart = 0
-            gtk_widget_add_tick_callback(cast(paned), sidebarTick, nil, nil)
+            // The only split position change. Tick allocation translates existing widgets only.
+            gtk_paned_set_position(paned, Int32(target))
+            slideTickID = gtk_widget_add_tick_callback(cast(paned), sidebarTick, nil, nil)
         }
 
         fileprivate func tick() -> Bool {
-            guard var slide, let paned else { return false }
+            guard let slide, let paned else { return false }
             let now = g_get_monotonic_time()
             if slideStart == 0 { slideStart = now }
             let elapsed = Double(now - slideStart) / 1_000_000
             let (width, done) = slide.width(after: elapsed)
-            gtk_paned_set_position(paned, Int32(width))
-            slide.record(layout: Double(g_get_monotonic_time() - now) / 1_000_000)
-            self.slide = done ? nil : slide
+            func allocate(_ widget: UnsafeMutablePointer<GtkWidget>, x: Double, y: Double, width: Int32? = nil) {
+                var point = graphene_point_t(x: Float(x), y: Float(y))
+                let transform = gsk_transform_translate(nil, &point)
+                gtk_widget_allocate(widget, width ?? gtk_widget_get_width(widget), gtk_widget_get_height(widget), -1, transform)
+            }
+            if let detail = gtk_paned_get_end_child(paned) {
+                allocate(detail, x: width, y: 0)
+            }
+            if let snapshot = transitionSnapshot {
+                allocate(snapshot, x: Double(snapshotOrigin.x) + width - Double(expandedWidth), y: Double(snapshotOrigin.y), width: expandedWidth)
+            } else if slide.to > 0, let sidebar = gtk_paned_get_start_child(paned) {
+                allocate(sidebar, x: width - Double(expandedWidth), y: 0, width: expandedWidth)
+            }
             guard done else { return true }
-            if let sidebarContent { gtk_widget_set_size_request(sidebarContent, -1, -1) }
-            slide.logResult(elapsed: elapsed)
+            self.slide = nil; slideTickID = 0
+            if let snapshot = transitionSnapshot, let overlay = transitionOverlay {
+                gtk_overlay_remove_overlay(cast(overlay), snapshot); transitionSnapshot = nil
+            }
+            gtk_widget_queue_allocate(cast(paned))
+            log("[bench] sidebar GTK: 200 ms native allocation transition; no per-frame split position changes")
             return false
         }
 
@@ -415,4 +474,11 @@
     private let sidebarTick: @convention(c) (UnsafeMutablePointer<GtkWidget>?, OpaquePointer?, gpointer?) -> gboolean = { _, _, _ in
         MainActor.assumeIsolated { GtkChrome.shared.tick() ? 1 : 0 }
     }
+#endif
+
+#if canImport(GtkBackend)
+private let playbackWindowVisibility: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { window, _, _ in
+    guard let window else { return }
+    MainActor.assumeIsolated { PlaybackController.shared.setVisible(gtk_widget_get_mapped(cast(window)) != 0 && gtk_widget_get_visible(cast(window)) != 0) }
+}
 #endif

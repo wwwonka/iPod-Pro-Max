@@ -167,8 +167,8 @@ build_linux_vm() {
 build_windows() {
     ensure_vm "$WINDOWS_VM" "cmd /c exit 0"
     local flags=()
-    if [ $SETUP -eq 1 ] || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c where swift >/dev/null 2>&1 \
-        || ! prlctl exec "$WINDOWS_VM" --current-user cmd /c where git >/dev/null 2>&1; then
+    if [ $SETUP -eq 1 ] || ! prlctl exec "$WINDOWS_VM" --current-user powershell.exe -NoProfile -ExecutionPolicy Bypass \
+        -File "$WINDOWS_SRC\Tools\Build\build-windows.ps1" -Check >/dev/null 2>&1; then
         echo "First build in $WINDOWS_VM: installing Visual Studio, Swift and WinUI (long; approve the admin prompts in the VM)…"
         flags+=(-Setup)
     fi

@@ -6,6 +6,7 @@ param(
     [string]$Source = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../..")),
     [string]$Work = "C:\dev\swiftcrossui",
     [switch]$Setup,
+    [switch]$Check,
     [switch]$Run
 )
 $ErrorActionPreference = "Stop"
@@ -13,6 +14,15 @@ $ErrorActionPreference = "Stop"
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+# prlctl doesn't inherit the refreshed user's PATH; use the same lookup as the build.
+if ($Check) {
+    Refresh-Path
+    foreach ($tool in "swift", "git") {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { exit 1 }
+    }
+    exit 0
 }
 
 function Winget-Install([string]$id, [string[]]$extra = @()) {

@@ -23,6 +23,7 @@ struct ArtistDetail: View {
     var onChoosePhoto: () -> Void
     var query: String
     var allowsPhotoSelection = true
+    var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
 
     @State private var rowsCache = ArtistRowsCache()
 
@@ -34,9 +35,9 @@ struct ArtistDetail: View {
             Divider()
             #if canImport(AppKitBackend)
                 ArtistTrackList(albums: albums, artworkFolder: artworkFolder, query: query,
-                                devices: devices, busyDevices: Set(devices.filter(isBusy)), onSend: onSend)
+                                devices: devices, busyDevices: Set(devices.filter(isBusy)), onSend: onSend, onPlay: onPlay)
             #else
-                TrackTable(rows: rowsCache.rows(albums, query: query))
+                TrackTable(rows: rowsCache.rows(albums, query: query), onPlay: onPlay, artworkFolder: artworkFolder)
             #endif
         }
     }

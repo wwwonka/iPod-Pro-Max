@@ -19,6 +19,8 @@ struct ContentView: View {
     @State var busyDevices: Set<String> = []
     @State var transferStatus = ""
     @State var scanning = false
+    @State var playlistSaving = false
+    @State var playlistWrite: Task<Void, Never>?
     @State var settingsLoaded = false
     @State var didBenchDevices = false
     @State var contentRevision = 0
@@ -37,13 +39,27 @@ struct ContentView: View {
     @State var selection: SidebarItem = .music
     /// Followed from the system on Linux (GTK doesn't tell SwiftCrossUI); AppKit handles macOS.
     @State var colorScheme: ColorScheme = .light
+    @State var playerVisible = false
+    @State var selectedAlbumID: String?
+    @State var playlistEditorVisible = false
+    @State var playlistEditorName = ""
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            NavigationSplitView {
-                Sidebar(devices: $devices, library: $library, selection: $selection, busyDevices: $busyDevices, onEject: eject)
-            } detail: {
-                detail
+            ZStack(alignment: .bottom) {
+                HStack(spacing: 0) {
+                    MediaRail(selection: navigationSelection, devices: devices)
+                    NavigationSplitView {
+                        VStack(spacing: 0) {
+                            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject)
+                            Button("New Playlist…") { playlistEditorName = ""; playlistEditorVisible = true }
+                                .padding(12)
+                        }.background(GlassSurface())
+                    } detail: {
+                        detail
+                    }
+                }.padding(.bottom, playerVisible ? 124 : 0)
+                if playerVisible { PlayerDock() }
             }
             if drawsWindowControls {
                 WindowControls()
@@ -52,11 +68,25 @@ struct ContentView: View {
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
         .task {
+            if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
+                let passed = await checkPlatformAudio(path)
+                logQueue.sync {}
+                exit(passed ? 0 : 1)
+            }
             if ProcessInfo.processInfo.environment["IPPM_CHECK_INTERACTIONS"] != nil {
                 #if canImport(AppKitBackend)
                 await checkNativeMusicInteractions()
                 exit(0)
                 #endif
+            }
+            PlaybackController.shared.onPresenceChanged = { visible in
+                if visible { playerVisible = true }
+                else {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 180_000_000)
+                        if PlaybackController.shared.track == nil { playerVisible = false }
+                    }
+                }
             }
             ApplicationLifecycle.shared.onError = { transferStatus = $0 }
             ApplicationLifecycle.shared.savePreferences = { try await flushPreferences() }
@@ -94,6 +124,14 @@ struct ContentView: View {
                     }
                 }
                 return true
+            }
+            if ProcessInfo.processInfo.environment["IPPM_PREVIEW_LIBRARY"] != nil {
+                var preview = await Library.load(arguments: CommandLine.arguments)
+                if let path = ProcessInfo.processInfo.environment["IPPM_PREVIEW_ARTWORK"] {
+                    preview.artworkFolder = URL(fileURLWithPath: path)
+                }
+                library = preview
+                return
             }
             if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] != nil {
                 await loadPortable(refresh: false)
@@ -137,7 +175,40 @@ struct ContentView: View {
             didBenchDevices = true
             await benchDevicePages()
         }
+        .sheet(isPresented: $playlistEditorVisible) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("New Playlist").font(.system(size: 18, weight: .semibold))
+                TextField("Playlist name", text: $playlistEditorName)
+                HStack {
+                    Button("Cancel") { playlistEditorVisible = false }
+                    Spacer()
+                    Button("Create") {
+                        let name = playlistEditorName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !name.isEmpty {
+                            updatePlaylists { $0.append(LibraryPlaylist(name: name)) }
+                            playlistEditorVisible = false
+                        }
+                    }
+                }
+            }.padding(24).frame(width: 340)
+        }
         .alert($ejectError) {}
+    }
+
+    private var navigationSelection: Binding<SidebarItem> {
+        Binding(get: { selection == .music && mode == .byArtist ? .artists : selection }, set: { item in
+            selectedAlbumID = nil
+            if item == .artists { selection = .music; mode = .byArtist }
+            else { selection = item; if item == .music { mode = .allSongs } }
+            if settingsLoaded, let store = portableLibrary?.store, let mode {
+                PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
+            }
+        })
+    }
+
+    private func startPlayback(_ row: TrackRow, displayed: [TrackRow], library: Library) {
+        PlayerArtwork.folder = library.artworkFolder
+        PlaybackController.shared.start(row, in: displayed)
     }
 
     /// Opt-in integration check: stage changes and close in the same event turn, before debounce.
@@ -159,6 +230,7 @@ struct ContentView: View {
     }
 
     private func flushPreferences() async throws {
+        await playlistWrite?.value
         if settingsLoaded, let store = portableLibrary?.store, let mode {
             PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
         }
@@ -304,6 +376,100 @@ struct ContentView: View {
     @State var selectedArtists: Set<String> = []
     @State var artistSelection = ArtistSelectionCache()
 
+    #if canImport(AppKitBackend)
+    private func createPlaylist() {
+        guard !scanning, !playlistSaving, portableLibrary != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "New Playlist"
+        alert.informativeText = "Choose a name for your playlist."
+        let field = NSTextField(string: "")
+        field.placeholderString = "Playlist name"
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let playlist = LibraryPlaylist(name: name)
+        updatePlaylists { $0.append(playlist) }
+    }
+
+    #endif
+
+    private func addTracksToPlaylist(_ ids: [String], _ playlistID: String) {
+        guard let id = UUID(uuidString: playlistID) else { return }
+        let trackIDs = ids.compactMap(UUID.init(uuidString:))
+        updatePlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            var existing = Set(playlists[index].trackIDs)
+            for track in trackIDs where existing.insert(track).inserted { playlists[index].trackIDs.append(track) }
+        }
+    }
+
+    private func removeTracksFromPlaylist(_ ids: [String], _ playlistID: String) {
+        guard let id = UUID(uuidString: playlistID) else { return }
+        let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
+        updatePlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
+        }
+    }
+
+    private var selectedPlaylistID: String? {
+        if case .playlist(let id) = selection { return id }
+        return nil
+    }
+
+    #if canImport(AppKitBackend)
+    private func renamePlaylist(_ id: String) {
+        guard let playlist = library?.playlists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        let alert = NSAlert(); alert.messageText = "Rename Playlist"
+        let field = NSTextField(string: playlist.name); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field; alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        updatePlaylists { playlists in
+            if let index = playlists.firstIndex(where: { $0.id == uuid }) { playlists[index].name = name }
+        }
+    }
+
+    private func deletePlaylist(_ id: String) {
+        guard let playlist = library?.playlists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        let alert = NSAlert(); alert.messageText = "Delete Playlist?"
+        alert.informativeText = "Delete “\(playlist.name)”? Your music files won't be deleted."
+        alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        updatePlaylists { $0.removeAll { $0.id == uuid } }
+        selection = .music
+    }
+
+    #endif
+
+    private func updatePlaylists(_ change: (inout [LibraryPlaylist]) -> Void) {
+        guard !scanning, !playlistSaving, var loaded = portableLibrary else {
+            transferStatus = "Wait for the music library to finish updating."
+            return
+        }
+        change(&loaded.cache.playlists)
+        playlistSaving = true
+        playlistWrite = Task {
+            do {
+                let saved = loaded
+                let indexed = try await Task.detached(priority: .userInitiated) {
+                    try saved.store.save(saved.cache)
+                    return Library.portable(saved.cache, source: saved.store.hostFolder.url.path, artworkFolder: saved.store.artwork)
+                }.value
+                portableLibrary = saved
+                library = indexed
+                applyArtistPhotos()
+                transferStatus = "Playlist saved."
+            } catch { transferStatus = "Couldn't save playlist: \(error.localizedDescription)" }
+            playlistSaving = false
+        }
+    }
+
     private func configureMusic() async {
         guard !scanning else { return }
         guard let folder = await chooseFile(title: "Choose Music Folder", defaultButtonLabel: "Use Folder",
@@ -324,7 +490,7 @@ struct ContentView: View {
     }
 
     private func loadPortable(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool) async {
-        guard !scanning else { return }
+        guard !scanning, !playlistSaving else { return }
         scanning = true
         defer { scanning = false }
         do {
@@ -397,7 +563,15 @@ struct ContentView: View {
                     // The cover only hides the table: over the artist list, it would swallow the
                     // clicks that pick an artist.
                     ZStack {
-                        TrackTable(rows: tableRows(library), isActive: trackTableActive(library))
+                        TrackTable(rows: tableRows(library), isActive: trackTableActive(library),
+                                   onPlay: { row, displayed in startPlayback(row, displayed: displayed, library: library) },
+                                   artworkFolder: library.artworkFolder,
+                                   playlists: library.playlists, onAddToPlaylist: addTracksToPlaylist,
+                                   currentPlaylistID: selectedPlaylistID, onRemoveFromPlaylist: removeTracksFromPlaylist)
+                        if selection == .albums && selectedAlbumID == nil {
+                            AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
+                                         onSelect: { selectedAlbumID = $0 }).background(WindowBackground())
+                        }
                         ForEach(ipods, id: \.id) { device in
                             RetainedPage(active: selection == .device(device.id)) {
                             DeviceView(device: device, library: library, revision: contentRevision, isBusy: busyDevices.contains(device.id),
@@ -426,7 +600,10 @@ struct ContentView: View {
                                             transferStatus = "That picture couldn't be used."
                                         }
                                     }
-                                }, query: search.trimmingCharacters(in: .whitespaces), allowsPhotoSelection: group.photoArtist != nil)
+                                }, query: search.trimmingCharacters(in: .whitespaces), allowsPhotoSelection: group.photoArtist != nil,
+                                onPlay: { row, displayed in
+                                    startPlayback(row, displayed: displayed, library: library)
+                                })
                                 .background(WindowBackground())
                         }
                         if selection == .photos {
@@ -475,6 +652,13 @@ struct ContentView: View {
         case .music:
             title = "Music"
             subtitle = songCount(library.allRows.count)
+        case .recentMusic:
+            title = "Recently Added"
+            subtitle = songCount(library.recentRows.count)
+        case .albums:
+            let album = library.albums.first { $0.id == selectedAlbumID }
+            title = album?.title ?? "Albums"
+            subtitle = album.map { "\($0.artist) · \(songCount($0.rows.count))" } ?? "\(library.albums.count) albums"
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
             subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
@@ -491,20 +675,23 @@ struct ContentView: View {
             subtitle = ""
         }
         return DetailHeader(title: title, subtitle: subtitle) {
-            if selection == .music {
-                SegmentedControl(options: MusicMode.allCases, selection: Binding(get: { mode }, set: { value in
-                    mode = value
-                    if settingsLoaded, let store = portableLibrary?.store, let value {
-                        PortablePreferences.shared.stageMusicMode(value.rawValue, store: store)
-                    }
-                }))
+            if selection == .music || selection == .recentMusic || selection == .albums {
                 ToolbarButton(icon: "plus") { Task { await configureMusic() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
-                SearchField(prompt: "Search songs", text: $search)
+                if selection == .albums && selectedAlbumID != nil {
+                    Button("All Albums") { selectedAlbumID = nil }.titleBarControl()
+                }
+                SearchField(prompt: "Search songs, artists, albums…", text: $search)
             } else if selection == .podcasts {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
                 SearchField(prompt: "Search episodes", text: $search)
+            } else if case .playlist(let id) = selection {
+                #if canImport(AppKitBackend)
+                Button("Rename…") { renamePlaylist(id) }.titleBarControl()
+                Button("Delete…") { deletePlaylist(id) }.titleBarControl()
+                #endif
+                SearchField(prompt: "Search playlist", text: $search)
             } else if selection == .audiobooks {
                 ToolbarButton(icon: "plus") { Task { await configureAudiobooks() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
@@ -524,6 +711,8 @@ struct ContentView: View {
         case .music: return mode != .byArtist && !library.allRows.isEmpty
         case .podcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
         case .audiobooks: return !audiobookRows.isEmpty
+        case .recentMusic: return true
+        case .albums: return selectedAlbumID != nil
         case .playlist: return true
         default: return false
         }
@@ -537,8 +726,12 @@ struct ContentView: View {
             return nil
         case .music:
             return filtered(library.allRows)
+        case .recentMusic:
+            return filtered(library.recentRows)
+        case .albums:
+            return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
         case .playlist(let id):
-            return library.rowsByPlaylist[id] ?? []
+            return filtered(library.rowsByPlaylist[id] ?? [])
         case .podcasts where addingPodcast:
             return nil
         case .podcasts:
@@ -664,7 +857,7 @@ struct DetailHeader<Controls: View>: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 1) {
                         // One line each, truncated when the window is narrow, as in a Mac toolbar.
-                        Text(title).font(.system(size: 13, weight: .bold)).lineLimit(1)
+                        Text(title).font(.system(size: subtitle.isEmpty ? 15 : 13, weight: .bold)).lineLimit(1)
                         if !subtitle.isEmpty {
                             Text(subtitle).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                         }
@@ -792,6 +985,12 @@ private let logQueue = DispatchQueue(label: "ipodpromax.log", qos: .utility)
 
 /// stderr is unbuffered, so timings show up even when stdout is piped. `IPPM_LOG=<file>` also
 /// appends to a file, for apps started from a desktop shell (no console to read).
+func flushLog() { logQueue.sync {} }
+func audioTrace(_ message: String) {
+    guard ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] != nil else { return }
+    log("[audio check] " + message); flushLog()
+}
+
 func log(_ message: String) {
     if let path = logFile {
         logQueue.async {
@@ -811,6 +1010,17 @@ func log(_ message: String) {
     fputs(message + "\n", stderr)
 }
 
+struct AudioCheckView: View {
+    var path: String
+    var body: some View {
+        Text("Checking audio…").task {
+            let passed = await checkPlatformAudio(path)
+            flushLog()
+            exit(passed ? 0 : 1)
+        }
+    }
+}
+
 @main
 struct IPodProMaxApp: App {
     /// Declared rather than looked up: SwiftCrossUI otherwise scans the binary for Swift Bundler's
@@ -821,7 +1031,11 @@ struct IPodProMaxApp: App {
 
     var body: some Scene {
         WindowGroup("iPod Pro Max") {
-            ContentView()
+            if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
+                AudioCheckView(path: path)
+            } else {
+                ContentView()
+            }
         }
         .defaultSize(width: 1100, height: 700)
     }

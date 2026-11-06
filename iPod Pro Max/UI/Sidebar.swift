@@ -8,7 +8,7 @@ enum ConnectedDeviceTitles {
 
 enum SidebarItem: Hashable {
     case device(String)
-    case music, podcasts, audiobooks, videos, photos
+    case music, recentMusic, artists, albums, podcasts, audiobooks, videos, photos
     case playlist(String)
 
     /// Library rows, in the order the SwiftUI app shows them by default.
@@ -18,7 +18,10 @@ enum SidebarItem: Hashable {
     @MainActor var title: String {
         switch self {
         case .device(let id): ConnectedDeviceTitles.names[id] ?? "iPod"
-        case .music: "Music"
+        case .music: "All Songs"
+        case .recentMusic: "Recently Added"
+        case .artists: "Artists"
+        case .albums: "Albums"
         case .podcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
@@ -31,6 +34,9 @@ enum SidebarItem: Hashable {
         switch self {
         case .device: "ipod"
         case .music: "music.note"
+        case .recentMusic: "clock"
+        case .artists: "person.fill"
+        case .albums: "square.stack"
         case .podcasts: "antenna.radiowaves.left.and.right"
         case .audiobooks: "book"
         case .videos: "film"
@@ -64,11 +70,10 @@ func sidebarSections(devices: [String], playlists: [Playlist]) -> [SidebarSectio
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
                 : devices.map { .init(title: ConnectedDeviceTitles.names[$0] ?? "iPod", icon: "ipod", item: .device($0), ejectable: true) }),
-        SidebarSection(title: "Library", rows: SidebarItem.library.map { .init(title: $0.title, icon: $0.icon, item: $0) }),
+        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .music, .artists, .albums].map { .init(title: $0.title, icon: $0.icon, item: $0) }),
         SidebarSection(
             title: "Playlists",
-            rows: playlists.map { .init(title: $0.name, icon: "music.note.list", item: .playlist($0.id)) }
-                + [.init(title: "New Playlist…", icon: "plus", item: nil)]),
+            rows: playlists.map { .init(title: $0.name, icon: "music.note.list", item: .playlist($0.id)) }),
     ]
 }
 
@@ -98,7 +103,7 @@ enum SidebarMetrics {
     /// The eject button: glyph size, square hit area, and its distance from the selection's edge.
     static let ejectPointSize = 10.0
     static let ejectSize = 20.0
-    static let ejectTrailing = 4.0
+    static let ejectTrailing = 1.0
 }
 
 /// Translucent neutral selection, calibrated against Finder on a tinted sidebar.

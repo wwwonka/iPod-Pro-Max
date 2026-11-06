@@ -9,7 +9,7 @@ set -euo pipefail
 case ${1:-} in
 deps)
     # Fedora packages Swift itself; swiftly refuses Fedora releases newer than its support list.
-    dnf install -y swift-lang gtk4-devel clang rsync
+    dnf install -y swift-lang gtk4-devel gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-libav clang rsync
     ;;
 build)
     SRC=$2
@@ -70,7 +70,7 @@ DESKTOP
     echo "OK: $DIST/iPodProMaxApp"
     ;;
 check)
-    command -v swift >/dev/null && rpm -q gtk4-devel >/dev/null
+    command -v swift >/dev/null && rpm -q gtk4-devel gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-libav >/dev/null
     ;;
 run)
     # prlctl exec does not inherit the desktop session's environment: point GTK at it.

@@ -15,6 +15,7 @@ struct ArtistTrackList: NSViewRepresentable {
     var devices: [String]
     var busyDevices: Set<String>
     var onSend: ([String], String) -> Void
+    var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
@@ -30,6 +31,8 @@ struct ArtistTrackList: NSViewRepresentable {
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.dataSource = context.coordinator
         table.delegate = context.coordinator
+        table.target = context.coordinator
+        table.doubleAction = #selector(Coordinator.playSelected(_:))
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.documentView = table
@@ -38,6 +41,7 @@ struct ArtistTrackList: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let c = context.coordinator
         c.onSend = onSend
+        c.onPlay = onPlay
         let changedRows = !c.albums.sameStorage(as: albums) || c.artworkFolder != artworkFolder || c.query != query
         let changedButtons = c.devices != devices || c.busyDevices != busyDevices
         guard changedRows || changedButtons else { return }
@@ -70,7 +74,13 @@ struct ArtistTrackList: NSViewRepresentable {
         var devices: [String] = []
         var busyDevices: Set<String> = []
         var onSend: ([String], String) -> Void = { _, _ in }
+        var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
         private var loading: Set<URL> = []
+
+        @objc func playSelected(_ table: NSTableView) {
+            guard entries.indices.contains(table.clickedRow), case .song(let row) = entries[table.clickedRow], row.path != nil else { return }
+            onPlay(row, entries.compactMap { if case .song(let song) = $0 { song } else { nil } })
+        }
 
         func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -169,9 +179,10 @@ struct ArtistTrackList: NSViewRepresentable {
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
         super.layout()
-        number.frame = NSRect(x: 14, y: 5, width: 30, height: 18)
-        title.frame = NSRect(x: 56, y: 5, width: max(0, bounds.width - 128), height: 18)
-        duration.frame = NSRect(x: max(0, bounds.width - 64), y: 5, width: 52, height: 18)
+        let y = (bounds.height - 18) / 2
+        number.frame = NSRect(x: 14, y: y, width: 30, height: 18)
+        title.frame = NSRect(x: 56, y: y, width: max(0, bounds.width - 128), height: 18)
+        duration.frame = NSRect(x: max(0, bounds.width - 64), y: y, width: 52, height: 18)
     }
 }
 @MainActor private final class AlbumCell: NSTableCellView {

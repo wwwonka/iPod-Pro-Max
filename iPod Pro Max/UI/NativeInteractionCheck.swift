@@ -5,6 +5,11 @@ import iPodKit
 /// Opt-in native regression check, no music writes and no use of the user's clipboard.
 @MainActor
 func checkNativeMusicInteractions() async {
+    NSSetUncaughtExceptionHandler { exception in
+        fputs("Native check exception: \(exception.name.rawValue): \(exception.reason ?? "")\n", stderr)
+    }
+    checkNativeAlbumGrid()
+    checkPlaybackController()
     let rows = (0..<3).map {
         TrackRow(id: UUID().uuidString, title: "Track \($0)", artist: "Artist", album: "Album", number: "\($0)", year: "", duration: "")
     }

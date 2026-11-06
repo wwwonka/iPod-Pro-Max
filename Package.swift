@@ -32,12 +32,15 @@ let package = Package(
             name: "iPodProMaxApp",
             dependencies: [
                 "iPodKit", "DeviceKit", "MediaKit",
+                .target(name: "CGStreamerPlayback", condition: .when(platforms: [.linux])),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
             ],
             path: "iPod Pro Max",
             exclude: ["Resources"]
         ),
+        .systemLibrary(name: "GStreamer", pkgConfig: "gstreamer-1.0", providers: [.apt(["libgstreamer1.0-dev"])]),
+        .target(name: "CGStreamerPlayback", dependencies: ["GStreamer"]),
         .target(name: "iPodKit"),
         .target(
             name: "MediaKit",

@@ -32,14 +32,25 @@ extension Array {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
         var isActive = true
+        var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var artworkFolder: URL?
+        var playlists: [Playlist] = []
+        var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
+        var currentPlaylistID: String?
+        var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
         func makeNSView(context: Context) -> NSScrollView {
-            let table = NSTableView()
+            let table = MusicTrackTable()
+            table.coordinator = context.coordinator
+            table.target = context.coordinator
+            table.doubleAction = #selector(Coordinator.playSelected(_:))
             if #available(macOS 11, *) { table.style = .inset }
             table.usesAlternatingRowBackgroundColors = true
+            table.rowHeight = 42
             table.allowsMultipleSelection = true
+            table.allowsColumnReordering = true
             table.setDraggingSourceOperationMask(.copy, forLocal: true)
             table.columnAutoresizingStyle = .noColumnAutoresizing
             for (i, column) in columns.enumerated() {
@@ -60,17 +71,87 @@ extension Array {
 
         func updateNSView(_ scroll: NSScrollView, context: Context) {
             let coordinator = context.coordinator
+            coordinator.onPlay = onPlay
+            coordinator.artworkFolder = artworkFolder
+            coordinator.playlists = playlists
+            coordinator.onAddToPlaylist = onAddToPlaylist
+            coordinator.currentPlaylistID = currentPlaylistID
+            coordinator.onRemoveFromPlaylist = onRemoveFromPlaylist
             coordinator.setActive(isActive, in: scroll)
             // Same array storage means same rows: skip the reload on unrelated redraws.
-            guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
-            coordinator.rows = rows
-            (scroll.documentView as? NSTableView)?.reloadData()
+            guard let rows, !coordinator.sourceRows.sameStorage(as: rows),
+                  let table = scroll.documentView as? NSTableView else { return }
+            coordinator.setRows(rows, in: table)
         }
 
         @MainActor
         final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             var rows: [TrackRow] = []
+            var sourceRows: [TrackRow] = []
             var isActive = true
+            var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+            var artworkFolder: URL?
+            var playlists: [Playlist] = []
+            var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
+            var currentPlaylistID: String?
+            var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
+            @objc func playSelected(_ sender: NSTableView) {
+                guard isActive, rows.indices.contains(sender.clickedRow), rows[sender.clickedRow].path != nil else { return }
+                onPlay(rows[sender.clickedRow], rows)
+            }
+            private var sortColumn: Int?
+            private var ascending = true
+            private var sortRevision = 0
+
+            func setRows(_ rows: [TrackRow], in table: NSTableView) {
+                sourceRows = rows
+                self.rows = rows
+                table.deselectAll(nil)
+                table.reloadData()
+                applySort(in: table)
+            }
+
+            func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+                guard let index = Int(tableColumn.identifier.rawValue), columns.indices.contains(index) else { return }
+                if sortColumn == index { ascending.toggle() }
+                else { sortColumn = index; ascending = true }
+                for column in tableView.tableColumns {
+                    guard let i = Int(column.identifier.rawValue), columns.indices.contains(i) else { continue }
+                    column.title = columns[i].title + (i == index ? (ascending ? " ↑" : " ↓") : "")
+                }
+                applySort(in: tableView)
+            }
+
+            private func applySort(in table: NSTableView) {
+                sortRevision += 1
+                let revision = sortRevision
+                let source = sourceRows
+                guard let sortColumn else { rows = source; table.reloadData(); return }
+                let key = columns[sortColumn].value
+                let forward = ascending
+                Task { [weak self, weak table] in
+                    let sorted = await Task.detached(priority: .userInitiated) {
+                        source.enumerated().sorted { a, b in
+                            let left = a.element[keyPath: key], right = b.element[keyPath: key]
+                            let order: ComparisonResult
+                            if sortColumn == 5 {
+                                func seconds(_ value: String) -> Int {
+                                    value.split(separator: ":").reduce(0) { $0 * 60 + (Int($1) ?? 0) }
+                                }
+                                let l = seconds(left), r = seconds(right)
+                                order = l == r ? .orderedSame : (l < r ? .orderedAscending : .orderedDescending)
+                            } else { order = left.localizedStandardCompare(right) }
+                            if order == .orderedSame { return a.offset < b.offset }
+                            return forward ? order == .orderedAscending : order == .orderedDescending
+                        }.map(\.element)
+                    }.value
+                    guard let self, let table, self.sortRevision == revision else { return }
+                    let selected = Set(table.selectedRowIndexes.compactMap { self.rows.indices.contains($0) ? self.rows[$0].id : nil })
+                    self.rows = sorted
+                    table.reloadData()
+                    table.selectRowIndexes(IndexSet(sorted.indices.filter { selected.contains(sorted[$0].id) }), byExtendingSelection: false)
+                }
+            }
             func setActive(_ active: Bool, in scroll: NSScrollView) {
                 if isActive && !active {
                     dragPayload = nil
@@ -104,18 +185,134 @@ extension Array {
 
             func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
                 guard let tableColumn, let index = Int(tableColumn.identifier.rawValue) else { return nil }
-                let field: NSTextField
-                if let reused = tableView.makeView(withIdentifier: cellID, owner: nil) as? NSTextField {
-                    field = reused
-                } else {
-                    field = NSTextField(labelWithString: "")
-                    field.identifier = cellID
-                    field.lineBreakMode = .byTruncatingTail
-                }
-                field.stringValue = rows[row][keyPath: columns[index].value]
-                return field
+                let cell = (tableView.makeView(withIdentifier: cellID, owner: nil) as? CenteredTrackCell) ?? CenteredTrackCell()
+                cell.identifier = cellID
+                cell.label.stringValue = rows[row][keyPath: columns[index].value]
+                cell.setLyrics(index == 1 && rows[row].hasLyrics)
+                cell.showArtwork(index == 1 ? rows[row].artworkKey.flatMap { artworkFolder?.appendingPathComponent($0 + ".jpg") } : nil,
+                                 reservesSpace: index == 1)
+                return cell
             }
         }
+    }
+
+    final class MusicTrackTable: NSTableView {
+        weak var coordinator: TrackTable.Coordinator?
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let clicked = row(at: convert(event.locationInWindow, from: nil))
+            guard let coordinator, coordinator.isActive, coordinator.rows.indices.contains(clicked),
+                  coordinator.rows[clicked].path != nil else { return nil }
+            if !selectedRowIndexes.contains(clicked) { selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false) }
+            let menu = NSMenu()
+            if selectedRowIndexes.count == 1 {
+                let play = NSMenuItem(title: "Play", action: #selector(playSelection), keyEquivalent: "")
+                play.target = self
+                menu.addItem(play)
+                menu.addItem(.separator())
+            }
+            if !coordinator.playlists.isEmpty {
+                let parent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
+                let choices = NSMenu()
+                for playlist in coordinator.playlists {
+                    let item = NSMenuItem(title: playlist.name, action: #selector(addToPlaylist(_:)), keyEquivalent: "")
+                    item.representedObject = playlist.id
+                    item.target = self
+                    choices.addItem(item)
+                }
+                parent.submenu = choices
+                menu.addItem(parent)
+            }
+            if coordinator.currentPlaylistID != nil {
+                let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
+                remove.target = self
+                menu.addItem(remove)
+            }
+            let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealSelection), keyEquivalent: "")
+            reveal.target = self
+            menu.addItem(reveal)
+            if selectedRowIndexes.count == 1 {
+                let info = NSMenuItem(title: "Track Info", action: #selector(showTrackInfo), keyEquivalent: "")
+                info.target = self
+                menu.addItem(info)
+            }
+            return menu
+        }
+
+        @objc private func playSelection() {
+            guard let coordinator, coordinator.rows.indices.contains(selectedRow) else { return }
+            coordinator.onPlay(coordinator.rows[selectedRow], coordinator.rows)
+        }
+        @objc private func addToPlaylist(_ sender: NSMenuItem) {
+            guard let coordinator, let playlist = sender.representedObject as? String else { return }
+            let ids = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].id : nil }
+            coordinator.onAddToPlaylist(ids, playlist)
+        }
+        @objc private func removeFromPlaylist() {
+            guard let coordinator, let playlist = coordinator.currentPlaylistID else { return }
+            let ids = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].id : nil }
+            coordinator.onRemoveFromPlaylist(ids, playlist)
+        }
+
+        @objc private func revealSelection() {
+            guard let coordinator else { return }
+            let urls = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].path.map { URL(fileURLWithPath: $0) } : nil }
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        }
+
+        @objc private func showTrackInfo() {
+            guard let coordinator, coordinator.rows.indices.contains(selectedRow) else { return }
+            let row = coordinator.rows[selectedRow]
+            let alert = NSAlert()
+            alert.messageText = row.title
+            alert.informativeText = "Artist: \(row.artist)\nAlbum: \(row.album)\nYear: \(row.year)\nDuration: \(row.duration)\nFile: \(row.path ?? "")"
+            alert.addButton(withTitle: "OK")
+            if let window { alert.beginSheetModal(for: window) }
+            else { alert.runModal() }
+        }
+    }
+
+    /// Keep the text centered in the native row, regardless of the row-height preference.
+    final class CenteredTrackCell: NSTableCellView {
+        let label = NSTextField(labelWithString: "")
+        private let lyrics = NSImageView()
+        private let cover = NSImageView()
+        private var url: URL?
+        private var task: Task<Void, Never>?
+        private var reservesSpace = false
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            label.lineBreakMode = .byTruncatingTail
+            lyrics.image = systemSymbol("text.quote", pointSize: 12)
+            lyrics.contentTintColor = .secondaryLabelColor
+            lyrics.toolTip = "Lyrics available"
+            cover.imageScaling = .scaleProportionallyUpOrDown
+            cover.wantsLayer = true; cover.layer?.cornerRadius = 5; cover.layer?.masksToBounds = true
+            for child in [cover, label, lyrics] { addSubview(child) }
+        }
+        func showArtwork(_ newURL: URL?, reservesSpace: Bool) {
+            self.reservesSpace = reservesSpace; cover.isHidden = !reservesSpace
+            needsLayout = true
+            guard url != newURL else { return }
+            url = newURL; task?.cancel(); cover.image = nil
+            guard let newURL else { return }
+            cover.image = ThumbnailStore.shared.cached(newURL, pixels: 64)
+            guard cover.image == nil else { return }
+            task = Task { [weak self] in
+                let image = await ThumbnailStore.shared.image(newURL, pixels: 64)
+                guard !Task.isCancelled, self?.url == newURL else { return }
+                self?.cover.image = image
+            }
+        }
+        func setLyrics(_ available: Bool) { lyrics.isHidden = !available }
+        override func layout() {
+            super.layout()
+            let start: CGFloat = reservesSpace ? 42 : 0
+            cover.frame = NSRect(x: 2, y: (bounds.height - 32) / 2, width: 32, height: 32)
+            label.frame = NSRect(x: start, y: (bounds.height - 18) / 2, width: max(0, bounds.width - start - (reservesSpace ? 20 : 2)), height: 18)
+            lyrics.frame = NSRect(x: max(0, bounds.width - 16), y: (bounds.height - 14) / 2, width: 14, height: 14)
+        }
+        required init?(coder: NSCoder) { fatalError() }
     }
 
     /// Lays the columns out on every resize so all of them fit, as SwiftUI's Table does.
@@ -127,7 +324,9 @@ extension Array {
             let spacing = table.intercellSpacing.width * CGFloat(columns.count)
             let fixed = columns.filter { $0.width >= 1 }.reduce(0) { $0 + $1.width }
             let flexible = max(0, contentView.bounds.width - spacing - fixed - 24)
-            for (column, spec) in zip(table.tableColumns, columns) {
+            for column in table.tableColumns {
+                guard let index = Int(column.identifier.rawValue), columns.indices.contains(index) else { continue }
+                let spec = columns[index]
                 column.width = spec.width >= 1 ? spec.width : (flexible * spec.width).rounded(.down)
             }
         }
@@ -172,6 +371,12 @@ extension Array {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
         var isActive = true
+        var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var artworkFolder: URL?
+        var playlists: [Playlist] = []
+        var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
+        var currentPlaylistID: String?
+        var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -183,6 +388,8 @@ extension Array {
             let selection = gtk_multi_selection_new(cast(coordinator.model))!
             coordinator.selection = selection
             let view = gtk_column_view_new(selection)!
+            g_signal_connect_data(cast(view), "activate", unsafeBitCast(activateTrack, to: GCallback.self),
+                                  Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
             let drag = gtk_drag_source_new()!
             gtk_drag_source_set_actions(drag, GDK_ACTION_COPY)
             g_signal_connect_data(cast(drag), "prepare", unsafeBitCast(prepareMusicDrag, to: GCallback.self),
@@ -196,7 +403,8 @@ extension Array {
                 let factory = gtk_signal_list_item_factory_new()
                 // The handler owns its binding; GLib releases it when the handler goes away.
                 let binding = Unmanaged.passRetained(CellBinding(coordinator: coordinator, column: index))
-                g_signal_connect_data(cast(factory), "setup", unsafeBitCast(setupCell, to: GCallback.self), nil, nil, GConnectFlags(rawValue: 0))
+                g_signal_connect_data(cast(factory), "setup", unsafeBitCast(setupCell, to: GCallback.self),
+                    Unmanaged.passRetained(CellBinding(coordinator: coordinator, column: index)).toOpaque(), releaseBinding, GConnectFlags(rawValue: 0))
                 g_signal_connect_data(cast(factory), "bind", unsafeBitCast(bindCell, to: GCallback.self),
                                       binding.toOpaque(), releaseBinding, GConnectFlags(rawValue: 0))
                 let c = gtk_column_view_column_new(column.title, cast(factory))
@@ -220,6 +428,8 @@ extension Array {
             let coordinator = context.coordinator
             if coordinator.isActive && !isActive { TrackDrag.end() }
             coordinator.isActive = isActive
+            coordinator.onPlay = onPlay
+            coordinator.artworkFolder = artworkFolder
             gtk_widget_set_visible(widget.widgetPointer, isActive ? 1 : 0)
             gtk_widget_set_sensitive(widget.widgetPointer, isActive ? 1 : 0)
             // Same rows: keep the model, and with it the selection and scroll position.
@@ -232,10 +442,14 @@ extension Array {
             var selection: OpaquePointer?
             var isActive = true
             var rows: [TrackRow] = []
+            var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+            var artworkFolder: URL?
+            var revision = 0
 
             /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
             func show(_ newRows: [TrackRow]) {
                 let old = rows.count
+                revision += 1
                 rows = newRows
                 let empty = strdup("")
                 defer { free(empty) }
@@ -263,6 +477,13 @@ extension Array {
     }
 
 
+    private let activateTrack: @convention(c) (OpaquePointer?, UInt32, gpointer?) -> Void = { _, position, data in
+        guard let data else { return }
+        MainActor.assumeIsolated {
+            let c = Unmanaged<TrackTable.Coordinator>.fromOpaque(data).takeUnretainedValue()
+            if c.isActive, c.rows.indices.contains(Int(position)) { c.onPlay(c.rows[Int(position)], c.rows) }
+        }
+    }
     private let prepareMusicDrag: @convention(c) (OpaquePointer?, Double, Double, gpointer?) -> UnsafeMutablePointer<GdkContentProvider>? = { _, _, _, data in
         guard let data else { return nil }
         return MainActor.assumeIsolated { () -> UnsafeMutablePointer<GdkContentProvider>? in
@@ -291,20 +512,44 @@ extension Array {
         Unmanaged<TrackTable.CellBinding>.fromOpaque(data).release()
     }
 
-    private let setupCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, _ in
+    private let setupCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, data in
         let label = gtk_label_new(nil)!
         gtk_label_set_xalign(cast(label), 0)
+        gtk_label_set_yalign(cast(label), 0.5)
         gtk_label_set_ellipsize(cast(label), PANGO_ELLIPSIZE_END)
-        gtk_list_item_set_child(cast(item), label)
+        gtk_widget_set_margin_top(label, 6); gtk_widget_set_margin_bottom(label, 6)
+        if let data, Unmanaged<TrackTable.CellBinding>.fromOpaque(data).takeUnretainedValue().column == 1 {
+            let box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10)!
+            let image = gtk_image_new_from_icon_name("audio-x-generic-symbolic")!
+            gtk_image_set_pixel_size(cast(image), 32); gtk_widget_set_size_request(image, 32, 32)
+            gtk_box_append(cast(box), image); gtk_box_append(cast(box), label)
+            gtk_list_item_set_child(cast(item), box)
+        } else { gtk_list_item_set_child(cast(item), label) }
     }
 
     private let bindCell: @convention(c) (OpaquePointer?, OpaquePointer?, gpointer?) -> Void = { _, item, data in
-        guard let data, let label = gtk_list_item_get_child(cast(item)) else { return }
+        guard let data, let child = gtk_list_item_get_child(cast(item)) else { return }
         let binding = Unmanaged<TrackTable.CellBinding>.fromOpaque(data).takeUnretainedValue()
-        guard let rows = binding.coordinator?.rows else { return }
-        let position = Int(gtk_list_item_get_position(cast(item)))
-        guard position < rows.count else { return }
-        gtk_label_set_text(cast(label), rows[position][keyPath: columns[binding.column].value])
+        MainActor.assumeIsolated {
+            guard let c = binding.coordinator else { return }
+            let position = Int(gtk_list_item_get_position(cast(item)))
+            guard c.rows.indices.contains(position) else { return }
+            let row = c.rows[position]
+            if binding.column != 1 { gtk_label_set_text(cast(child), row[keyPath: columns[binding.column].value]); return }
+            guard let image = gtk_widget_get_first_child(child), let label = gtk_widget_get_next_sibling(image) else { return }
+            gtk_label_set_text(cast(label), row.title)
+            gtk_image_set_from_icon_name(cast(image), "audio-x-generic-symbolic")
+            guard let folder = c.artworkFolder, let key = row.artworkKey else { return }
+            let revision = c.revision
+            g_object_ref(cast(item))
+            Task { [weak c] in
+                defer { g_object_unref(cast(item)) }
+                let texture = await GtkThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 64)
+                guard let c, c.revision == revision, gtk_list_item_get_position(cast(item)) == UInt32(position),
+                      c.rows.indices.contains(position), c.rows[position].id == row.id, let texture else { return }
+                gtk_image_set_from_paintable(cast(image), cast(texture.pointer))
+            }
+        }
     }
 
 #elseif canImport(WinUIBackend)
@@ -319,6 +564,12 @@ extension Array {
         /// nil keeps the rows already shown.
         var rows: [TrackRow]?
         var isActive = true
+        var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var artworkFolder: URL?
+        var playlists: [Playlist] = []
+        var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
+        var currentPlaylistID: String?
+        var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -339,7 +590,37 @@ extension Array {
 
             let list = WinUI.ListView()
             list.selectionMode = .extended
+            list.containerContentChanging.addHandler { [weak coordinator] _, args in
+                MainActor.assumeIsolated {
+                    guard let c = coordinator, let args, !args.inRecycleQueue,
+                          c.rows.indices.contains(Int(args.itemIndex)) else { return }
+                    let row = c.rows[Int(args.itemIndex)]
+                    let grid = Self.rowGrid()
+                    grid.padding = Thickness(left: 12, top: 6, right: 12, bottom: 6)
+                    for (index, column) in columns.enumerated() {
+                        (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = row[keyPath: column.value]
+                    }
+                    if let folder = c.artworkFolder, let key = row.artworkKey,
+                       let title = grid.children.getAt(1) as? TextBlock {
+                        title.margin = Thickness(left: 42, top: 0, right: 0, bottom: 0)
+                        let cover = WinUI.Image(); cover.width = 32; cover.height = 32
+                        cover.horizontalAlignment = .left
+                        let bitmap = BitmapImage(WindowsFoundation.Uri(folder.appendingPathComponent(key + ".jpg").absoluteString))
+                        bitmap.decodePixelWidth = 64; cover.source = bitmap
+                        WinUI.Grid.setColumn(cover, 1); grid.children.append(cover)
+                    }
+                    args.itemContainer.content = grid
+                    args.itemContainer.horizontalContentAlignment = .stretch
+                    args.handled = true
+                }
+            }
             list.canDragItems = true
+            list.doubleTapped.addHandler { [weak coordinator, weak list] _, _ in
+                MainActor.assumeIsolated {
+                    guard let c = coordinator, c.isActive, let list, c.rows.indices.contains(Int(list.selectedIndex)) else { return }
+                    c.onPlay(c.rows[Int(list.selectedIndex)], c.rows)
+                }
+            }
             list.dragItemsStarting.addHandler { [weak coordinator, weak list] _, args in
                 guard let coordinator, let list, let args else { return }
                 MainActor.assumeIsolated {
@@ -374,6 +655,8 @@ extension Array {
             let coordinator = context.coordinator
             if coordinator.isActive && !isActive { TrackDrag.end() }
             coordinator.isActive = isActive
+            coordinator.onPlay = onPlay
+            coordinator.artworkFolder = artworkFolder
             root.visibility = isActive ? .visible : .collapsed
             root.isHitTestVisible = isActive
             guard let rows, !coordinator.rows.sameStorage(as: rows) else { return }
@@ -411,6 +694,8 @@ extension Array {
         final class Coordinator {
             var rows: [TrackRow] = []
             var list: WinUI.ListView?
+            var artworkFolder: URL?
+            var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
             var isActive = true
         }
     }

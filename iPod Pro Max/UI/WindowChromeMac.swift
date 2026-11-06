@@ -42,17 +42,11 @@
         private weak var splitView: NSSplitView?
         private var splitDelegate: CollapsibleSplitDelegate?
         private var expandedWidth = sidebarWidth
-        private var slide: SidebarSlide?
-        var isSliding: Bool { slide != nil }
-        private var timer: Timer?
-        /// A sidebar slide resizes the complete detail hierarchy.  Keeping this at the standard
-        /// 60 Hz avoids spending every ProMotion (120 Hz) tick relaying out controls on the iPod
-        /// page, while remaining display-smooth and leaving the main run loop responsive.
-        private let sidebarSlideFrameInterval = 1.0 / 60.0
-        /// The iPod page has many controls and a complete layout can take longer than a display
-        /// frame.  A short native slide limits that transient work to a few frames; an explicit
-        /// diagnostic duration still wins when `IPPM_SLIDE_SECONDS` is set.
-        private let sidebarSlideDuration = ProcessInfo.processInfo.environment["IPPM_SLIDE_SECONDS"] == nil ? 0.16 : SidebarSlide.duration
+        var isSliding: Bool { false }
+        private var sidebarAnimationRevision = 0
+        private var sidebarTargetOpen: Bool?
+        private var sidebarSnapshot: NSView?
+        private var snapshotOffset: CGFloat = 0
         private static let toggleID = NSToolbarItem.Identifier("toggleSidebar")
 
         func install(on window: NSWindow) {
@@ -132,57 +126,62 @@
             return split.subviews[0].isHidden ? 0 : split.subviews[0].frame.width
         }
 
-        /// Slides the sidebar closed or open: the divider moves every frame and the split view's
-        /// resize lays the panes out. The timer exists only for the slide.
+        /// Commit the final geometry once, then animate retained layers on the compositor.
         @objc func toggleSidebar() {
-            guard slide == nil, let split = findSplitView() else { return }
-            let sidebar = split.subviews[0]
-            let opening = sidebar.isHidden || sidebar.frame.width < 1
-            // Once closed, the pane must not participate in an AppKit resize at all.  Leaving a
-            // zero-width SwiftCrossUI pane visible lets its split delegate restore the minimum
-            // width for a frame during window zooming.
-            if opening {
-                collapsibleDelegate(for: split).allowsCollapse = true
-                sidebar.isHidden = false
-                split.setPosition(0, ofDividerAt: 0)
+            guard let split = findSplitView(), split.subviews.count >= 2, let root = window?.contentView else { return }
+            sidebarAnimationRevision += 1
+            let revision = sidebarAnimationRevision
+            let sidebar = split.subviews[0], detail = split.subviews[1]
+            let wasAnimating = sidebarTargetOpen != nil
+            let visualOffset = sidebarSnapshot.map { ($0.layer?.presentation()?.transform.m41 ?? 0) + snapshotOffset }
+                ?? (sidebar.layer?.presentation()?.transform.m41 ?? 0)
+            let opening = !(sidebarTargetOpen ?? (!sidebar.isHidden && sidebar.frame.width > 1))
+            sidebarTargetOpen = opening
+            sidebarSnapshot?.removeFromSuperview(); sidebarSnapshot = nil
+            sidebar.layer?.removeAnimation(forKey: "sidebarReveal")
+            let oldDetailX = detail.layer?.presentation()?.frame.minX ?? detail.frame.minX
+            detail.layer?.removeAnimation(forKey: "sidebarContent")
+            let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            var snapshot: NSImageView?
+            if !opening, !reduceMotion, sidebar.bounds.width > 0,
+               let bitmap = sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds) {
+                expandedWidth = sidebar.frame.width
+                sidebar.cacheDisplay(in: sidebar.bounds, to: bitmap)
+                let image = NSImage(size: sidebar.bounds.size); image.addRepresentation(bitmap)
+                let overlay = NSImageView(frame: sidebar.convert(sidebar.bounds, to: root))
+                overlay.frame.origin.x += visualOffset
+                snapshotOffset = visualOffset
+                overlay.image = image; overlay.imageScaling = .scaleAxesIndependently
+                overlay.wantsLayer = true
+                root.addSubview(overlay); snapshot = overlay; sidebarSnapshot = overlay
             }
-            let from = opening ? 0 : sidebar.frame.width
-            let closing = !opening
-            if closing { expandedWidth = from }
-            collapsibleDelegate(for: split).allowsCollapse = true
-            slide = SidebarSlide(from: from, to: closing ? 0 : expandedWidth, duration: sidebarSlideDuration)
-            pinnedSidebarContentWidth = slide?.openWidth
             let start = CACurrentMediaTime()
-            let timer = Timer(timeInterval: sidebarSlideFrameInterval, repeats: true) { _ in
-                MainActor.assumeIsolated { MacChrome.shared.tick(elapsed: CACurrentMediaTime() - start) }
+            collapsibleDelegate(for: split).allowsCollapse = true
+            sidebar.isHidden = false
+            // Exactly one final layout. The compositor moves retained layers between frames.
+            split.setPosition(opening ? expandedWidth : 0, ofDividerAt: 0)
+            if !opening { sidebar.isHidden = true }
+            splitDelegate?.allowsCollapse = !opening
+            guard !reduceMotion else { sidebarTargetOpen = nil; return }
+            let duration = ProcessInfo.processInfo.environment["IPPM_SLIDE_SECONDS"].flatMap(Double.init) ?? 0.2
+            let easing = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+            func translate(_ view: NSView, from: CGFloat, to: CGFloat, key: String) {
+                view.wantsLayer = true
+                let animation = CABasicAnimation(keyPath: "transform.translation.x")
+                animation.fromValue = from; animation.toValue = to
+                animation.duration = duration; animation.timingFunction = easing
+                view.layer?.add(animation, forKey: key)
             }
-            // Keep the animation moving while AppKit is in an event-tracking run-loop mode, but
-            // never keep a timer alive once the short slide has finished.
-            RunLoop.main.add(timer, forMode: .common)
-            self.timer = timer
-        }
-
-        private func tick(elapsed: Double) {
-            guard var slide, let split = splitView else { return }
-            let (width, done) = slide.width(after: elapsed)
-            let layoutStart = CACurrentMediaTime()
-            // The final divider layout must update the retained page at its new width.
-            if done { self.slide = nil }
-            split.setPosition(width, ofDividerAt: 0)
-            slide.record(layout: CACurrentMediaTime() - layoutStart)
-            if !done { self.slide = slide }
-            guard done else { return }
-            timer?.invalidate()
-            timer = nil
-            self.slide = nil
-            pinnedSidebarContentWidth = nil
-            slide.logResult(elapsed: elapsed)
-            if slide.to == 0 {
-                // Do this only after the final divider layout.  A hidden pane is excluded from
-                // the next resize entirely, preventing the visible one-frame width rebound.
-                split.subviews[0].isHidden = true
+            translate(detail, from: oldDetailX - detail.frame.minX, to: 0, key: "sidebarContent")
+            if opening { translate(sidebar, from: wasAnimating ? visualOffset : -expandedWidth, to: 0, key: "sidebarReveal") }
+            else if let snapshot { translate(snapshot, from: 0, to: -expandedWidth - visualOffset, key: "sidebarReveal") }
+            log("[bench] sidebar compositor: final layout \(Int((CACurrentMediaTime() - start) * 1000)) ms; duration \(Int(duration * 1000)) ms; no frame layout timer")
+            // Bounded completion only; a reversal invalidates this callback.
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                guard let self, self.sidebarAnimationRevision == revision else { return }
+                self.sidebarSnapshot?.removeFromSuperview(); self.sidebarSnapshot = nil
+                self.sidebarTargetOpen = nil
             }
-            splitDelegate?.allowsCollapse = slide.to == 0
         }
 
         fileprivate func findSplitView() -> NSSplitView? {
