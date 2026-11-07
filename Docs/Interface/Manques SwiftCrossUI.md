@@ -45,3 +45,10 @@ Constat sur la **v0.10.0** (30 septembre 2026), dépôt cloné et code lu le 202
 3. On vérifie ces manques dès le prototype de la phase 0 : c'est le plus gros risque de l'interface. Voir [[Prototypes phase 0]].
 
 Voir [[Un code, look Mac partout]] et [[Risques]].
+
+## Mesuré le 7 novembre 2026 (refonte verre)
+
+| Problème | Effet | Contournement |
+|---|---|---|
+| Mise en page de l'app ≈ 40 ms en release (84 ms en debug) pour un simple changement de largeur de sidebar ; le temps est dans `ViewGraphNode.computeLayout`/`commit` et les `withObservationTracking` imbriqués | glisser du bord de la sidebar limité à ~25 images/s | mises à jour coalescées (la dernière largeur gagne) ; piste : conteneurs de séparation natifs, voir [[Refonte verre macOS]] |
+| Le dernier commit amont (après 0.10.0) exige macOS 12 | impossible de le prendre avec la cible 10.15.4 | v0.10.0 exacte ; patchs locaux compatibles avec ce commit |

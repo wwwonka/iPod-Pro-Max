@@ -40,6 +40,9 @@ struct ContentView: View {
     /// Followed from the system on Linux (GTK doesn't tell SwiftCrossUI); AppKit handles macOS.
     @State var colorScheme: ColorScheme = .light
     @State var playerVisible = false
+    /// macOS: the sidebar card is open, so the content leaves it room.
+    @State var sidebarOpen = true
+    @State var sidebarPoints = Int(sidebarWidth)
     @State var selectedAlbumID: String?
     @State var playlistEditorVisible = false
     @State var playlistEditorName = ""
@@ -49,15 +52,19 @@ struct ContentView: View {
             ZStack(alignment: .bottom) {
                 HStack(spacing: 0) {
                     MediaRail(selection: navigationSelection, devices: devices)
+                    #if canImport(AppKitBackend)
+                    // The main view keeps its place; the sidebar floats over its left side.
+                    ZStack(alignment: .topLeading) {
+                        detail
+                        sidebarColumn.frame(width: sidebarPoints)
+                    }
+                    #else
                     NavigationSplitView {
-                        VStack(spacing: 0) {
-                            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject)
-                            Button("New Playlist…") { playlistEditorName = ""; playlistEditorVisible = true }
-                                .padding(12)
-                        }.background(GlassSurface())
+                        sidebarColumn
                     } detail: {
                         detail
                     }
+                    #endif
                 }.padding(.bottom, playerVisible ? 124 : 0)
                 if playerVisible { PlayerDock() }
             }
@@ -68,6 +75,10 @@ struct ContentView: View {
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
         .task {
+            #if canImport(AppKitBackend)
+            MacChrome.shared.onSidebarChange = { open in sidebarOpen = open }
+            MacChrome.shared.onSidebarWidth = { points in sidebarPoints = points }
+            #endif
             if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
                 let passed = await checkPlatformAudio(path)
                 logQueue.sync {}
@@ -529,6 +540,30 @@ struct ContentView: View {
         }
     }
 
+    private var sidebarColumn: some View {
+        VStack(spacing: 0) {
+            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject,
+                onAdd: { media in
+                    switch media {
+                    case .music: Task { await configureMusic() }
+                    case .podcasts: addingPodcast.toggle()
+                    case .audiobooks: Task { await configureAudiobooks() }
+                    default: break
+                    }
+                })
+            Button("New Playlist…") { playlistEditorName = ""; playlistEditorVisible = true }
+                .padding(12)
+        }
+        #if canImport(AppKitBackend)
+        // Dark glass in the main view's shape: below the top band, flush with the window's bottom.
+        .background(SidebarGlass())
+        .padding(.top, Int(titleBarHeight))
+        .padding(.bottom, floatingPanelMargin)
+        #else
+        .background(GlassSurface())
+        #endif
+    }
+
     /// One layout for every section, so switching never tears the track table down: detaching
     /// an NSTableView from the window is what made each sidebar click cost ~60 ms. Sections
     /// without a table draw over it instead.
@@ -538,6 +573,11 @@ struct ContentView: View {
             // Opaque: on Windows the window itself is translucent, for the sidebar.
             VStack(spacing: 0) {
                 header(library)
+                // On macOS the content is a panel floating over the window's glass.
+                VStack(spacing: 0) {
+                #if canImport(AppKitBackend)
+                PanelAnchor().frame(width: 0, height: 0)
+                #endif
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist {
                         ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtists)
@@ -629,6 +669,16 @@ struct ContentView: View {
                     }
                     }
                 }
+                #if canImport(AppKitBackend)
+                // No standing status bar on the Mac: the line only exists while a transfer runs.
+                if let device = ipods.first(where: { MusicTransfer.shared.isRunning($0) }) {
+                    HStack {
+                        Text(transferStatus).font(.system(size: 12))
+                        Spacer()
+                        Button("Cancel Transfer") { MusicTransfer.shared.cancel(device) }
+                    }.padding(8)
+                }
+                #else
                 HStack {
                     Text(scanning ? "Checking music folders…" : transferStatus).font(.system(size: 12))
                     Spacer()
@@ -636,8 +686,20 @@ struct ContentView: View {
                         Button("Cancel Transfer") { MusicTransfer.shared.cancel(device) }
                     }
                 }.padding(8)
+                #endif
+                }
+                #if canImport(AppKitBackend)
+                // The content makes room for the sidebar, which fills the panel's left side.
+                .padding(.leading, sidebarOpen ? sidebarPoints : 0)
+                .background(WindowBackground())
+                .cornerRadius(floatingPanelRadius)
+                .padding(.trailing, floatingPanelMargin)
+                .padding(.bottom, floatingPanelMargin)
+                #endif
             }
+            #if !canImport(AppKitBackend)
             .background(WindowBackground())
+            #endif
         } else {
             Text("Loading…").foregroundColor(.gray)
         }
@@ -855,6 +917,7 @@ struct DetailHeader<Controls: View>: View {
                 // them: the title follows the sidebar's edge as it slides.
                 TitleClearance()
                 HStack(spacing: 12) {
+                    #if !canImport(AppKitBackend)
                     VStack(alignment: .leading, spacing: 1) {
                         // One line each, truncated when the window is narrow, as in a Mac toolbar.
                         Text(title).font(.system(size: subtitle.isEmpty ? 15 : 13, weight: .bold)).lineLimit(1)
@@ -862,13 +925,16 @@ struct DetailHeader<Controls: View>: View {
                             Text(subtitle).font(.system(size: 11)).foregroundColor(.gray).lineLimit(1)
                         }
                     }
+                    #endif
                     Spacer()
                     controls
                 }
             }
             .padding(.horizontal, 10)
             .frame(height: titleBarHeight)
+            #if !canImport(AppKitBackend)
             Divider()
+            #endif
         }
     }
 }
@@ -886,11 +952,16 @@ struct ToolbarButton: View {
     var action: @MainActor @Sendable () -> Void = {}
 
     var body: some View {
+        #if canImport(AppKitBackend)
+        // The Mac toolbar keeps only the sidebar toggle and the search: no loose buttons.
+        EmptyView()
+        #else
         Button(action: action) {
             Symbol(name: icon, size: 20, pointSize: 15, tint: .primary)
         }
         .buttonStyle(.borderless)
         .titleBarControl()
+        #endif
     }
 }
 
@@ -899,12 +970,17 @@ struct SearchField: View {
     @Binding var text: String
 
     var body: some View {
+        #if canImport(AppKitBackend)
+        SearchAnchor(prompt: prompt, text: $text)
+            .frame(width: 240)
+        #else
         HStack(spacing: 4) {
             Symbol(name: "magnifyingglass", size: 16, pointSize: 12, tint: .secondary)
             TextField(prompt, text: $text)
         }
         .frame(width: 240)
         .titleBarControl()
+        #endif
     }
 }
 

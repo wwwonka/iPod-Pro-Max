@@ -17,6 +17,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Compilation multiplateforme]] : un `Package.swift`, trois OS
 - [[MediaKit]] : tags, pochettes, transcodage (rapide sur Mac, portable ailleurs)
 - [[DeviceKit]] : détection d'iPod, numéro de série USB, éjection
+- [[Renommer un volume FAT32]] : résultats des essais et piste de renommage différé à l’éjection
 - [[Package Swift]] : ce qui est en place, comment compiler et tester sur les 3 OS, mesures
 - [[CLI ipodpromax]] : synchroniser un iPod en ligne de commande, sur les 3 OS
 
@@ -37,6 +38,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Thème GTK Mac]] : la feuille de style qui donne le look Mac sur Windows et Linux
 - [[Manques SwiftCrossUI]] : ce qu'il faut ajouter au framework, et ce que le prototype a découvert
 - [[Composants natifs par plateforme]] : tableau, sidebar, icônes et fenêtre natifs, derrière une même vue Swift
+- [[Refonte verre macOS]] : cadre de verre, rail, sidebar redimensionnable, recherche native, mesures de mise en page
 - [[Sidebar translucide sous Linux]] : verre (compositeur), teinte du fond d'écran (GNOME) ou opaque, sans rien installer
 
 ## Distribution

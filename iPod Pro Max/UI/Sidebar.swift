@@ -9,10 +9,23 @@ enum ConnectedDeviceTitles {
 enum SidebarItem: Hashable {
     case device(String)
     case music, recentMusic, artists, albums, podcasts, audiobooks, videos, photos
+    /// Sections kept out of the rail, behind its "…" menu.
+    case games, contacts, calendars, notes, files
     case playlist(String)
 
     /// Library rows, in the order the SwiftUI app shows them by default.
     static let library: [SidebarItem] = [.music, .podcasts, .audiobooks, .videos, .photos]
+    /// Sections kept out of the rail, reached from its "…" menu.
+    static let otherSections: [SidebarItem] = [.games, .contacts, .calendars, .notes, .files]
+
+    /// The library section this page belongs to (the rail's button); nil for an iPod's page.
+    var media: SidebarItem? {
+        switch self {
+        case .music, .recentMusic, .artists, .albums, .playlist: .music
+        case .podcasts, .audiobooks, .videos, .photos, .games, .contacts, .calendars, .notes, .files: self
+        case .device: nil
+        }
+    }
 
     /// Title of a library row; devices and playlists are titled by their name.
     @MainActor var title: String {
@@ -26,6 +39,11 @@ enum SidebarItem: Hashable {
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
         case .photos: "Photos"
+        case .games: "Games"
+        case .contacts: "Contacts"
+        case .calendars: "Calendars"
+        case .notes: "Notes"
+        case .files: "Files"
         case .playlist: "Playlist"
         }
     }
@@ -41,6 +59,11 @@ enum SidebarItem: Hashable {
         case .audiobooks: "book"
         case .videos: "film"
         case .photos: "photo.on.rectangle.angled"
+        case .games: "gamecontroller"
+        case .contacts: "person.crop.circle"
+        case .calendars: "calendar"
+        case .notes: "note.text"
+        case .files: "folder"
         case .playlist: "music.note.list"
         }
     }
@@ -63,8 +86,12 @@ struct SidebarSection {
 
 /// The sidebar's sections, the same on every platform.
 @MainActor
-func sidebarSections(devices: [String], playlists: [Playlist]) -> [SidebarSection] {
-    [
+func sidebarSections(devices: [String], playlists: [Playlist], media: SidebarItem = .music) -> [SidebarSection] {
+    // Another library section: its own header and its pages, no playlists (those are music's).
+    if media != .music {
+        return [SidebarSection(title: media.title, rows: [.init(title: "All \(media.title)", icon: media.icon, item: media)])]
+    }
+    return [
         SidebarSection(
             title: "iPods",
             rows: devices.isEmpty

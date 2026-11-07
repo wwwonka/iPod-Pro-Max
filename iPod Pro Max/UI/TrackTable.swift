@@ -332,17 +332,36 @@ extension Array {
         }
     }
 
-    /// The window's own background color, following light and dark mode.
+    /// The main view's own surface: frosted glass, lighter than the sidebar's, following light and
+    /// dark mode. Blurs what is behind the window and keeps its state when another app comes forward.
     struct WindowBackground: NSViewRepresentable {
-        func makeNSView(context: Context) -> NSBox {
-            let box = NSBox()
-            box.boxType = .custom
-            box.borderWidth = 0
-            box.fillColor = .windowBackgroundColor
-            return box
+        func makeNSView(context: Context) -> FrostedSurface { FrostedSurface() }
+        func updateNSView(_ view: FrostedSurface, context: Context) {}
+    }
+
+    final class FrostedSurface: NSView {
+        private let glass = NSVisualEffectView()
+        private let tint = NSBox()
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            glass.material = .underWindowBackground
+            glass.blendingMode = .behindWindow
+            glass.state = .active
+            glass.autoresizingMask = [.width, .height]
+            addSubview(glass)
+            tint.boxType = .custom
+            tint.borderWidth = 0
+            tint.fillColor = NSColor.windowBackgroundColor.withAlphaComponent(0.7)
+            tint.autoresizingMask = [.width, .height]
+            addSubview(tint)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func layout() {
+            super.layout()
+            glass.frame = bounds
+            tint.frame = bounds
         }
 
-        func updateNSView(_ box: NSBox, context: Context) {}
     }
 
     /// The iPod page and the surface exposed while it slides use exactly the same color.

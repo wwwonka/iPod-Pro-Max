@@ -214,7 +214,7 @@
                 typealias M = SidebarMetrics
                 let cell = WinUI.Grid()
                 cell.margin = Thickness(left: M.selectionInset, top: 0, right: M.selectionInset, bottom: 0)
-                cell.padding = Thickness(left: M.iconX - M.selectionInset, top: 0, right: 4, bottom: 0)
+                cell.padding = Thickness(left: M.iconX - M.selectionInset, top: 0, right: M.ejectTrailing, bottom: 0)
                 cell.cornerRadius = CornerRadius(topLeft: M.selectionRadius, topRight: M.selectionRadius,
                                                  bottomRight: M.selectionRadius, bottomLeft: M.selectionRadius)
                 for width in [GridLength(value: M.textX - M.iconX, gridUnitType: .pixel), GridLength(value: 1, gridUnitType: .star),
@@ -469,7 +469,7 @@
             super.init()
             width = SidebarMetrics.ejectSize
             height = SidebarMetrics.ejectSize
-            margin = Thickness(left: 2, top: 0, right: SidebarMetrics.ejectTrailing - 4, bottom: 0)
+            margin = Thickness(left: 2, top: 0, right: 0, bottom: 0)
             verticalAlignment = .center
             // Transparent rather than none, so the whole square gets the pointer.
             let clear = SolidColorBrush()

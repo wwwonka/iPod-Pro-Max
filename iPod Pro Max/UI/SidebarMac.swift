@@ -17,6 +17,8 @@
         @Binding var selection: SidebarItem
         @Binding var busyDevices: Set<String>
         var onEject: (SidebarItem) -> Void = { _ in }
+        /// The "+" at the main section's header: adds to that library (a folder, a podcast…).
+        var onAdd: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
 
@@ -44,6 +46,10 @@
             let scroll = NSScrollView()
             scroll.documentView = outline
             scroll.drawsBackground = false
+            // Nothing opaque or light between the list and the dark glass behind it.
+            scroll.contentView.drawsBackground = false
+            scroll.backgroundColor = .clear
+            outline.backgroundColor = .clear
             scroll.hasVerticalScroller = true
             scroll.autohidesScrollers = true
             // Starts below the toolbar the traffic lights sit in, as SwiftUI's sidebar does.
@@ -59,10 +65,15 @@
             let coordinator = context.coordinator
             coordinator.onSelect = { item in selection = item }
             coordinator.onEject = onEject
-            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name }
+            coordinator.onAdd = onAdd
+            // An iPod's page keeps the list of the section the user came from.
+            if let media = selection.media { coordinator.media = media }
+            let deviceKey: [String] = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") }
+            let playlistKey: [String] = playlists.map { $0.id + $0.name }
+            let key: [String] = deviceKey + ["|"] + playlistKey + ["|", coordinator.media.title]
             if key != coordinator.key {
                 coordinator.key = key
-                coordinator.sections = Self.sections(devices: devices, playlists: playlists)
+                coordinator.sections = Self.sections(devices: devices, playlists: playlists, media: coordinator.media)
                 outline.reloadData()
                 outline.expandItem(nil, expandChildren: true)
             }
@@ -76,25 +87,31 @@
 
         /// Group rows are what NSOutlineView collapses: on hover they show a chevron at the right,
         /// and the section slides closed or open.
-        private static func sections(devices: [String], playlists: [Playlist]) -> [Node] {
-            sidebarSections(devices: devices, playlists: playlists).map { section in
+        private static func sections(devices: [String], playlists: [Playlist], media: SidebarItem) -> [Node] {
+            // The iPods live at the rail's bottom, not in this list.
+            let nodes = sidebarSections(devices: devices, playlists: playlists, media: media).filter { $0.title != "iPods" }.map { section in
                 Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item, ejectable: $0.ejectable) })
             }
+            nodes.first?.isMain = true
+            return nodes
         }
 
-        /// The sidebar's translucent material (the desktop blurred behind the window), filled with
-        /// the list except during a slide: then the list keeps the open width, pinned to the right
-        /// edge and clipped.
-        final class SlidingContainer: NSVisualEffectView {
+        /// Holds the list, filling it. The sidebar's glass card is drawn behind it by the column.
+        final class SlidingContainer: NSView {
             override init(frame: NSRect) {
                 super.init(frame: frame)
-                material = .sidebar
-                blendingMode = .behindWindow
-                state = .followsWindowActiveState
                 clipsToBounds = true
+                // The dark glass behind makes the list dark in either appearance.
+                appearance = NSAppearance(named: .darkAqua)
             }
 
             required init?(coder: NSCoder) { fatalError() }
+
+            /// Tells the window chrome which view to slide.
+            override func viewDidMoveToSuperview() {
+                super.viewDidMoveToSuperview()
+                if superview != nil { MainActor.assumeIsolated { MacChrome.shared.sidebarAnchor = self } }
+            }
 
             override func resizeSubviews(withOldSize oldSize: NSSize) {
                 let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
@@ -108,6 +125,8 @@
             let item: SidebarItem?
             let ejectable: Bool
             let children: [Node]
+            /// The library's own section, at the top: it can't be collapsed, and has a "+" instead.
+            var isMain = false
 
             init(title: String, icon: String? = nil, item: SidebarItem? = nil, ejectable: Bool = false, children: [Node] = []) {
                 self.title = title
@@ -126,6 +145,36 @@
             var dimmed = false { didSet { updateTint() } }
             /// iPod rows only.
             var ejectButton: EjectButton?
+            /// A section's name: big and white, in a label of its own. The source list restyles the
+            /// text field of a group row as a small gray caption, whatever is set on it.
+            var headerLabel: NSTextField?
+            /// The main section's "+".
+            var plusButton: NSButton?
+            var onPlus: () -> Void = {}
+            @objc func plusClicked(_ sender: NSButton) { onPlus() }
+
+            // The "+" shows while the pointer is on the section's header, fading in and out.
+            private var headerTracking: NSTrackingArea?
+            override func updateTrackingAreas() {
+                super.updateTrackingAreas()
+                if let headerTracking { removeTrackingArea(headerTracking) }
+                guard plusButton != nil else { return }
+                let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+                addTrackingArea(area)
+                headerTracking = area
+            }
+            override func mouseEntered(with event: NSEvent) { fadePlus(to: 1) }
+            override func mouseExited(with event: NSEvent) { fadePlus(to: 0) }
+            private func fadePlus(to alpha: CGFloat) {
+                guard let plus = plusButton, !plus.isHidden else { return }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = alpha == 0 ? 0.3 : 0.2
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    plus.animator().alphaValue = alpha
+                }
+            }
+            /// A reused cell starts without the "+".
+            func resetPlus() { plusButton?.alphaValue = 0 }
 
             override var backgroundStyle: NSView.BackgroundStyle {
                 didSet {
@@ -145,8 +194,12 @@
         final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
             var sections: [Node] = []
             var key: [String] = []
+            var media: SidebarItem = .music
             var onSelect: (SidebarItem) -> Void = { _ in }
             var onEject: (SidebarItem) -> Void = { _ in }
+            var onAdd: (SidebarItem) -> Void = { _ in }
+            /// Libraries that have something to add.
+            private static let addable: Set<SidebarItem> = [.music, .podcasts, .audiobooks]
             private var isSyncingSelection = false
 
             // Drops are decided by `MusicDropOutlineView` itself (it answers the drag events, see there): the
@@ -178,8 +231,22 @@
                 (item as? Node)?.isGroup ?? false
             }
 
+            /// The library's own section stays open, with no disclosure arrow.
+            func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
+                (item as? Node)?.isMain != true
+            }
+
+            func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
+                (item as? Node)?.isMain != true
+            }
+
             func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
                 (item as? Node)?.isGroup ?? false
+            }
+
+            /// Room for the big section names.
+            func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+                (item as? Node)?.isGroup == true ? 38 : max(outlineView.rowHeight, SidebarMetrics.rowHeight)
             }
 
             func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -195,13 +262,20 @@
                     eject.action = { [weak self] in self?.onEject(item) }
                     if case .device(let id) = item { eject.isBusy = busyDevices.contains(id) }
                 }
-                cell.textField?.stringValue = node.title
+                cell.textField?.stringValue = node.isGroup ? "" : node.title
+                if node.isGroup { (cell as? SidebarCell)?.headerLabel?.stringValue = node.title }
+                if let plus = (cell as? SidebarCell)?.plusButton {
+                    plus.isHidden = !(node.isMain && Self.addable.contains(media))
+                    (cell as? SidebarCell)?.resetPlus()
+                    let target = media
+                    (cell as? SidebarCell)?.onPlus = { [weak self] in self?.onAdd(target) }
+                }
                 if let icon = node.icon {
                     cell.imageView?.image = systemSymbol(icon)
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
                 let dimmed = !node.isGroup && node.item == nil
-                cell.textField?.textColor = dimmed ? .secondaryLabelColor : nil
+                if !node.isGroup { cell.textField?.textColor = dimmed ? .secondaryLabelColor : nil }
                 (cell as? SidebarCell)?.dimmed = dimmed
                 return cell
             }
@@ -249,6 +323,34 @@
                 }
                 if group {
                     constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2))
+                    let label = NSTextField(labelWithString: "")
+                    label.font = .systemFont(ofSize: 17, weight: .bold)
+                    label.textColor = .white
+                    label.lineBreakMode = .byTruncatingTail
+                    label.translatesAutoresizingMaskIntoConstraints = false
+                    cell.addSubview(label)
+                    cell.headerLabel = label
+                    let plus = NSButton(image: systemSymbol("plus.circle", description: "Add", pointSize: 15) ?? NSImage(), target: nil, action: nil)
+                    plus.isBordered = false
+                    plus.contentTintColor = .secondaryLabelColor
+                    plus.toolTip = "Add"
+                    plus.isHidden = true
+                    plus.target = cell
+                    plus.action = #selector(SidebarCell.plusClicked(_:))
+                    plus.translatesAutoresizingMaskIntoConstraints = false
+                    cell.addSubview(plus)
+                    cell.plusButton = plus
+                    constraints += [
+                        plus.widthAnchor.constraint(equalToConstant: 24),
+                        plus.heightAnchor.constraint(equalToConstant: 24),
+                        plus.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        plus.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                    ]
+                    constraints += [
+                        label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                        label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -24),
+                    ]
                 } else {
                     let image = NSImageView()
                     image.translatesAutoresizingMaskIntoConstraints = false

@@ -41,6 +41,15 @@ enum TitleBarButtons {
 let titleBarControlsWidth = TitleBarButtons.width
 /// Height of the title area: dragging it, outside its controls, moves the window.
 let titleBarHeight = 52.0
+/// The rail's width: as wide as the title bar is tall, like a Finder toolbar's height.
+let mediaRailWidth = titleBarHeight
+/// The main view floats over the window's glass as a rounded panel all round, with a thin margin of glass at its right and bottom.
+/// The margin of glass left at the window's right and bottom edges.
+let floatingPanelMargin = 3
+/// The system's window corner radius: 16 pt up to macOS 15, much larger from macOS 26.
+let windowCornerRadius = ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)) ? 26 : 16
+/// Concentric with the window's corner: the same distance (the margin) from it all the way round.
+let floatingPanelRadius = windowCornerRadius - floatingPanelMargin
 
 /// Room the detail header keeps for the traffic lights and the toggle where the sidebar no longer
 /// covers them.

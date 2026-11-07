@@ -284,7 +284,7 @@
             .ippm-collapsed .ippm-chevron image { -gtk-icon-transform: rotate(-90deg); }
             .ippm-list, .ippm-list > row { background: none; padding: 0; margin: 0; min-height: 0; border: none; box-shadow: none; outline: none; }
             .ippm-cell { min-height: \(Int(M.rowHeight))px; margin: 0 \(Int(M.selectionInset))px;
-                padding: 0 \(Int(M.iconX - M.selectionInset))px; border-radius: \(Int(M.selectionRadius))px; }
+                padding: 0 \(Int(M.ejectTrailing))px 0 \(Int(M.iconX - M.selectionInset))px; border-radius: \(Int(M.selectionRadius))px; }
             .ippm-text { font-size: \(Int(M.rowFontSize))px; }
             .ippm-icon { min-width: \(Int(M.iconWidth))px; color: #007AFF; }
             .ippm-dark .ippm-icon { color: #0A84FF; }

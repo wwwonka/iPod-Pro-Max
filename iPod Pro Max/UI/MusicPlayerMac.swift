@@ -24,7 +24,7 @@ final class GlassPlayerView: NSVisualEffectView {
     private var artTask: Task<Void, Never>?
     override init(frame: NSRect) {
         super.init(frame: frame)
-        material = .popover; blendingMode = .withinWindow; state = .followsWindowActiveState
+        material = .popover; blendingMode = .withinWindow; state = .active
         wantsLayer = true
         layer?.cornerRadius = 22
         layer?.borderWidth = 0.5
