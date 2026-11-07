@@ -57,7 +57,7 @@ func titleClearance(sidebarWidth width: Double) -> Double {
     max(0, titleBarControlsWidth - width)
 }
 
-/// One slide of the sidebar: 0.25 s with an ease-in-out curve, like SwiftUI's toggle. Also counts
+/// One slide of the sidebar: 0.25 s, ease-out when it opens and ease-in when it closes. Also counts
 /// frames and layout time for the `[bench]` line.
 struct SidebarSlide {
     /// `IPPM_SLIDE_SECONDS=<s>` slows it down, to look at the frames.
@@ -81,7 +81,8 @@ struct SidebarSlide {
     /// The sidebar's width `elapsed` seconds in, and whether the slide is over.
     func width(after elapsed: Double) -> (width: Double, done: Bool) {
         let t = min(1, elapsed / duration)
-        let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        // Opening eases out (it arrives), closing eases in (it leaves).
+        let eased = to > from ? 1 - pow(1 - t, 3) : t * t * t
         return ((from + (to - from) * eased).rounded(), t >= 1)
     }
 

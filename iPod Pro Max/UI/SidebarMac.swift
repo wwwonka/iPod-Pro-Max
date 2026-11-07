@@ -64,6 +64,8 @@
                   let outline = scroll.documentView as? NSOutlineView else { return }
             let coordinator = context.coordinator
             coordinator.onSelect = { item in selection = item }
+            // An iPod's page has no sidebar: it goes with the page, in this same update pass.
+            if case .device = selection { MacChrome.shared.setSidebarAvailable(false) } else { MacChrome.shared.setSidebarAvailable(true) }
             coordinator.onEject = onEject
             coordinator.onAdd = onAdd
             // An iPod's page keeps the list of the section the user came from.
@@ -139,6 +141,11 @@
             var isGroup: Bool { icon == nil }
         }
 
+        /// An icon the sidebar's vibrancy leaves alone, so its accent color isn't washed out.
+        final class FlatImageView: NSImageView {
+            override var allowsVibrancy: Bool { false }
+        }
+
         /// Icons in the accent color, white on the selected row, gray when dimmed: what SwiftUI's
         /// sidebar `Label` does.
         final class SidebarCell: NSTableCellView {
@@ -169,7 +176,7 @@
                 guard let plus = plusButton, !plus.isHidden else { return }
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = alpha == 0 ? 0.3 : 0.2
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    context.timingFunction = CAMediaTimingFunction(name: alpha == 0 ? .easeIn : .easeOut)
                     plus.animator().alphaValue = alpha
                 }
             }
@@ -183,11 +190,23 @@
                 }
             }
 
-            private func updateTint() {
-                imageView?.contentTintColor =
+            func updateTint() {
+                let color: NSColor =
                     dimmed ? .secondaryLabelColor
                     : backgroundStyle == .emphasized ? .alternateSelectedControlTextColor
                     : .controlAccentColor
+                imageView?.contentTintColor = color
+                // The source list overrides a template image's tint with its own gray, so the symbol
+                // carries its color itself (a palette configuration the list can't restyle).
+                if #available(macOS 12, *), let image = imageView?.image,
+                   let tinted = image.withSymbolConfiguration(.init(paletteColors: [color])) {
+                    imageView?.image = tinted
+                }
+            }
+
+            override func viewDidChangeEffectiveAppearance() {
+                super.viewDidChangeEffectiveAppearance()
+                updateTint()
             }
         }
 
@@ -277,6 +296,7 @@
                 let dimmed = !node.isGroup && node.item == nil
                 if !node.isGroup { cell.textField?.textColor = dimmed ? .secondaryLabelColor : nil }
                 (cell as? SidebarCell)?.dimmed = dimmed
+                (cell as? SidebarCell)?.updateTint()
                 return cell
             }
 
@@ -352,7 +372,7 @@
                         label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -24),
                     ]
                 } else {
-                    let image = NSImageView()
+                    let image = FlatImageView()
                     image.translatesAutoresizingMaskIntoConstraints = false
                     cell.addSubview(image)
                     cell.imageView = image

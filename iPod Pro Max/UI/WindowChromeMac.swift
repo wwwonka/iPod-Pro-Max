@@ -52,6 +52,8 @@
         /// Tells the app the sidebar's width while its edge is dragged.
         var onSidebarWidth: ((Int) -> Void)?
         private var sidebarOpen = true
+        /// Open, and the page has a sidebar.
+        private var sidebarShown: Bool { sidebarOpen && sidebarAvailable }
         private var slideRevision = 0
         private static let toggleID = NSToolbarItem.Identifier("toggleSidebar")
         private static let searchID = NSToolbarItem.Identifier("search")
@@ -93,6 +95,8 @@
             window.toolbar = toolbar
             self.toolbar = toolbar
             installFindMenuItem()
+            installFindShortcut(window)
+            observeWindowWidthForSearch(window)
             shapeAreaWhenReady()
             if #available(macOS 11, *) { window.toolbarStyle = .unified }
             snapshotIfRequested(window)
@@ -151,6 +155,7 @@
         func setSearch(owner: AnyObject, visible: Bool, prompt: String, text: String, onChange: @escaping (String) -> Void) {
             // The system's search item needs macOS 11; before it, pages have no search field.
             guard #available(macOS 11.0, *) else { return }
+            installFindMenuItem()
             // The item is part of the toolbar from the start (inserted later, it never showed); a page
             // without a search hides it.
             let item = makeSearchItem()
@@ -160,22 +165,85 @@
                 let field = item.searchField
                 if field.placeholderString != prompt { field.placeholderString = prompt }
                 if field.stringValue != text { field.stringValue = text }
-                if #available(macOS 15.0, *) { item.isHidden = false }
+                updateSearchVisibility()
             } else if searchOwner === owner {
                 searchOwner = nil
-                if #available(macOS 15.0, *) { item.isHidden = true }
+                updateSearchVisibility()
             }
+        }
+
+        // Like the Finder's: in a narrow window the search field gives way to a magnifier button, and
+        // a click on it brings the field back (focused) until it loses focus empty.
+        private static let searchButtonID = NSToolbarItem.Identifier("searchButton")
+        private static let searchCollapseWidth: CGFloat = 900
+        private var searchButtonItem: NSToolbarItem?
+        private var searchExpanded = false
+        private var searchResizeObserver: NSObjectProtocol?
+
+        private var searchCollapsed: Bool {
+            guard let window, window.frame.width < Self.searchCollapseWidth else { return false }
+            return !searchExpanded
+        }
+
+        /// Shows the field, the magnifier, or neither, for the page and the window's width.
+        private func updateSearchVisibility() {
+            // Hiding a toolbar item needs macOS 15; before it the field always shows.
+            guard #available(macOS 15.0, *) else { return }
+            let hasSearch = searchOwner != nil
+            if let window, window.frame.width >= Self.searchCollapseWidth { searchExpanded = false }
+            searchItem?.isHidden = !hasSearch || searchCollapsed
+            searchButtonItem?.isHidden = !(hasSearch && searchCollapsed)
+        }
+
+        private func observeWindowWidthForSearch(_ window: NSWindow) {
+            guard searchResizeObserver == nil else { return }
+            searchResizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateSearchVisibility() }
+            }
+        }
+
+        @objc func expandSearch(_ sender: Any?) {
+            searchExpanded = true
+            updateSearchVisibility()
+            // The field has to be on screen before it can take the focus.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    if #available(macOS 11.0, *) { (self?.searchItem as? NSSearchToolbarItem)?.beginSearchInteraction() }
+                }
+            }
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard searchExpanded, let field = notification.object as? NSSearchField, field.stringValue.isEmpty else { return }
+            searchExpanded = false
+            updateSearchVisibility()
         }
 
         /// ⌘F: puts the cursor in the search field (shown only on the pages that search).
         @available(macOS 11.0, *)
         @objc func findInPage(_ sender: Any?) {
+            if searchCollapsed { expandSearch(nil); return }
             (searchItem as? NSSearchToolbarItem)?.beginSearchInteraction()
         }
 
         @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
             // Only "Find…" is ours to validate here; it is available while a page has a search field.
             item.keyEquivalent == "f" ? searchOwner != nil : true
+        }
+
+        private var findMonitor: Any?
+
+        /// ⌘F works whatever the menus hold (the Edit menu can be rebuilt after we add to it): the key
+        /// is caught here while a page with a search field is shown, and selects the toolbar's search.
+        private func installFindShortcut(_ window: NSWindow) {
+            guard findMonitor == nil else { return }
+            findMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
+                guard let self, let window, event.window === window,
+                      event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                      event.charactersIgnoringModifiers == "f", self.searchOwner != nil else { return event }
+                if #available(macOS 11.0, *) { MainActor.assumeIsolated { self.findInPage(nil) } }
+                return nil
+            }
         }
 
         /// Adds "Find…" ⌘F to the Edit menu, once the app's menus exist.
@@ -200,17 +268,29 @@
         // MARK: Toolbar
 
         func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            [Self.toggleID, .flexibleSpace, Self.searchID]
+            [Self.toggleID, .flexibleSpace, Self.searchButtonID, Self.searchID]
         }
 
         func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            [Self.toggleID, .flexibleSpace, Self.searchID]
+            [Self.toggleID, .flexibleSpace, Self.searchButtonID, Self.searchID]
         }
 
         func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                      willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem?
         {
             if id == Self.searchID { if #available(macOS 11.0, *) { return makeSearchItem() } else { return nil } }
+            if id == Self.searchButtonID {
+                let item = NSToolbarItem(itemIdentifier: id)
+                item.image = systemSymbol("magnifyingglass", description: "Search")
+                item.label = "Search"
+                item.toolTip = "Search"
+                item.isBordered = true
+                item.target = self
+                item.action = #selector(expandSearch(_:))
+                if #available(macOS 15.0, *) { item.isHidden = true }
+                searchButtonItem = item
+                return item
+            }
             guard id == Self.toggleID else { return nil }
             let item = NSToolbarItem(itemIdentifier: id)
             item.image = systemSymbol("sidebar.left", description: "Show or hide the sidebar")
@@ -219,6 +299,8 @@
             item.isBordered = true
             item.target = self
             item.action = #selector(toggleSidebar)
+            item.isEnabled = sidebarAvailable
+            toggleItem = item
             return item
         }
 
@@ -277,7 +359,7 @@
             let y = (area?.isFlipped ?? false) ? top : margin
             handle.frame = NSRect(x: column.frame.maxX - 4, y: y, width: 8, height: column.frame.height - top - margin)
             // Kept while a drag is under way, so the gesture can reopen what it closed.
-            handle.isHidden = !sidebarOpen && !handle.tracking
+            handle.isHidden = (!sidebarOpen || !sidebarAvailable) && !handle.tracking
             // Always the topmost sibling, whatever the app added since.
             if let area, area.subviews.last !== handle { area.addSubview(handle, positioned: .above, relativeTo: nil) }
         }
@@ -299,7 +381,7 @@
         private var liveFixScheduled = false
 
         func dragSidebarEdge(to x: CGFloat) {
-            if sidebarOpen {
+            if sidebarShown {
                 if x < Self.snapShutBelow { setSidebarAtOnce(open: false); applyLiveWidth(); return }
             } else {
                 guard x >= Self.snapOpenAbove else { return }
@@ -326,15 +408,15 @@
         /// Puts the sidebar's views and the content where the drag left them.
         private func applyLiveWidth() {
             guard let live = liveWidth, let column = sidebarColumn(), let content = contentContainer else { return }
-            if sidebarOpen { resizeSidebarViews(to: live); placeResizeHandle() }
+            if sidebarShown { resizeSidebarViews(to: live); placeResizeHandle() }
             content.wantsLayer = true
-            let shift = (sidebarOpen ? live : 0) - content.frame.minX
+            let shift = (sidebarShown ? live : 0) - content.frame.minX
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             content.layer?.setAffineTransform(abs(shift) < 0.5 ? .identity : CGAffineTransform(translationX: shift, y: 0))
             CATransaction.commit()
             // The app's layout has caught up: nothing left to hold.
-            if abs(shift) < 0.5, !(resizeHandle?.tracking ?? false), !sidebarOpen || abs(column.frame.width - live) < 0.5 {
+            if abs(shift) < 0.5, !(resizeHandle?.tracking ?? false), !sidebarShown || abs(column.frame.width - live) < 0.5 {
                 liveWidth = nil
                 return
             }
@@ -432,8 +514,46 @@
             }
         }
 
+        /// Pages with nothing to navigate (an iPod's page, for now) have no sidebar and no toggle.
+        private var sidebarAvailable = true
+        private weak var toggleItem: NSToolbarItem?
+
+        private var wantsSidebar = true
+
+        /// True once the sidebar's column is laid out (the same test `shapeAreaWhenReady` waits for):
+        /// before that, `sidebarColumn()` can't tell the column from the window's other views.
+        private func sidebarIsLaidOut() -> Bool {
+            guard let column = sidebarColumn(), let area = column.superview else { return false }
+            return column.frame.width > 150 && column.frame.width <= sidebarWidthRange.upperBound + 10
+                && area.frame.width > 500 && abs(area.frame.minX - CGFloat(mediaRailWidth)) < 1
+        }
+
+        func setSidebarAvailable(_ available: Bool, attempt: Int = 0) {
+            if attempt == 0 { wantsSidebar = available }
+            guard wantsSidebar == available, available != sidebarAvailable else { return }
+            // Taking the sidebar away waits until it exists (an iPod can be the first page shown).
+            if !available, !sidebarIsLaidOut() {
+                guard attempt < 40 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    MainActor.assumeIsolated { self?.setSidebarAvailable(available, attempt: attempt + 1) }
+                }
+                return
+            }
+            // No slide either way: the column is simply there or not with the page, in the same
+            // update pass as the content's new padding (the app calls this from the sidebar's own
+            // update). The user's open/closed choice (`sidebarOpen`) is left alone.
+            sidebarAvailable = available
+            if let column = sidebarColumn() {
+                column.isHidden = !(available && sidebarOpen)
+                if let list = sidebarAnchor?.layer { list.removeAnimation(forKey: "sidebarFade"); list.opacity = column.isHidden ? 0 : 1 }
+            }
+            placeResizeHandle()
+            if #available(macOS 15.0, *) { toggleItem?.isHidden = !available }
+            toggleItem?.isEnabled = available
+        }
+
         @objc func toggleSidebar() {
-            guard let column = sidebarColumn() else { return }
+            guard sidebarAvailable, let column = sidebarColumn() else { return }
             sidebarOpen.toggle()
             let opening = sidebarOpen
             slideRevision += 1
@@ -461,7 +581,8 @@
             }
 
             let duration = ProcessInfo.processInfo.environment["IPPM_SLIDE_SECONDS"].flatMap(Double.init) ?? 0.3
-            let easing = CAMediaTimingFunction(name: .easeInEaseOut)
+            // Arriving eases out, leaving eases in.
+            let easing = CAMediaTimingFunction(name: opening ? .easeOut : .easeIn)
             let startTime = CACurrentMediaTime()
             func slide(_ layer: CALayer?, from: CGFloat, to: CGFloat, key: String, begin: CFTimeInterval? = nil) {
                 guard let layer else { return }

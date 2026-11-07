@@ -54,3 +54,7 @@ Une tentative d’enregistrement Instruments « Animation Hitches » a produit u
 Les essais audio réels ont passé sur Mac, Fedora ARM64 et Windows 11 ARM64. Les builds Linux x86-64/ARM64 et Windows ARM64 sont vérifiés séparément des essais macOS. Dans Windows, exécuter le binaire depuis le disque local de la VM : le lancement depuis le partage UNC Mac peut planter Foundation avant même la création de la fenêtre.
 
 Aucun nouveau moteur de synchronisation iPod ni récupération de paroles n’est ajouté par cette refonte.
+
+## Voir aussi
+
+- [[Rail de médias macOS]] : comportement détaillé du rail (états, noms de sections, extras épinglables, recherche repliable).

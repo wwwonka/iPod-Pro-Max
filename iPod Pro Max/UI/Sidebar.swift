@@ -27,6 +27,23 @@ enum SidebarItem: Hashable {
         }
     }
 
+    /// The section's name in the rail's labels and in the saved order.
+    var railName: String {
+        switch self {
+        case .music: "Music"
+        case .podcasts: "Podcasts"
+        case .audiobooks: "Audiobooks"
+        case .videos: "Videos"
+        case .photos: "Photos"
+        case .games: "Games"
+        case .contacts: "Contacts"
+        case .calendars: "Calendars"
+        case .notes: "Notes"
+        case .files: "Files"
+        default: "Section"
+        }
+    }
+
     /// Title of a library row; devices and playlists are titled by their name.
     @MainActor var title: String {
         switch self {

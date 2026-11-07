@@ -74,6 +74,7 @@ struct ContentView: View {
         }
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
+
         .task {
             #if canImport(AppKitBackend)
             MacChrome.shared.onSidebarChange = { open in sidebarOpen = open }
@@ -204,6 +205,11 @@ struct ContentView: View {
             }.padding(24).frame(width: 340)
         }
         .alert($ejectError) {}
+    }
+
+    private var isDevicePage: Bool {
+        if case .device = selection { return true }
+        return false
     }
 
     private var navigationSelection: Binding<SidebarItem> {
@@ -551,8 +557,6 @@ struct ContentView: View {
                     default: break
                     }
                 })
-            Button("New Playlist…") { playlistEditorName = ""; playlistEditorVisible = true }
-                .padding(12)
         }
         #if canImport(AppKitBackend)
         // Dark glass in the main view's shape: below the top band, flush with the window's bottom.
@@ -690,7 +694,7 @@ struct ContentView: View {
                 }
                 #if canImport(AppKitBackend)
                 // The content makes room for the sidebar, which fills the panel's left side.
-                .padding(.leading, sidebarOpen ? sidebarPoints : 0)
+                .padding(.leading, sidebarOpen && !isDevicePage ? sidebarPoints : 0)
                 .background(WindowBackground())
                 .cornerRadius(floatingPanelRadius)
                 .padding(.trailing, floatingPanelMargin)
