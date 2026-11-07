@@ -86,19 +86,22 @@
             window.isOpaque = false
             window.backgroundColor = .clear
             installWindowGlass(on: window)
-            // A unified toolbar gives the 52 pt title bar SwiftUI uses: traffic lights centered
+            // A unified toolbar gives a compact 44 pt title bar: traffic lights centered
             // on the header row, the toggle right after them.
             let toolbar = NSToolbar(identifier: "main")
             toolbar.delegate = self
             toolbar.displayMode = .iconOnly
             toolbar.allowsUserCustomization = false
+            // The compact style would draw small controls: the regular size, as in a 52 pt bar.
+            toolbar.sizeMode = .regular
             window.toolbar = toolbar
             self.toolbar = toolbar
             installFindMenuItem()
             installFindShortcut(window)
             observeWindowWidthForSearch(window)
             shapeAreaWhenReady()
-            if #available(macOS 11, *) { window.toolbarStyle = .unified }
+            if #available(macOS 11, *) { window.toolbarStyle = .unifiedCompact }
+            keepTrafficLightsCentered(in: window)
             snapshotIfRequested(window)
             // `IPPM_FRONT=1`: floats the window above everything, to screenshot it over the desktop.
             if ProcessInfo.processInfo.environment["IPPM_FRONT"] != nil {
@@ -127,6 +130,76 @@
             frameView.addSubview(glass, positioned: .below, relativeTo: content)
         }
 
+        // MARK: Traffic lights
+
+        private var trafficLightObservers: [NSObjectProtocol] = []
+        /// Lays the title area out again (centering, sizes): after a toolbar item shows or hides.
+        private var relayoutTitleArea: (() -> Void)?
+        private func scheduleTitleAreaRelayout() {
+            DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.relayoutTitleArea?() } }
+        }
+
+        /// The compact toolbar is a little shorter than the title area, which would leave the
+        /// traffic lights above its middle: they are moved down to the title area's center, and
+        /// put back there whenever AppKit lays the title bar out again (resize, full screen).
+        private func keepTrafficLightsCentered(in window: NSWindow) {
+            let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
+            // The container of the title bar and the toolbar is as tall as the compact toolbar (38);
+            // it is made as tall as the title area, so the toolbar's items center on it too.
+            let container = buttons.first?.superview?.superview
+            container?.postsFrameChangedNotifications = true
+            func center() {
+                guard let frameView = window.contentView?.superview else { return }
+                if let container {
+                    let height = CGFloat(titleBarHeight)
+                    let frame = NSRect(x: 0, y: frameView.bounds.height - height, width: frameView.bounds.width, height: height)
+                    if container.frame != frame { container.frame = frame }
+                    // The toolbar itself stays 38 tall inside it: it is stretched as well.
+                    if let titlebar = buttons.first?.superview,
+                       let toolbarView = titlebar.subviews.first(where: { String(describing: type(of: $0)) == "NSToolbarView" }) {
+                        let toolbarFrame = NSRect(x: 0, y: titlebar.bounds.height - height, width: titlebar.bounds.width, height: height)
+                        if toolbarView.frame != toolbarFrame { toolbarView.frame = toolbarFrame }
+                        func enlarge(_ view: NSView) {
+                            if #available(macOS 11, *), let control = view as? NSButton, control.controlSize != .large { control.controlSize = .large }
+                            view.subviews.forEach(enlarge)
+                        }
+                        enlarge(toolbarView)
+                    }
+                }
+                let target = frameView.bounds.height - CGFloat(titleBarHeight) / 2
+                for button in buttons {
+                    let current = button.convert(NSPoint(x: 0, y: button.bounds.midY), to: frameView).y
+                    let delta = target - current
+                    guard abs(delta) > 0.25, let parent = button.superview else { continue }
+                    let moved = parent.convert(NSPoint(x: 0, y: current + delta), from: frameView)
+                    let was = parent.convert(NSPoint(x: 0, y: current), from: frameView)
+                    button.setFrameOrigin(NSPoint(x: button.frame.minX, y: button.frame.minY + (moved.y - was.y)))
+                }
+            }
+            for button in buttons {
+                button.postsFrameChangedNotifications = true
+                trafficLightObservers.append(NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification, object: button, queue: .main) { _ in
+                        MainActor.assumeIsolated { center() }
+                    })
+            }
+            if let container {
+                trafficLightObservers.append(NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification, object: container, queue: .main) { _ in
+                        MainActor.assumeIsolated { center() }
+                    })
+            }
+            for name in [NSWindow.didResizeNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification] {
+                trafficLightObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: window, queue: .main) { _ in
+                        MainActor.assumeIsolated { center() }
+                    })
+            }
+            relayoutTitleArea = center
+            center()
+            DispatchQueue.main.async { center() }
+        }
+
         // MARK: Search
 
         // The page's search lives in the toolbar as the system's own search item, the Finder's. The
@@ -144,6 +217,7 @@
             item.searchField.delegate = self
             item.searchField.sendsSearchStringImmediately = true
             item.preferredWidthForSearchField = 240
+            item.searchField.controlSize = .large
             item.label = "Search"
             // Hidden until a page that searches claims it.
             if #available(macOS 15.0, *) { item.isHidden = true }
@@ -193,6 +267,7 @@
             if let window, window.frame.width >= Self.searchCollapseWidth { searchExpanded = false }
             searchItem?.isHidden = !hasSearch || searchCollapsed
             searchButtonItem?.isHidden = !(hasSearch && searchCollapsed)
+            scheduleTitleAreaRelayout()
         }
 
         private func observeWindowWidthForSearch(_ window: NSWindow) {
@@ -548,7 +623,7 @@
                 if let list = sidebarAnchor?.layer { list.removeAnimation(forKey: "sidebarFade"); list.opacity = column.isHidden ? 0 : 1 }
             }
             placeResizeHandle()
-            if #available(macOS 15.0, *) { toggleItem?.isHidden = !available }
+            if #available(macOS 15.0, *) { toggleItem?.isHidden = !available; scheduleTitleAreaRelayout() }
             toggleItem?.isEnabled = available
         }
 
@@ -665,7 +740,8 @@
         let env = ProcessInfo.processInfo.environment
         guard let path = env["IPPM_SNAPSHOT"] else { return }
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            let delay = env["IPPM_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 1.5
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if env["IPPM_SNAPSHOT_COLLAPSED"] != nil {
                 MacChrome.shared.toggleSidebar()
                 try? await Task.sleep(nanoseconds: 600_000_000)

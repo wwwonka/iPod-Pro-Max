@@ -132,10 +132,42 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     /// An SF Symbol, at `pointSize` when given. Nil on macOS 10.15, which has no SF Symbols: the
     /// app then shows no icon there.
     func systemSymbol(_ name: String, description: String? = nil, pointSize: Double? = nil) -> NSImage? {
+        if let custom = customSymbols[name] { return customSymbolImage(custom, description: description, pointSize: pointSize ?? 13) }
         guard #available(macOS 11, *) else { return nil }
         let image = NSImage(systemSymbolName: name, accessibilityDescription: description)
         guard let pointSize else { return image }
         return image?.withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+    }
+
+    /// A custom symbol as a template image, so it is tinted like an SF Symbol. Square, centered and
+    /// sized by `pointSize` (its height a bit over it: Apple's glyph is narrow and reads small otherwise).
+    func customSymbolImage(_ symbol: CustomSymbol, description: String?, pointSize: Double) -> NSImage {
+        let side = CGFloat(pointSize * 1.4)
+        let b = symbol.bounds
+        let width = CGFloat(b.maxX - b.minX), height = CGFloat(b.maxY - b.minY)
+        let scale = CGFloat(pointSize * 1.15) / max(height, 1)
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+            let path = NSBezierPath()
+            for step in symbol.steps {
+                switch step {
+                case .move(let x, let y): path.move(to: NSPoint(x: x, y: y))
+                case .line(let x, let y): path.line(to: NSPoint(x: x, y: y))
+                case .curve(let x1, let y1, let x2, let y2, let x, let y):
+                    path.curve(to: NSPoint(x: x, y: y), controlPoint1: NSPoint(x: x1, y: y1), controlPoint2: NSPoint(x: x2, y: y2))
+                case .close: path.close()
+                }
+            }
+            var transform = AffineTransform(translationByX: side / 2, byY: side / 2)
+            transform.scale(scale)
+            transform.translate(x: -(CGFloat(b.minX) + width / 2), y: -(CGFloat(b.minY) + height / 2))
+            path.transform(using: transform)
+            NSColor.black.setFill()
+            path.fill()
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        return image
     }
 
     struct Symbol: NSViewRepresentable {
@@ -182,6 +214,7 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     /// Pango markup drawing a symbol's glyph; empty when the font lacks it.
     /// - Parameter tint: nil leaves the color to CSS.
     func symbolMarkup(_ name: String, pointSize: Double, tint: SymbolTint?, dark: Bool) -> String {
+        let name = customSymbolFontStandIns[name] ?? name
         guard localSymbolFontAvailable, let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else {
             return "<span size='8192'>\(symbolFallback(name))</span>"
         }
@@ -229,6 +262,7 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     /// the glyph out again.
     @MainActor
     func showSymbol(_ name: String, in text: TextBlock, pointSize: Double, tint: SymbolTint, dark: Bool) {
+        let name = customSymbolFontStandIns[name] ?? name
         let glyph = localSymbolFontAvailable ? (symbolCodepoints[name].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? symbolFallback(name)) : symbolFallback(name)
         if text.text != glyph {
             if localSymbolFontAvailable { text.fontFamily = symbolFont }

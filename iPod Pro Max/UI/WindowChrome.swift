@@ -40,7 +40,7 @@ enum TitleBarButtons {
 /// Width the traffic lights and the sidebar toggle take at the window's top-left corner.
 let titleBarControlsWidth = TitleBarButtons.width
 /// Height of the title area: dragging it, outside its controls, moves the window.
-let titleBarHeight = 52.0
+let titleBarHeight = 44.0
 /// The rail's width: as wide as the title bar is tall, like a Finder toolbar's height.
 let mediaRailWidth = titleBarHeight
 /// The main view floats over the window's glass as a rounded panel all round, with a thin margin of glass at its right and bottom.

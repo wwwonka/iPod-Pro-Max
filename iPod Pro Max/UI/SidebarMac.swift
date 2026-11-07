@@ -263,9 +263,10 @@
                 (item as? Node)?.isGroup ?? false
             }
 
-            /// Room for the big section names.
+            /// Room for the big section name; a sub-section's native caption takes less.
             func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-                (item as? Node)?.isGroup == true ? 38 : max(outlineView.rowHeight, SidebarMetrics.rowHeight)
+                guard let node = item as? Node, node.isGroup else { return max(outlineView.rowHeight, SidebarMetrics.rowHeight) }
+                return node.isMain ? 38 : SidebarMetrics.subHeaderHeight
             }
 
             func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -274,15 +275,17 @@
 
             func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
                 guard let node = item as? Node else { return nil }
-                let id = NSUserInterfaceItemIdentifier(node.isGroup ? "HeaderCell" : node.ejectable ? "DeviceCell" : "DataCell")
+                // The library's own section has a big title; any other group (Playlists) is a native
+                // source-list header: a small gray caption the system draws and collapses.
+                let id = NSUserInterfaceItemIdentifier(node.isMain ? "HeaderCell" : node.isGroup ? "SubHeaderCell" : node.ejectable ? "DeviceCell" : "DataCell")
                 let cell = outlineView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView
-                    ?? Self.makeCell(id, group: node.isGroup, ejectable: node.ejectable)
+                    ?? Self.makeCell(id, group: node.isGroup, main: node.isMain, ejectable: node.ejectable)
                 if let eject = (cell as? SidebarCell)?.ejectButton, let item = node.item {
                     eject.action = { [weak self] in self?.onEject(item) }
                     if case .device(let id) = item { eject.isBusy = busyDevices.contains(id) }
                 }
-                cell.textField?.stringValue = node.isGroup ? "" : node.title
-                if node.isGroup { (cell as? SidebarCell)?.headerLabel?.stringValue = node.title }
+                cell.textField?.stringValue = node.isMain ? "" : node.title
+                if node.isMain { (cell as? SidebarCell)?.headerLabel?.stringValue = node.title }
                 if let plus = (cell as? SidebarCell)?.plusButton {
                     plus.isHidden = !(node.isMain && Self.addable.contains(media))
                     (cell as? SidebarCell)?.resetPlus()
@@ -316,7 +319,7 @@
             }
 
             /// Source-list cells: NSTableCellView sizes the text and icon for the row size style.
-            private static func makeCell(_ id: NSUserInterfaceItemIdentifier, group: Bool, ejectable: Bool) -> NSTableCellView {
+            private static func makeCell(_ id: NSUserInterfaceItemIdentifier, group: Bool, main: Bool, ejectable: Bool) -> NSTableCellView {
                 let cell = SidebarCell()
                 cell.identifier = id
                 let text = NSTextField(labelWithString: "")
@@ -341,10 +344,13 @@
                 } else {
                     constraints.append(text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4))
                 }
-                if group {
+                if group && !main {
+                    // A sub-section's caption lines up with the rows' icons, as in the Finder.
+                    constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: SidebarMetrics.subHeaderTextX))
+                } else if group {
                     constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2))
                     let label = NSTextField(labelWithString: "")
-                    label.font = .systemFont(ofSize: 17, weight: .bold)
+                    label.font = .systemFont(ofSize: SidebarMetrics.titleFontSize, weight: .bold)
                     label.textColor = .white
                     label.lineBreakMode = .byTruncatingTail
                     label.translatesAutoresizingMaskIntoConstraints = false
@@ -363,12 +369,14 @@
                     constraints += [
                         plus.widthAnchor.constraint(equalToConstant: 24),
                         plus.heightAnchor.constraint(equalToConstant: 24),
-                        plus.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        plus.centerYAnchor.constraint(equalTo: cell.centerYAnchor, constant: -SidebarMetrics.headerLift),
                         plus.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
                     ]
                     constraints += [
                         label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                        label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        // The first title is centered on the rail's top icon (the iPod's): measured, the
+                        // text sat 2.75 pt lower than it.
+                        label.centerYAnchor.constraint(equalTo: cell.centerYAnchor, constant: -SidebarMetrics.headerLift),
                         label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -24),
                     ]
                 } else {

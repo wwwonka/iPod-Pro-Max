@@ -26,6 +26,8 @@ enum MediaRailMetrics {
     /// From one button's top to the next.
     static let pitch = 44.0
     static let symbolSize = 17.0
+    /// The widest a glyph may be drawn: what the podcasts glyph measures at `symbolSize`.
+    static let glyphMaxWidth = 21.0
     static let cornerRadius = 10.0
     static let topGap = 8.0
     static let bottomGap = 12.0
@@ -735,8 +737,17 @@ final class MediaRailView: NSView {
         // (A configuration replaces the previous one, so the size is part of each.)
         let size = MediaRailMetrics.symbolSize
         if #available(macOS 11, *) {
-            let base = NSImage(systemSymbolName: item?.icon ?? "ipod", accessibilityDescription: title)
-            let sized = NSImage.SymbolConfiguration(pointSize: size, weight: .regular)
+            let name = item?.icon ?? "ipod"
+            let base = customSymbols[name] != nil ? systemSymbol(name, description: title, pointSize: size)
+                : NSImage(systemSymbolName: name, accessibilityDescription: title)
+            // Glyphs differ a lot in width (photos, video and games are much wider than the
+            // others): the wide ones are drawn smaller, so every button looks as wide as the rest.
+            var drawSize = size
+            if customSymbols[name] == nil, let natural = base?.withSymbolConfiguration(.init(pointSize: size, weight: .regular))?.size.width,
+               natural > MediaRailMetrics.glyphMaxWidth {
+                drawSize = size * MediaRailMetrics.glyphMaxWidth / natural
+            }
+            let sized = NSImage.SymbolConfiguration(pointSize: drawSize, weight: .regular)
             if #available(macOS 13, *) {
                 // One color (the iPod's symbol is multicolor by default).
                 button.symbolImage = base?.withSymbolConfiguration(sized.applying(.preferringMonochrome()))
@@ -1055,6 +1066,7 @@ struct SidebarGlass: NSViewRepresentable {
 final class SidebarGlassView: NSView {
     private let glass = NSVisualEffectView()
     private let tint = NSView()
+    private let tintMask = CAShapeLayer()
     /// A dark 1 pt line along the right edge, as thick as the main view's outline.
     private let edge = NSView()
 
@@ -1070,8 +1082,9 @@ final class SidebarGlassView: NSView {
         // Darker than the plain material, still translucent.
         tint.wantsLayer = true
         tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
-        tint.layer?.cornerRadius = CGFloat(floatingPanelRadius)
-        tint.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
+        // Round on the left only. A shape mask, not `maskedCorners`: that one isn't honored when the
+        // layer is rendered into an image, which rounded the right corners too.
+        tint.layer?.mask = tintMask
         tint.autoresizingMask = [.width, .height]
         addSubview(tint)
         edge.wantsLayer = true
@@ -1084,6 +1097,11 @@ final class SidebarGlassView: NSView {
         super.layout()
         glass.frame = bounds
         tint.frame = bounds
+        // The rounded rectangle reaches past the right edge, which cuts that side square.
+        let r = CGFloat(floatingPanelRadius)
+        tintMask.frame = bounds
+        tintMask.path = CGPath(roundedRect: CGRect(x: 0, y: 0, width: bounds.width + 2 * r, height: bounds.height),
+                               cornerWidth: r, cornerHeight: r, transform: nil)
         edge.frame = NSRect(x: bounds.width - 1, y: 0, width: 1, height: bounds.height)
         applyBlurRadius()
         // The backdrop layer is created after the first draw: apply again once it exists.

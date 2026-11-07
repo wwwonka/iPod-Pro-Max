@@ -176,7 +176,8 @@ struct ContentView: View {
                 ipods = found
                 devices = names
                 if let added {
-                    selection = .device(added.id)
+                    // `IPPM_SELECT_MUSIC=1`: stays on Music, to look at its page and sidebar.
+                    selection = ProcessInfo.processInfo.environment["IPPM_SELECT_MUSIC"] != nil ? .music : .device(added.id)
                 } else if case .device(let name) = selection, !names.contains(name) {
                     selection = .music
                 }

@@ -68,7 +68,7 @@ enum SidebarItem: Hashable {
     var icon: String {
         switch self {
         case .device: "ipod"
-        case .music: "music.note"
+        case .music: "apple-music"
         case .recentMusic: "clock"
         case .artists: "person.fill"
         case .albums: "square.stack"
@@ -114,7 +114,10 @@ func sidebarSections(devices: [String], playlists: [Playlist], media: SidebarIte
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
                 : devices.map { .init(title: ConnectedDeviceTitles.names[$0] ?? "iPod", icon: "ipod", item: .device($0), ejectable: true) }),
-        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .music, .artists, .albums].map { .init(title: $0.title, icon: $0.icon, item: $0) }),
+        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .music, .artists, .albums].map {
+            // The rail shows Apple Music's own icon for Music; the list names the section's songs.
+            .init(title: $0.title, icon: $0 == .music ? "music.quarternote.3" : $0.icon, item: $0)
+        }),
         SidebarSection(
             title: "Playlists",
             rows: playlists.map { .init(title: $0.name, icon: "music.note.list", item: .playlist($0.id)) }),
@@ -131,6 +134,14 @@ enum SidebarMetrics {
     static let headerHeight = 19.0
     static let headerTextX = 14.0
     static let headerFontSize = 11.0
+    /// The library's big title (macOS): 17 pt was a little small.
+    static let titleFontSize = 19.0
+    /// A sub-section's native caption (Playlists): its row, and where its text starts.
+    static let subHeaderHeight = 30.0
+    static let subHeaderTextX = 6.0
+    /// How far a section's big title (macOS) is raised from its row's center, to line up with the
+    /// rail's top icon.
+    static let headerLift = 2.25
     /// The collapse chevron, at the header's right.
     static let chevronWidth = 15.0
     static let chevronTrailing = 10.0
