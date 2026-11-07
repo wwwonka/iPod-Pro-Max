@@ -49,6 +49,12 @@ Comment on est arrivé au plan actuel, et pourquoi certaines options ont été �
 2. Réalisé dans un package Swift à la racine, sans dépendance Apple dans iPodKit ; détails et écarts avec le plan dans [[ADR-006 Noyau portable sans dépendance Apple]] et [[Package Swift]].
 3. Vérification demandée avant la documentation : « assure-toi que ça fonctionne avec Windows ». Fait : tests de référence identiques et sync du CLI sous Windows 11 ARM.
 
+## 5 bis. Retouches de l'interface verre (2026-11-07)
+1. Barre de titre ramenée de 52 à 44 pt : le système n'offre que 52 (`.unified`) ou 38 (`.unifiedCompact`), donc la barre compacte est étirée et ses éléments recentrés, à leur taille d'origine ; voir [[Barre de titre 44 pt macOS]].
+2. Icône Apple Music dans le rail via un symbole personnalisé traité comme un SF Symbol ; glyphes du rail normalisés en largeur ; voir [[Symboles personnalisés SVG]].
+3. Sidebar : titre agrandi et centré sur l'icône iPod, « Playlists » en légende native repliable, coins droits droits ; voir [[Refonte verre macOS]].
+4. Les captures ne montrent ni flou, ni survol ; voir [[Captures d'écran en développement]].
+
 ## 6. Options écartées
 - **Bibliothèque sur l'iPod** : écrites sur un disque dur lent et en veille, avec des chemins sources qui n'existent que sur un ordi.
 - **swift-crypto pour hash58** : BoringSSL à compiler pour un seul hash ; remplacé par un SHA-1 en Swift pur.

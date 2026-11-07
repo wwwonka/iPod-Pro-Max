@@ -5,6 +5,8 @@ Le rail vertical à gauche (`MediaRailView` et `RailButton`, dans `iPod Pro Max/
 ## Contenu et ordre
 
 - De haut en bas : le bouton iPod, une ligne fine, les sections principales (Music, Podcasts, Audiobooks, Videos, Photos), une seconde ligne, les extras épinglés, puis le bouton « … ».
+- Le bouton Music utilise l'icône Apple Music, un symbole personnalisé dessiné d'après un SVG et traité comme un SF Symbol ([[Symboles personnalisés SVG]]), à 1,15 × la taille des autres glyphes (plus grosse : l'illustration est étroite).
+- **Largeur normalisée** : un glyphe plus large que 21 pt à la taille normale (photos, vidéos, jeux, livres, fichiers) est dessiné plus petit pour tenir dans 21 pt (`MediaRailMetrics.glyphMaxWidth`).
 - Le bouton iPod porte le nom de l’iPod ouvert, ou du premier connecté (« iPod » à défaut). Il est dessiné à la même taille de symbole que les autres glyphes, en monochrome (`preferringMonochrome`, macOS 13).
 - Les sections principales se réordonnent en maintenant le clic et en glissant (au-delà de 4 pt de déplacement vertical). Un bouton ne change de place qu’à l’intérieur de son groupe (principales ou extras). Les autres glissent pour lui faire de la place (0,2 s, ease-out).
 - L’ordre et les épinglages sont enregistrés dans `iPod Pro Max/Persistent Data/rail-order.json` (liste de noms), partagé par les trois OS. Sans dossier racine iPod, l’ordre n’est pas conservé. `RailOrder.normalized` remet les bibliothèques d’abord, puis les extras.

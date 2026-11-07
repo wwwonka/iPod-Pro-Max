@@ -50,7 +50,8 @@ Comment ça marche :
 |---|---|
 | `IPPM_BENCH=<tours>` | change de section comme des clics, journalise le temps de chaque mise à jour, ouvre et ferme la sidebar (nombre d'images ; sous Windows, aussi le temps de mise en page par image), puis quitte |
 | `IPPM_SLIDE_SECONDS=<s>` | ralentit le glissement de la sidebar, pour en regarder les images |
-| `IPPM_SNAPSHOT=<fichier.png>` | (Mac) enregistre la fenêtre telle que l'app la dessine, puis quitte ; `IPPM_SNAPSHOT_COLLAPSED=1` ferme d'abord la sidebar |
+| `IPPM_SNAPSHOT=<fichier.png>` | (Mac) enregistre la fenêtre telle que l'app la dessine, puis quitte ; `IPPM_SNAPSHOT_COLLAPSED=1` ferme d'abord la sidebar, `IPPM_SNAPSHOT_DELAY=<s>` change l'attente avant la capture (voir [[Captures d'écran en développement]]) |
+| `IPPM_SELECT_MUSIC=1` | reste sur la page Musique avec un iPod simulé branché, au lieu d'ouvrir la page de l'iPod |
 | `IPPM_LOG=<fichier>` | journal dans un fichier ; sous Windows, `%TEMP%\ippm.log` par défaut (une app lancée depuis l'Explorateur n'a pas de console) |
 
 ## Icône de l'app
