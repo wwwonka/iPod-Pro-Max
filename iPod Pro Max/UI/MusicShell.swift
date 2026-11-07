@@ -26,11 +26,21 @@ enum MediaRailMetrics {
     /// From one button's top to the next.
     static let pitch = 44.0
     static let symbolSize = 17.0
+    /// The music note is optically taller than the other symbols at the same point size.
+    static let musicSymbolSize = 15.5
+    /// The custom outline has a squarer canvas than SF Symbols and reads larger at equal size.
+    static let podcastsSymbolSize = 15.0
+    /// Photos and Games read a little smaller than the other glyphs at an equal point size.
+    static let wideSymbolSize = 17.5
     /// The widest a glyph may be drawn: what the podcasts glyph measures at `symbolSize`.
     static let glyphMaxWidth = 21.0
-    static let cornerRadius = 10.0
+    static let wideGlyphMaxWidth = 22.0
+    /// Matches the tighter rounding of a native toolbar item's hover plate.
+    static let cornerRadius = 8.0
     static let topGap = 8.0
     static let bottomGap = 12.0
+    /// Floating labels and the extras menu overlap the rail by the same amount.
+    static let floatingPanelOffset = 1.0
     /// Extra room under the iPod button for the separator line.
     static let separatorExtra = 12.0
 }
@@ -43,13 +53,15 @@ enum MediaRailMetrics {
 final class RailButton: NSButton {
     var isCurrent = false {
         didSet {
+            guard isCurrent != oldValue else { return }
             activated = false
             // The plate of the page being left fades out (quickly) instead of vanishing.
             refresh(animated: oldValue && !isCurrent)
         }
     }
-    /// How long a plate takes to fade out: quicker than it fades in.
-    static let fadeOut = 0.04
+    /// The toolbar-like plate settles gently in either direction, including when interrupted.
+    static let hoverFadeIn = 0.18
+    static let hoverFadeOut = 0.16
     /// Set when a click released inside: the button keeps its selected look until the selection
     /// catches up, so the glyph doesn't fall back to the hover color in between.
     private var activated = false { didSet { if activated != oldValue { refresh() } } }
@@ -76,6 +88,7 @@ final class RailButton: NSButton {
         hoverWork?.cancel()
         activated = false
         labelSuppressed = false
+        hoverRested = false
         hovering = false
     }
     /// The glyph is drawn by an image view of its own: it is the view that plays symbol effects
@@ -101,6 +114,7 @@ final class RailButton: NSButton {
         // resting where the button lands).
         appearing = true
         hoverWork?.cancel()
+        hoverRested = false
         hovering = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.appearing = false }
         if #available(macOS 14, *) {
@@ -134,6 +148,14 @@ final class RailButton: NSButton {
             updateLabel()
         }
     }
+    /// The pointer has stayed long enough to reveal the plate and name, or open the extras menu.
+    /// Kept separate so a press can suppress the name without changing the plate's state.
+    private var hoverRested = false {
+        didSet {
+            guard hoverRested != oldValue else { return }
+            updateLabel()
+        }
+    }
     private var pressed = false {
         didSet {
             guard pressed != oldValue else { return }
@@ -142,7 +164,7 @@ final class RailButton: NSButton {
         }
     }
     private func updateLabel() {
-        if hovering && !pressed && !labelSuppressed, let window, !label.isEmpty {
+        if hovering && hoverRested && !pressed && !labelSuppressed, let window, !label.isEmpty {
             RailLabel.shared.show(label, besideScreenRect: window.convertToScreen(convert(bounds, to: nil)))
         } else if !hovering {
             // The pointer left: a moment's grace, so the next button's name replaces it with no gap.
@@ -158,6 +180,9 @@ final class RailButton: NSButton {
         isBordered = false
         imagePosition = .imageOnly
         setButtonType(.momentaryPushIn)
+        wantsLayer = true
+        layer?.cornerRadius = MediaRailMetrics.cornerRadius
+        layer?.cornerCurve = .continuous
         glyphView.imageScaling = .scaleNone
         glyphView.imageAlignment = .alignCenter
         glyphView.wantsLayer = true
@@ -181,13 +206,16 @@ final class RailButton: NSButton {
         // Like a toolbar's items: no hover, no name, while the window isn't the key one.
         guard isEnabled, !appearing, window?.isKeyWindow == true else { return }
         hoverWork?.cancel()
+        let labelAlreadyActive = !label.isEmpty && RailLabel.shared.isActive
         // Moving from one named button to the next: the name is already up, so no pause.
-        if !label.isEmpty && RailLabel.shared.isActive {
+        if labelAlreadyActive {
+            hoverRested = true
             hovering = true
             return
         }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            self.hoverRested = true
             self.hovering = true
             self.onHoverRest?()
         }
@@ -200,6 +228,7 @@ final class RailButton: NSButton {
         labelSuppressed = false
         activated = false
         hovering = false
+        hoverRested = false
     }
 
     /// Tracks the press itself: white glyph and deeper plate while the pointer is inside, the action
@@ -208,6 +237,7 @@ final class RailButton: NSButton {
         guard isEnabled else { return }
         hoverWork?.cancel()
         labelSuppressed = true
+        hoverRested = false
         RailLabel.shared.hide()
         hovering = true
         pressed = true
@@ -242,7 +272,7 @@ final class RailButton: NSButton {
     override var isEnabled: Bool {
         didSet {
             glyphView.alphaValue = isEnabled ? 1 : 0.4
-            if !isEnabled { hoverWork?.cancel(); hovering = false; pressed = false }
+            if !isEnabled { hoverWork?.cancel(); hoverRested = false; hovering = false; pressed = false }
         }
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -262,7 +292,9 @@ final class RailButton: NSButton {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    if !window.isKeyWindow { self.hoverWork?.cancel(); self.hovering = false; self.pressed = false }
+                    if !window.isKeyWindow {
+                        self.hoverWork?.cancel(); self.hoverRested = false; self.hovering = false; self.pressed = false
+                    }
                     self.refresh()
                 }
             })
@@ -296,7 +328,7 @@ final class RailButton: NSButton {
             // The glyph's color fades too (toward white when the button is pressed).
             let crossfade = CATransition()
             crossfade.type = .fade
-            crossfade.duration = TitleBarButtons.hoverFade
+            crossfade.duration = Self.hoverFadeIn
             glyphLayer.add(crossfade, forKey: "tintFade")
         }
         glyphView.contentTintColor = tint
@@ -311,10 +343,10 @@ final class RailButton: NSButton {
             let fade = CABasicAnimation(keyPath: "backgroundColor")
             fade.fromValue = layer.presentation()?.backgroundColor ?? layer.backgroundColor
             fade.toValue = target
-            // Arriving eases out, leaving eases in (and is quicker).
+            // The native toolbar transition is quiet and nearly symmetrical in both directions.
             let arriving = target.alpha >= (layer.presentation()?.backgroundColor ?? layer.backgroundColor)?.alpha ?? 0
-            fade.duration = arriving ? TitleBarButtons.hoverFade : Self.fadeOut
-            fade.timingFunction = CAMediaTimingFunction(name: arriving ? .easeOut : .easeIn)
+            fade.duration = arriving ? Self.hoverFadeIn : Self.hoverFadeOut
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             layer.add(fade, forKey: "plateFade")
         } else {
             layer.removeAnimation(forKey: "plateFade")
@@ -546,7 +578,8 @@ final class RailLabel {
         text.frame.origin = NSPoint(x: 15, y: 5.5)
         // Overlapping the rail's edge by a few points (the button sits 8 pt inside it), so the name
         // reads as floating above everything.
-        panel.setFrame(NSRect(x: rect.maxX + 5, y: rect.midY - size.height / 2, width: size.width, height: size.height), display: false)
+        panel.setFrame(NSRect(x: rect.maxX + MediaRailMetrics.floatingPanelOffset,
+                              y: rect.midY - size.height / 2, width: size.width, height: size.height), display: false)
         border.needsLayout = true
         panel.orderFrontRegardless()
         panel.invalidateShadow()
@@ -614,7 +647,7 @@ final class ExtrasPopover {
             glass.addSubview(row)
         }
         panel.contentView = glass
-        panel.setFrameTopLeftPoint(NSPoint(x: anchor.maxX + 4, y: anchor.midY))
+        panel.setFrameTopLeftPoint(NSPoint(x: anchor.maxX + MediaRailMetrics.floatingPanelOffset, y: anchor.midY))
     }
 
     func show() {
@@ -674,7 +707,12 @@ final class ExtrasPopover {
 }
 
 final class MediaRailView: NSView {
-    var devices: [String] = []
+    var devices: [String] = [] {
+        didSet {
+            guard devices.isEmpty != oldValue.isEmpty else { return }
+            animateDevicePresence(visible: !devices.isEmpty)
+        }
+    }
     var onSelect: (SidebarItem) -> Void = { _ in }
     private var buttons: [RailButton] = []
     /// What the rail shows under the iPod, in order: the libraries and the extra sections pinned to it.
@@ -686,6 +724,7 @@ final class MediaRailView: NSView {
     /// Between the main sections and the pinned extras.
     private let extrasSeparator = NSView()
     private var reordering = false
+    private var animatingDevicePresence = false
     private var menuClosedAt = Date.distantPast
     private var extrasPopover: ExtrasPopover?
     private var railMenuTemplate: NSMenu?
@@ -707,6 +746,10 @@ final class MediaRailView: NSView {
             line.layer?.backgroundColor = NSColor.separatorColor.cgColor
             addSubview(line)
         }
+        buttons[0].isHidden = true
+        buttons[0].alphaValue = 0
+        separator.isHidden = true
+        separator.alphaValue = 0
         // A click in the rail's empty space brings up its own menu.
         let railMenu = NSMenu()
         railMenu.font = .menuFont(ofSize: Self.menuFontSize)
@@ -724,7 +767,6 @@ final class MediaRailView: NSView {
             self.showMoreSections(self.moreButton)
         }
         moreButton.setAccessibilityLabel("More sections")
-        moreButton.wantsLayer = true; moreButton.layer?.cornerRadius = MediaRailMetrics.cornerRadius
         addSubview(moreButton)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -735,7 +777,14 @@ final class MediaRailView: NSView {
         let button = RailButton(title: "", target: self, action: #selector(selectMedia(_:)))
         // Every glyph, the iPod's included, is drawn at the same point size.
         // (A configuration replaces the previous one, so the size is part of each.)
-        let size = MediaRailMetrics.symbolSize
+        let size: CGFloat = switch item {
+        case .music: MediaRailMetrics.musicSymbolSize
+        case .podcasts: MediaRailMetrics.podcastsSymbolSize
+        case .photos, .games: MediaRailMetrics.wideSymbolSize
+        default: MediaRailMetrics.symbolSize
+        }
+        let maxWidth = item == .photos || item == .games
+            ? MediaRailMetrics.wideGlyphMaxWidth : MediaRailMetrics.glyphMaxWidth
         if #available(macOS 11, *) {
             let name = item?.icon ?? "ipod"
             let base = customSymbols[name] != nil ? systemSymbol(name, description: title, pointSize: size)
@@ -744,8 +793,8 @@ final class MediaRailView: NSView {
             // others): the wide ones are drawn smaller, so every button looks as wide as the rest.
             var drawSize = size
             if customSymbols[name] == nil, let natural = base?.withSymbolConfiguration(.init(pointSize: size, weight: .regular))?.size.width,
-               natural > MediaRailMetrics.glyphMaxWidth {
-                drawSize = size * MediaRailMetrics.glyphMaxWidth / natural
+               natural > maxWidth {
+                drawSize = size * maxWidth / natural
             }
             let sized = NSImage.SymbolConfiguration(pointSize: drawSize, weight: .regular)
             if #available(macOS 13, *) {
@@ -771,7 +820,6 @@ final class MediaRailView: NSView {
             }
         }
         button.setAccessibilityLabel(title)
-        button.wantsLayer = true; button.layer?.cornerRadius = MediaRailMetrics.cornerRadius
         return button
     }
 
@@ -847,7 +895,9 @@ final class MediaRailView: NSView {
             button.isCurrent = selected
             button.isDropTarget = index == 0 && dropActive
         }
-        moreButton.isCurrent = SidebarItem.otherSections.contains(selection) && !railItems.contains(selection)
+        // The ellipsis is a menu command, not the persistent representation of an unpinned page:
+        // once a section is chosen, its pressed highlight must be allowed to fade away.
+        moreButton.isCurrent = false
     }
 
     // MARK: Dropping tracks on the iPod
@@ -884,12 +934,66 @@ final class MediaRailView: NSView {
 
     private var libraryCount: Int { railItems.filter { SidebarItem.library.contains($0) }.count }
 
-    /// Where the button in `slot` (0 = first under the iPod's separator) sits, in points. The extras
-    /// (from `libraryCount` on) have a second separator above them.
+    /// Where the button in `slot` sits. With no iPod, the libraries occupy the rail's first slot;
+    /// connecting one inserts its button and separator above them.
     private func slotY(_ slot: Int) -> CGFloat {
         typealias M = MediaRailMetrics
         let gap = slot >= libraryCount ? M.separatorExtra : 0
-        return bounds.height - titleBarHeight - M.topGap - M.button - M.pitch - M.separatorExtra - CGFloat(slot) * M.pitch - gap
+        let deviceGap = devices.isEmpty ? 0 : M.pitch + M.separatorExtra
+        return bounds.height - titleBarHeight - M.topGap - M.button - deviceGap - CGFloat(slot) * M.pitch - gap
+    }
+
+    /// A newly mounted iPod drops in from the top edge while the library buttons make room and the
+    /// separator fades in. Unmounting performs the inverse. The volume watcher drives this once per
+    /// real change; no animation or timer exists while the app is idle.
+    private func animateDevicePresence(visible: Bool) {
+        typealias M = MediaRailMetrics
+        guard window != nil, bounds.height > 0 else {
+            buttons[0].isHidden = !visible
+            buttons[0].alphaValue = visible ? 1 : 0
+            separator.isHidden = !visible
+            separator.alphaValue = visible ? 1 : 0
+            needsLayout = true
+            return
+        }
+        let x = (bounds.width - M.button) / 2
+        let top = bounds.height - titleBarHeight - M.topGap - M.button
+        let aboveRail = bounds.height - titleBarHeight
+        let deviceFrame = NSRect(x: x, y: top, width: M.button, height: M.button)
+        let hiddenDeviceFrame = NSRect(x: x, y: aboveRail, width: M.button, height: M.button)
+        let separatorFrame = NSRect(x: x + 4, y: top - (M.pitch - M.button + M.separatorExtra) / 2,
+                                    width: M.button - 8, height: 1)
+        let lastMain = slotY(max(libraryCount - 1, 0)), firstExtra = slotY(libraryCount)
+        let extrasFrame = NSRect(x: x + 4, y: (lastMain + firstExtra + M.button) / 2,
+                                 width: M.button - 8, height: 1)
+        animatingDevicePresence = true
+        if visible {
+            buttons[0].isHidden = false
+            buttons[0].frame = hiddenDeviceFrame
+            buttons[0].alphaValue = 0
+            separator.isHidden = false
+            separator.frame = separatorFrame
+            separator.alphaValue = 0
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = visible ? 0.25 : 0.2
+            context.timingFunction = CAMediaTimingFunction(name: visible ? .easeOut : .easeInEaseOut)
+            buttons[0].animator().frame = visible ? deviceFrame : hiddenDeviceFrame
+            buttons[0].animator().alphaValue = visible ? 1 : 0
+            separator.animator().frame = separatorFrame
+            separator.animator().alphaValue = visible ? 1 : 0
+            for (index, button) in buttons.enumerated() where index > 0 {
+                button.animator().frame.origin.y = slotY(index - 1)
+            }
+            moreButton.animator().frame.origin.y = slotY(buttons.count - 1)
+            extrasSeparator.animator().frame = extrasFrame
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            self.buttons[0].isHidden = !visible
+            self.separator.isHidden = !visible
+            self.animatingDevicePresence = false
+            self.needsLayout = true
+        })
     }
 
     /// Runs until the mouse is released: the button follows the pointer along the rail, the others
@@ -937,7 +1041,7 @@ final class MediaRailView: NSView {
 
     override func layout() {
         super.layout()
-        guard !reordering else { return }
+        guard !reordering, !animatingDevicePresence else { return }
         typealias M = MediaRailMetrics
         let x = (bounds.width - M.button) / 2
         let top = bounds.height - titleBarHeight - M.topGap - M.button
@@ -946,8 +1050,12 @@ final class MediaRailView: NSView {
             let y = index == 0 ? top : slotY(index - 1)
             button.frame = NSRect(x: x, y: y, width: M.button, height: M.button)
         }
+        buttons[0].isHidden = devices.isEmpty
+        buttons[0].alphaValue = devices.isEmpty ? 0 : 1
         moreButton.frame = NSRect(x: x, y: slotY(buttons.count - 1), width: M.button, height: M.button)
         separator.frame = NSRect(x: x + 4, y: top - (M.pitch - M.button + M.separatorExtra) / 2, width: M.button - 8, height: 1)
+        separator.isHidden = devices.isEmpty
+        separator.alphaValue = devices.isEmpty ? 0 : 1
         // Between the last main section and the first extra (or the "…" button).
         let lastMain = slotY(max(libraryCount - 1, 0)), firstExtra = slotY(libraryCount)
         extrasSeparator.frame = NSRect(x: x + 4, y: (lastMain + firstExtra + M.button) / 2, width: M.button - 8, height: 1)

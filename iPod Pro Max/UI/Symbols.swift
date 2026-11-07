@@ -161,8 +161,16 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
             transform.scale(scale)
             transform.translate(x: -(CGFloat(b.minX) + width / 2), y: -(CGFloat(b.minY) + height / 2))
             path.transform(using: transform)
-            NSColor.black.setFill()
-            path.fill()
+            if let strokeWidth = symbol.strokeWidth {
+                path.lineWidth = CGFloat(strokeWidth) * scale
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                NSColor.black.setStroke()
+                path.stroke()
+            } else {
+                NSColor.black.setFill()
+                path.fill()
+            }
             return true
         }
         image.isTemplate = true
