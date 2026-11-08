@@ -40,7 +40,7 @@ enum MediaRailMetrics {
     static let topGap = 8.0
     static let bottomGap = 12.0
     /// Floating labels and the extras menu overlap the rail by the same amount.
-    static let floatingPanelOffset = 1.0
+    static let floatingPanelOffset = 2.0
     /// Extra room under the iPod button for the separator line.
     static let separatorExtra = 12.0
 }
@@ -572,6 +572,9 @@ final class RailLabel {
 
     func show(_ string: String, besideScreenRect rect: NSRect) {
         pendingHide?.cancel()
+        // Cancels a fade under way (the animation's completion checks the token).
+        fadeToken += 1
+        panel.alphaValue = 1
         text.stringValue = string
         text.sizeToFit()
         let size = NSSize(width: text.frame.width + 30, height: text.frame.height + 11)
@@ -588,17 +591,37 @@ final class RailLabel {
     var isActive: Bool { panel.isVisible }
     private var pendingHide: DispatchWorkItem?
 
+    private var fadeToken = 0
+
     func hide() {
         pendingHide?.cancel()
+        fadeToken += 1
         panel.orderOut(nil)
+        panel.alphaValue = 1
     }
 
     /// Hides unless another name is shown within a moment.
     func scheduleHide() {
         pendingHide?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
+        let work = DispatchWorkItem { [weak self] in self?.fadeOut() }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    /// The name fades away when the pointer has left the rail.
+    private func fadeOut() {
+        fadeToken += 1
+        let token = fadeToken
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.fadeToken == token else { return }
+                self.panel.orderOut(nil)
+                self.panel.alphaValue = 1
+            }
+        })
     }
 }
 
@@ -1238,7 +1261,7 @@ final class SidebarGlassView: NSView {
     }
 
     /// A stretchable shape: round on the left, square on the right.
-    private static func leftRoundedMask(radius r: CGFloat) -> NSImage {
+    static func leftRoundedMask(radius r: CGFloat) -> NSImage {
         let side = 2 * r + 2
         let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
             NSColor.black.setFill()

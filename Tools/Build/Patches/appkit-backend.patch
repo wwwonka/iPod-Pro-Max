@@ -22,25 +22,59 @@ index 3329b554..95b6fc51 100644
      }
  
 diff --git a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-index c297bea2..7d02f371 100644
+index c297bea2..f0ddd0ff 100644
 --- a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
 +++ b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-@@ -1,5 +1,102 @@
+@@ -1,5 +1,136 @@
  import AppKit
  
 -class NSCustomSplitView: NSSplitView {
 +public class NSCustomSplitView: NSSplitView {
      var resizingDelegate: NSSplitViewResizingDelegate?
 +    private var animationTimer: Timer?
++    /// No divider line: it would run through the toolbar.
++    override public var dividerColor: NSColor { .clear }
 +    private var openWidth: CGFloat = 200
 +    private var animationTarget: Bool?
++
++    /// Whether the divider can be dragged at all (not on the iPod page, where the sidebar is gone).
++    public var dividerDragEnabled = true {
++        didSet { if dividerDragEnabled != oldValue { window?.invalidateCursorRects(for: self) } }
++    }
++    /// Height from the top where the divider can't be grabbed: the toolbar.
++    public var dividerTopInset: CGFloat = 0 {
++        didSet { if dividerTopInset != oldValue { window?.invalidateCursorRects(for: self) } }
++    }
++    private var dividerDragArea: NSRect {
++        guard dividerDragEnabled else { return .zero }
++        var area = bounds
++        area.size.height -= dividerTopInset
++        if isFlipped { area.origin.y += dividerTopInset }
++        return area
++    }
++    /// The resize cursor follows the same area.
++    override public func addCursorRect(_ rect: NSRect, cursor: NSCursor) {
++        let clipped = rect.intersection(dividerDragArea)
++        if !clipped.isNull, !clipped.isEmpty { super.addCursorRect(clipped, cursor: cursor) }
++    }
 +
 +    /// AppKit tracks a divider drag inside `mouseDown`, returning at mouse up. While it runs the
 +    /// panes are resized natively and the app is told once, when the drag is over.
 +    override public func mouseDown(with event: NSEvent) {
++        guard dividerDragArea.contains(convert(event.locationInWindow, from: nil)) else { return }
 +        resizingDelegate?.beginDrag()
 +        super.mouseDown(with: event)
 +        resizingDelegate?.endDrag()
++        if isSidebarOpen, let pane = subviews.first { onDragEnd?(pane.frame.width) }
++    }
++
++    /// Told the sidebar's width when a drag of its edge ends.
++    public var onDragEnd: ((CGFloat) -> Void)?
++    /// Sets the width the sidebar has when open (now, if it is open).
++    public func applySidebarWidth(_ width: CGFloat) {
++        openWidth = width
++        guard isSidebarOpen, subviews.count > 1 else { return }
++        setPosition(width, ofDividerAt: 0)
 +    }
 +
 +    /// Shows or hides the sidebar pane at once, from inside the app's own update: no slide, and no layout

@@ -54,6 +54,7 @@ Comment on est arrivé au plan actuel, et pourquoi certaines options ont été �
 2. Icône Apple Music dans le rail via un symbole personnalisé traité comme un SF Symbol ; glyphes du rail normalisés en largeur ; voir [[Symboles personnalisés SVG]].
 3. Sidebar : titre agrandi et centré sur l'icône iPod, « Playlists » en légende native repliable, coins droits droits ; voir [[Refonte verre macOS]].
 4. Les captures ne montrent ni flou, ni survol ; voir [[Captures d'écran en développement]].
+5. Un seul masque arrondi sur le conteneur sidebar + vue principale, séparateur invisible et inactif sur la page iPod et dans la barre de titre, largeur de sidebar et dernier onglet mémorisés ; voir [[Conteneur arrondi et persistance de la sidebar]].
 
 ## 6. Options écartées
 - **Bibliothèque sur l'iPod** : écrites sur un disque dur lent et en veille, avec des chemins sources qui n'existent que sur un ordi.

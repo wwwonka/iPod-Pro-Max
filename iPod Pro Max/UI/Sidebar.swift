@@ -18,6 +18,34 @@ enum SidebarItem: Hashable {
     /// Sections kept out of the rail, reached from its "…" menu.
     static let otherSections: [SidebarItem] = [.games, .contacts, .calendars, .notes, .files]
 
+    /// The page's name in settings.json (an iPod's page isn't remembered).
+    var persistentName: String? {
+        switch self {
+        case .device: nil
+        case .music: "music"
+        case .recentMusic: "recentMusic"
+        case .artists: "artists"
+        case .albums: "albums"
+        case .podcasts: "podcasts"
+        case .audiobooks: "audiobooks"
+        case .videos: "videos"
+        case .photos: "photos"
+        case .games: "games"
+        case .contacts: "contacts"
+        case .calendars: "calendars"
+        case .notes: "notes"
+        case .files: "files"
+        case .playlist(let id): "playlist:" + id
+        }
+    }
+    init?(persistentName name: String) {
+        if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
+        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .podcasts, .audiobooks, .videos, .photos,
+                                  .games, .contacts, .calendars, .notes, .files]
+        guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
+        self = item
+    }
+
     /// The library section this page belongs to (the rail's button); nil for an iPod's page.
     var media: SidebarItem? {
         switch self {

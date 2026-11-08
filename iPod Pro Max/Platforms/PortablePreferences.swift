@@ -5,15 +5,34 @@ import iPodKit
 @MainActor
 final class PortablePreferences {
     static let shared = PortablePreferences()
-    private var pending: (store: PortableLibraryStore, mode: String, revision: Int)?
+    private struct Pending {
+        var store: PortableLibraryStore
+        var mode: String?
+        var sidebarWidth: Double?
+        var lastTab: String?
+        var revision: Int
+    }
+    private var pending: Pending?
     private var revision = 0
     private var saveTask: Task<Void, Never>?
     private let writer = Writer()
 
     func stageMusicMode(_ mode: String, store: PortableLibraryStore) {
-        guard pending?.mode != mode || pending?.store.data.url != store.data.url else { return }
+        stage(store) { guard $0.mode != mode else { return false }; $0.mode = mode; return true }
+    }
+    func stageSidebarWidth(_ width: Double, store: PortableLibraryStore) {
+        stage(store) { guard $0.sidebarWidth != width else { return false }; $0.sidebarWidth = width; return true }
+    }
+    func stageLastTab(_ tab: String, store: PortableLibraryStore) {
+        stage(store) { guard $0.lastTab != tab else { return false }; $0.lastTab = tab; return true }
+    }
+    /// Merges one change into what is waiting to be written; false when nothing changed.
+    private func stage(_ store: PortableLibraryStore, _ change: (inout Pending) -> Bool) {
+        var value = pending?.store.data.url == store.data.url ? pending! : Pending(store: store, revision: 0)
+        guard change(&value) else { return }
         revision += 1
-        pending = (store, mode, revision)
+        value.revision = revision
+        pending = value
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -24,17 +43,20 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, store: value.store)
+            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String, store: PortableLibraryStore) throws {
+        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
-            guard value.musicViewMode != mode else { return }
-            value.musicViewMode = mode
+            var changed = false
+            if let mode, value.musicViewMode != mode { value.musicViewMode = mode; changed = true }
+            if let sidebarWidth, value.sidebarWidth != sidebarWidth { value.sidebarWidth = sidebarWidth; changed = true }
+            if let lastTab, value.lastTab != lastTab { value.lastTab = lastTab; changed = true }
+            guard changed else { return }
             try store.data.write(value, to: "settings.json")
         }
     }

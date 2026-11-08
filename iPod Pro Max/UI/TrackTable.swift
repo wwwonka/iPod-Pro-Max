@@ -347,15 +347,84 @@ extension Array {
     /// The main view's own surface: frosted glass, lighter than the sidebar's, following light and
     /// dark mode. Blurs what is behind the window and keeps its state when another app comes forward.
     struct WindowBackground: NSViewRepresentable {
-        func makeNSView(context: Context) -> FrostedSurface { FrostedSurface() }
+        /// Round the left side only (the sidebar's panel).
+        var leftRounded = false
+        func makeNSView(context: Context) -> FrostedSurface { FrostedSurface(leftRounded: leftRounded) }
         func updateNSView(_ view: FrostedSurface, context: Context) {}
+    }
+
+    /// Squares off the main view's left corners: the panel is clipped by an ancestor layer whose
+    /// rounding is switched to the right corners only.
+    struct RightCornersOnly: NSViewRepresentable {
+        /// False when no sidebar sits at the panel's left: all four corners are round then.
+        var squareLeft = true
+        func makeNSView(context: Context) -> NSView { let view = RightCornersView(); view.squareLeft = squareLeft; return view }
+        func updateNSView(_ view: NSView, context: Context) {
+            guard let view = view as? RightCornersView else { return }
+            view.squareLeft = squareLeft
+            view.apply()
+        }
+    }
+
+    final class RightCornersView: NSView {
+        var squareLeft = true
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+            DispatchQueue.main.async { [weak self] in self?.apply() }
+        }
+        /// Runs whenever the panel's frame changes, which is what opening or closing the sidebar does.
+        override func layout() {
+            super.layout()
+            apply()
+        }
+        /// The sidebar's real state decides: square at the left only while it sits there.
+        private func sidebarIsBesidePanel() -> Bool {
+            var view = superview
+            while let current = view {
+                if let split = current as? NSCustomSplitView { return split.isSidebarOpen && split.dividerDragEnabled }
+                view = current.superview
+            }
+            return squareLeft
+        }
+        func apply() {
+            let square = sidebarIsBesidePanel()
+            var view = superview
+            while let current = view {
+                if let layer = current.layer, layer.cornerRadius == CGFloat(floatingPanelRadius) {
+                    let corners: CACornerMask = square
+                        ? [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+                        : [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+                    if layer.maskedCorners != corners { layer.maskedCorners = corners }
+                    return
+                }
+                view = current.superview
+            }
+        }
     }
 
     final class FrostedSurface: NSView {
         private let glass = NSVisualEffectView()
         private let tint = NSBox()
+        private let tintMask = CAShapeLayer()
+        private let leftRounded: Bool
+        init(leftRounded: Bool = false) {
+            self.leftRounded = leftRounded
+            super.init(frame: .zero)
+            if leftRounded {
+                // A mask image, not the layer's corners: those would switch the blur off.
+                glass.maskImage = SidebarGlassView.leftRoundedMask(radius: CGFloat(floatingPanelRadius))
+                tint.wantsLayer = true
+                tint.layer?.mask = tintMask
+            }
+            commonInit()
+        }
         override init(frame: NSRect) {
+            leftRounded = false
             super.init(frame: frame)
+            commonInit()
+        }
+        private func commonInit() {
             glass.material = .underWindowBackground
             glass.blendingMode = .behindWindow
             glass.state = .active
@@ -372,6 +441,16 @@ extension Array {
             super.layout()
             glass.frame = bounds
             tint.frame = bounds
+            if leftRounded {
+                let r = CGFloat(floatingPanelRadius)
+                // Only when the size changed: this runs on every frame of a live resize.
+                guard tintMask.frame.size != bounds.size else { return }
+                CATransaction.begin(); CATransaction.setDisableActions(true)
+                defer { CATransaction.commit() }
+                tintMask.frame = bounds
+                tintMask.path = CGPath(roundedRect: CGRect(x: 0, y: 0, width: bounds.width + 2 * r, height: bounds.height),
+                                       cornerWidth: r, cornerHeight: r, transform: nil)
+            }
         }
 
     }

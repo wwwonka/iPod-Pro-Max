@@ -95,6 +95,7 @@ struct ContentView: View {
 
         .task {
             #if canImport(AppKitBackend)
+            MacChrome.shared.installContainerMask()
             MacChrome.shared.onSidebarChange = { open in sidebarOpen = open }
             MacChrome.shared.onSidebarWidth = { points in sidebarPoints = points }
             #endif
@@ -238,6 +239,7 @@ struct ContentView: View {
             else { selection = item; if item == .music { mode = .allSongs } }
             if settingsLoaded, let store = portableLibrary?.store, let mode {
                 PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
+                if let tab = navigationSelection.wrappedValue.persistentName { PortablePreferences.shared.stageLastTab(tab, store: store) }
             }
         })
     }
@@ -269,6 +271,7 @@ struct ContentView: View {
         await playlistWrite?.value
         if settingsLoaded, let store = portableLibrary?.store, let mode {
             PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
+            if let tab = navigationSelection.wrappedValue.persistentName { PortablePreferences.shared.stageLastTab(tab, store: store) }
         }
         try await PortablePreferences.shared.flush()
         try await PodcastController.shared.flush()
@@ -556,6 +559,23 @@ struct ContentView: View {
             if !settingsLoaded {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
+                // The page shown last time (a deleted playlist falls back to Music).
+                if let name = settings?.lastTab, let item = SidebarItem(persistentName: name) {
+                    if case .playlist(let id) = item, !(library?.playlists.contains { $0.id == id } ?? false) {
+                        selection = .music
+                    } else if item == .artists {
+                        selection = .music; mode = .byArtist
+                    } else {
+                        selection = item
+                        if item == .music { mode = .allSongs }
+                    }
+                }
+                #if canImport(AppKitBackend)
+                let store = loaded.store
+                MacChrome.shared.setUpSidebarPersistence(width: settings?.sidebarWidth) { width in
+                    PortablePreferences.shared.stageSidebarWidth(width, store: store)
+                }
+                #endif
                 settingsLoaded = true
             }
             if !loaded.configured { transferStatus = "Choose your music folder with +." }
@@ -715,7 +735,8 @@ struct ContentView: View {
                 // The content makes room for the sidebar, which fills the panel's left side.
                 .padding(.leading, !nativeSplitProbe && sidebarOpen && !isDevicePage ? sidebarPoints : 0)
                 .background(WindowBackground())
-                .cornerRadius(floatingPanelRadius)
+                // The split view's container mask rounds the corners in native mode.
+                .cornerRadius(nativeSplitProbe ? 0 : floatingPanelRadius)
                 .padding(.trailing, floatingPanelMargin)
                 .padding(.bottom, floatingPanelMargin)
                 #endif

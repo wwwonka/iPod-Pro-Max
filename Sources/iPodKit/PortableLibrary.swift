@@ -61,13 +61,18 @@ public struct PortableSettings: Codable, Sendable {
     public var version = 1
     public var syncArtwork = true
     public var musicViewMode = "All Songs"
+    /// The sidebar's width in points, and the page last shown in it.
+    public var sidebarWidth: Double?
+    public var lastTab: String?
     public init() {}
-    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode }
+    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode, sidebarWidth, lastTab }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
         syncArtwork = try values.decodeIfPresent(Bool.self, forKey: .syncArtwork) ?? true
         musicViewMode = try values.decodeIfPresent(String.self, forKey: .musicViewMode) ?? "All Songs"
+        sidebarWidth = try values.decodeIfPresent(Double.self, forKey: .sidebarWidth)
+        lastTab = try values.decodeIfPresent(String.self, forKey: .lastTab)
     }
 }
 

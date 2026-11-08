@@ -658,6 +658,37 @@
                 && area.frame.width > 500 && abs(area.frame.minX - CGFloat(mediaRailWidth)) < 1
         }
 
+        /// Restores the saved sidebar width once the split view exists, and reports each width the user
+        /// drags it to. Native split mode only.
+        /// One rounded shape for the sidebar and the main view together: the split view is clipped to a
+        /// rounded rectangle (the area below the title bar, inside the margins), and the title bar stays
+        /// whole. The pages inside are square: opening or closing the sidebar never changes a corner.
+        private var containerMask: ContainerMask?
+        func installContainerMask(attempt: Int = 0) {
+            guard Self.nativeSplitMode, containerMask == nil else { return }
+            if let split = nativeSplit(), split.frame.width > 500 {
+                containerMask = ContainerMask(split)
+            } else if attempt < 40 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    MainActor.assumeIsolated { self?.installContainerMask(attempt: attempt + 1) }
+                }
+            }
+        }
+
+        func setUpSidebarPersistence(width: Double?, onChange: @escaping (Double) -> Void, attempt: Int = 0) {
+            guard Self.nativeSplitMode else { return }
+            if let split = nativeSplit(), split.frame.width > 500 {
+                if let width {
+                    split.applySidebarWidth(CGFloat(min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)))
+                }
+                split.onDragEnd = { onChange(Double($0.rounded())) }
+            } else if attempt < 40 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    MainActor.assumeIsolated { self?.setUpSidebarPersistence(width: width, onChange: onChange, attempt: attempt + 1) }
+                }
+            }
+        }
+
         func setSidebarAvailable(_ available: Bool, attempt: Int = 0) {
             if Self.nativeSplitMode {
                 wantsSidebar = available
@@ -667,6 +698,9 @@
                 if let split = nativeSplit() {
                     // At once, in the update pass that changes the page: the layout being computed reads the new width.
                     if ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil { FileHandle.standardError.write(Data("[avail] \(available) open=\(sidebarOpen) pane=\(Int(split.frame.width))\n".utf8)) }
+                    // No interaction with the sidebar's edge on the iPod page, nor from the toolbar.
+                    split.dividerDragEnabled = available
+                    split.dividerTopInset = CGFloat(titleBarHeight)
                     split.setSidebarOpenAtOnce(available && sidebarOpen)
                 } else if attempt < 40 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -886,5 +920,39 @@ final class SidebarResizeHandle: NSView {
         guard tracking, let area = superview else { return }
         NSCursor.resizeLeftRight.set()
         MacChrome.shared.dragSidebarEdge(to: area.convert(event.locationInWindow, from: nil).x)
+    }
+}
+
+
+@MainActor
+final class ContainerMask {
+    private weak var split: NSView?
+    private let shape = CAShapeLayer()
+    private var observer: NSObjectProtocol?
+    init(_ split: NSView) {
+        self.split = split
+        split.wantsLayer = true
+        split.postsFrameChangedNotifications = true
+        split.layer?.mask = shape
+        observer = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: split, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
+        update()
+    }
+    private func update() {
+        guard let split else { return }
+        let bounds = split.bounds
+        let margin = CGFloat(floatingPanelMargin), top = CGFloat(titleBarHeight), r = CGFloat(floatingPanelRadius)
+        // Coordinates follow the layer: the origin is at the bottom unless the view is flipped.
+        let flipped = split.isFlipped
+        let panel = CGRect(x: 0, y: flipped ? top : margin, width: bounds.width - margin, height: bounds.height - top - margin)
+        let strip = CGRect(x: 0, y: flipped ? 0 : bounds.height - top, width: bounds.width, height: top)
+        let path = CGMutablePath()
+        path.addRoundedRect(in: panel, cornerWidth: r, cornerHeight: r)
+        path.addRect(strip)
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        shape.frame = bounds
+        shape.path = path
+        CATransaction.commit()
     }
 }
