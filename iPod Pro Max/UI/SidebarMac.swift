@@ -311,7 +311,9 @@
                 }
                 if let icon = node.icon {
                     let image = systemSymbol(icon)
-                    (cell as? SidebarCell)?.customIcon = customSymbols[icon] == nil ? nil : image
+                    // AppKit automatically substitutes filled variants in source lists. Keep the
+                    // TV Shows glyph on the explicitly requested outline `tv`, selected or not.
+                    (cell as? SidebarCell)?.customIcon = customSymbols[icon] != nil || icon == "tv" ? image : nil
                     cell.imageView?.image = image
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
