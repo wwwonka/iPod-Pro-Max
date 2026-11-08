@@ -10,14 +10,14 @@ enum SidebarItem: Hashable {
     case device(String)
     case music, recentMusic, artists, albums, podcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
     /// Sections kept out of the rail, behind its "…" menu.
-    case games, contacts, calendars, notes, files
+    case games, contacts, calendars, notes, files, firmware
     case playlist(String)
     case videoPlaylist(String)
 
     /// Library rows, in the order the SwiftUI app shows them by default.
     static let library: [SidebarItem] = [.music, .podcasts, .audiobooks, .videos, .photos]
     /// Sections kept out of the rail, reached from its "…" menu.
-    static let otherSections: [SidebarItem] = [.games, .contacts, .calendars, .notes, .files]
+    static let otherSections: [SidebarItem] = [.games, .contacts, .calendars, .notes, .files, .firmware]
 
     /// The page's name in settings.json (an iPod's page isn't remembered).
     var persistentName: String? {
@@ -39,6 +39,7 @@ enum SidebarItem: Hashable {
         case .calendars: "calendars"
         case .notes: "notes"
         case .files: "files"
+        case .firmware: "firmware"
         case .playlist(let id): "playlist:" + id
         case .videoPlaylist(let id): "videoPlaylist:" + id
         }
@@ -47,7 +48,7 @@ enum SidebarItem: Hashable {
         if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
         if name.hasPrefix("videoPlaylist:") { self = .videoPlaylist(String(name.dropFirst("videoPlaylist:".count))); return }
         let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .podcasts, .audiobooks, .videos, .photos,
-                                  .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files]
+                                  .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files, .firmware]
         guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
         self = item
     }
@@ -57,7 +58,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .music, .recentMusic, .artists, .albums, .playlist: .music
         case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: .videos
-        case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files: self
+        case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files, .firmware: self
         case .device: nil
         }
     }
@@ -76,6 +77,7 @@ enum SidebarItem: Hashable {
         case .calendars: "Calendars"
         case .notes: "Notes"
         case .files: "Files"
+        case .firmware: "Firmware"
         default: "Section"
         }
     }
@@ -100,6 +102,7 @@ enum SidebarItem: Hashable {
         case .calendars: "Calendars"
         case .notes: "Notes"
         case .files: "Files"
+        case .firmware: "Firmware"
         case .playlist: "Playlist"
         case .videoPlaylist: "Video Playlist"
         }
@@ -124,6 +127,7 @@ enum SidebarItem: Hashable {
         case .calendars: "calendar"
         case .notes: "long.text.page.and.pencil"
         case .files: "folder"
+        case .firmware: "cpu"
         case .playlist: "music.note.list"
         case .videoPlaylist: "film.stack"
         }

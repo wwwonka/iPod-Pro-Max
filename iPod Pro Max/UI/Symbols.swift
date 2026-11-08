@@ -111,6 +111,7 @@ private func symbolFallback(_ name: String) -> String {
     case "antenna.radiowaves.left.and.right": "Podcasts"
     case "book": "Books"
     case "film", "film.stack", "tv", "music.note.tv": "Video"
+    case "cpu": "CPU"
     case "photo.on.rectangle.angled": "Photos"
     case "plus": "+"
     case "xmark": "×"

@@ -151,6 +151,7 @@
         /// sidebar `Label` does.
         final class SidebarCell: NSTableCellView {
             var dimmed = false { didSet { updateTint() } }
+            var customIcon: NSImage? { didSet { updateTint() } }
             /// iPod rows only.
             var ejectButton: EjectButton?
             /// A section's name: big and white, in a label of its own. The source list restyles the
@@ -197,12 +198,27 @@
                     : backgroundStyle == .emphasized ? .alternateSelectedControlTextColor
                     : .controlAccentColor
                 imageView?.contentTintColor = color
+                if let customIcon {
+                    imageView?.image = Self.colored(customIcon, color: color)
+                    return
+                }
                 // The source list overrides a template image's tint with its own gray, so the symbol
                 // carries its color itself (a palette configuration the list can't restyle).
                 if #available(macOS 12, *), let image = imageView?.image,
                    let tinted = image.withSymbolConfiguration(.init(paletteColors: [color])) {
                     imageView?.image = tinted
                 }
+            }
+
+            private static func colored(_ source: NSImage, color: NSColor) -> NSImage {
+                let result = NSImage(size: source.size, flipped: false) { rect in
+                    source.draw(in: rect)
+                    color.setFill()
+                    rect.fill(using: .sourceIn)
+                    return true
+                }
+                result.accessibilityDescription = source.accessibilityDescription
+                return result
             }
 
             override func viewDidChangeEffectiveAppearance() {
@@ -294,7 +310,9 @@
                     (cell as? SidebarCell)?.onPlus = { [weak self] in self?.onAdd(target) }
                 }
                 if let icon = node.icon {
-                    cell.imageView?.image = systemSymbol(icon)
+                    let image = systemSymbol(icon)
+                    (cell as? SidebarCell)?.customIcon = customSymbols[icon] == nil ? nil : image
+                    cell.imageView?.image = image
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
                 let dimmed = !node.isGroup && node.item == nil

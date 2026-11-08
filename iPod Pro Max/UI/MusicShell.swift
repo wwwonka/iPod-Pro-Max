@@ -415,7 +415,7 @@ final class ExtraMenuRow: NSView {
         pin.isBordered = false
         pin.imagePosition = .imageOnly
         pin.target = self; pin.action = #selector(togglePin)
-        pin.frame = NSRect(x: bounds.width - 34, y: 6, width: 22, height: 20)
+        pin.frame = NSRect(x: bounds.width - 31, y: 6, width: 22, height: 20)
         pin.autoresizingMask = [.minXMargin]
         pin.setAccessibilityLabel("Pin to Sidebar")
         [icon, title, pin].forEach(addSubview)
@@ -447,7 +447,25 @@ final class ExtraMenuRow: NSView {
         title.textColor = highlighted ? .white : .labelColor
         // The gray of the system's secondary controls; white on the selection.
         pin.image = symbol(pinned ? "pin.fill" : "pin", size: 11, color: highlighted ? .white : .secondaryLabelColor)
+            .map { rotated($0, clockwiseDegrees: 30) }
         needsDisplay = true
+    }
+
+    private func rotated(_ source: NSImage, clockwiseDegrees: CGFloat) -> NSImage {
+        let side = ceil(max(source.size.width, source.size.height) * 1.4)
+        let result = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSGraphicsContext.saveGraphicsState()
+            let transform = NSAffineTransform()
+            transform.translateX(by: rect.midX, yBy: rect.midY)
+            transform.rotate(byDegrees: -clockwiseDegrees)
+            transform.translateX(by: -source.size.width / 2, yBy: -source.size.height / 2)
+            transform.concat()
+            source.draw(in: NSRect(origin: .zero, size: source.size))
+            NSGraphicsContext.restoreGraphicsState()
+            return true
+        }
+        result.accessibilityDescription = source.accessibilityDescription
+        return result
     }
 
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); restyle() }
