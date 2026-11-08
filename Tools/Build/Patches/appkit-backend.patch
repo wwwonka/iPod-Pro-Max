@@ -1,0 +1,521 @@
+diff --git a/Sources/AppKitBackend/Features/SplitViews.swift b/Sources/AppKitBackend/Features/SplitViews.swift
+index 3329b554..95b6fc51 100644
+--- a/Sources/AppKitBackend/Features/SplitViews.swift
++++ b/Sources/AppKitBackend/Features/SplitViews.swift
+@@ -4,9 +4,7 @@ import AppKit
+ extension AppKitBackend: BackendFeatures.SplitViews {
+     public func createSplitView(leadingChild: Widget, trailingChild: Widget) -> Widget {
+         let splitView = NSCustomSplitView()
+-        let leadingChildWithEffect = NSVisualEffectView()
+-        leadingChildWithEffect.blendingMode = .behindWindow
+-        leadingChildWithEffect.material = .sidebar
++        let leadingChildWithEffect = NSView()
+         leadingChildWithEffect.addSubview(leadingChild)
+         leadingChild.widthAnchor.constraint(equalTo: leadingChildWithEffect.widthAnchor)
+             .isActive = true
+@@ -31,6 +29,7 @@ extension AppKitBackend: BackendFeatures.SplitViews {
+         delegate.leadingWidth = defaultLeadingWidth
+         splitView.delegate = delegate
+         splitView.resizingDelegate = delegate
++        delegate.splitView = splitView
+         return splitView
+     }
+ 
+diff --git a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
+index c297bea2..7d02f371 100644
+--- a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
++++ b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
+@@ -1,5 +1,102 @@
+ import AppKit
+ 
+-class NSCustomSplitView: NSSplitView {
++public class NSCustomSplitView: NSSplitView {
+     var resizingDelegate: NSSplitViewResizingDelegate?
++    private var animationTimer: Timer?
++    private var openWidth: CGFloat = 200
++    private var animationTarget: Bool?
++
++    /// AppKit tracks a divider drag inside `mouseDown`, returning at mouse up. While it runs the
++    /// panes are resized natively and the app is told once, when the drag is over.
++    override public func mouseDown(with event: NSEvent) {
++        resizingDelegate?.beginDrag()
++        super.mouseDown(with: event)
++        resizingDelegate?.endDrag()
++    }
++
++    /// Shows or hides the sidebar pane at once, from inside the app's own update: no slide, and no layout
++    /// requested (the layout being computed reads the new width).
++    public func setSidebarOpenAtOnce(_ open: Bool) {
++        guard let delegate = resizingDelegate, subviews.count > 1 else { return }
++        if animationTimer != nil, animationTarget == open { return }
++        if animationTimer == nil, open == isSidebarOpen { return }
++        animationTimer?.invalidate()
++        animationTimer = nil
++        animationTarget = nil
++        let pane = subviews[0]
++        if !open, !pane.isHidden, pane.frame.width >= CGFloat(delegate.minimumLeadingWidth) { openWidth = pane.frame.width }
++        let to = open ? max(openWidth, CGFloat(delegate.minimumLeadingWidth)) : 0
++        delegate.beginSilent()
++        pane.isHidden = false
++        setPosition(to, ofDividerAt: 0)
++        pane.isHidden = !open
++        delegate.endSilent(width: open ? to : 0)
++    }
++
++    public var isSidebarOpen: Bool { !(subviews.first?.isHidden ?? true) }
++
++    /// Opens or closes the sidebar pane by moving the divider natively, frame by frame, the content
++    /// pane following; the app lays out once, at the end. The timer lives for the animation only.
++    public func setSidebarOpen(_ open: Bool, animated: Bool) {
++        guard let delegate = resizingDelegate, subviews.count > 1 else { return }
++        // The app asks again for the state it is in at every update: that never interrupts a slide.
++        if animationTimer != nil, animationTarget == open { return }
++        if animationTimer == nil, open == isSidebarOpen { return }
++        animationTarget = open
++        animationTimer?.invalidate()
++        animationTimer = nil
++        let pane = subviews[0]
++        let from = pane.isHidden ? 0 : pane.frame.width
++        if !open, from >= CGFloat(delegate.minimumLeadingWidth) { openWidth = from }
++        let to = open ? max(openWidth, CGFloat(delegate.minimumLeadingWidth)) : 0
++        pane.isHidden = false
++        delegate.beginAnimation()
++        let finish = { [weak self] in
++            guard let self else { return }
++            self.setPosition(to, ofDividerAt: 0)
++            pane.isHidden = !open
++            self.animationTimer = nil
++            self.animationTarget = nil
++            delegate.endAnimation()
++        }
++        if ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil { fputs("[anim] request open=\(open) animated=\(animated) from=\(Int(from)) to=\(Int(to)) reduceMotion=\(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)\n", stderr) }
++        guard animated, from != to, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { finish(); return }
++        let start = CACurrentMediaTime(), duration = 0.3
++        let tracing = ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil
++        var trace: [String] = []
++        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
++            guard let self else { timer.invalidate(); return }
++            let p = min(1, (CACurrentMediaTime() - start) / duration)
++            let eased = p < 0.5 ? 2 * p * p : 1 - pow(-2 * p + 2, 2) / 2
++            if p >= 1 {
++                timer.invalidate(); finish()
++                if tracing { fputs("[anim] open=\(open) from=\(Int(from)) to=\(Int(to)) steps=\(trace.count): \(trace.joined(separator: " "))\n", stderr) }
++                return
++            }
++            self.setPosition(from + (to - from) * CGFloat(eased), ofDividerAt: 0)
++            if tracing { trace.append("\(Int(self.subviews[0].frame.width))/\(Int(self.subviews[1].frame.width))") }
++        }
++        animationTimer = timer
++        RunLoop.main.add(timer, forMode: .common)
++    }
++
++    /// IPPM_BENCH_SIDEBAR: drags the divider out and back like a pointer would (60 steps of 16 ms each way),
++    /// through the same begin/end calls, so the layouts it causes can be timed.
++    public func benchDrag() {
++        guard let delegate = resizingDelegate, subviews.count > 1 else { return }
++        let from = subviews[0].frame.width
++        fputs("[bench] start from=\(from) width=\(bounds.width)\n", stderr)
++        delegate.beginDrag()
++        var step = 0
++        let timer = Timer(timeInterval: 0.016, repeats: true) { [weak self] timer in
++            guard let self else { timer.invalidate(); return }
++            step += 1
++            let keep = ProcessInfo.processInfo.environment["IPPM_BENCH_KEEP"] != nil
++            if step > (keep ? 40 : 120) { timer.invalidate(); delegate.endDrag(); fputs("[bench] end width=\(self.subviews[0].frame.width)\n", stderr); return }
++            let t = (step <= 60 || keep) ? Double(step) / 60 : Double(120 - step) / 60
++            let target = min(from + 250 * CGFloat(t), self.bounds.width - 800)
++            self.setPosition(target, ofDividerAt: 0)
++        }
++        RunLoop.main.add(timer, forMode: .common)
++    }
+ }
+diff --git a/Sources/AppKitBackend/Helpers/NSCustomWindow.swift b/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
+index cd364459..129114ee 100644
+--- a/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
++++ b/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
+@@ -67,10 +67,34 @@ public class NSCustomWindow: NSWindow {
+             NotificationCenter.default.removeObserver(window)
+         }
+ 
++        /// Size the window is animating to (double-click on the title bar, Zoom, tiling). The app lays out for
++        /// the size the window has at each step, not once for the final one.
++        private var zoomTarget: NSSize?
++
++        private let tracing = ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil
++        private func trace(_ message: String) { if tracing { fputs("[win] \(message)\n", stderr) } }
++
++        func windowDidResize(_ notification: Notification) {
++            trace("didResize width=\(Int((notification.object as? NSWindow)?.frame.width ?? 0)) zooming=\(zoomTarget != nil)")
++            guard let target = zoomTarget, let resizeHandler, let window = notification.object as? NSWindow else { return }
++            let contentSize = window.contentRect(forFrameRect: window.frame)
++            resizeHandler(
++                SIMD2(Int(contentSize.width.rounded(.towardZero)), Int(contentSize.height.rounded(.towardZero))))
++            if abs(window.frame.width - target.width) < 1, abs(window.frame.height - target.height) < 1 { zoomTarget = nil }
++        }
++
+         func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
++            trace("willResize to \(Int(frameSize.width)) zooming=\(zoomTarget != nil)")
+             guard let resizeHandler else {
+                 return frameSize
+             }
++            // Outside a drag on the window's edge (a zoom, a tiling move), AppKit asks for the final size
++            // up front and then animates: `windowDidResize` lays out at each step instead.
++            if !sender.inLiveResize {
++                zoomTarget = frameSize
++                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.zoomTarget = nil }
++                return frameSize
++            }
+ 
+             let contentSize = sender.contentRect(
+                 forFrameRect: NSRect(
+diff --git a/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift b/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
+index c9f05a89..b4f565ec 100644
+--- a/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
++++ b/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
+@@ -8,6 +8,215 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+     var isFirstUpdate = true
+     /// Tracks whether AppKit is resizing the side bar (as opposed to the user resizing it).
+     var appKitIsResizing = false
++    /// A divider drag is under way: the app is told when it ends, not at every pointer move.
++    var isDragging = false
++    private var widthAtDragStart = 0
++    private var lastTrailingWidth: CGFloat?
++    private var layingOut = false
++    private var displayObserver: CFRunLoopObserver?
++    private var displaySamples: [String] = []
++    private var contentSamples: [String] = []
++    var lastPaneWidth: CGFloat = 0
++
++    /// Last word before the frame goes to the screen: whatever the app's layout or Auto Layout moved since the
++    /// last pointer event is put back to the panes' widths. With IPPM_BENCH_LAYOUT it also records the result.
++    private func startDisplayTrace() {
++        guard displayObserver == nil else { return }
++        displayObserver = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, CFRunLoopActivity.beforeWaiting.rawValue, true, 1_999_000) { [weak self] _, _ in
++            guard let self, self.isDragging, let split = self.splitView, let side = split.subviews.first else { return }
++            self.fillPanes(of: split)
++            guard self.tracing else { return }
++            func find(_ v: NSView) -> NSOutlineView? { if let o = v as? NSOutlineView { return o }; for s in v.subviews { if let f = find(s) { return f } }; return nil }
++            let outline = find(side)
++            let scroll = outline?.enclosingScrollView
++            let row = outline?.rowView(atRow: 1, makeIfNecessary: false)
++            let content = split.subviews[1]
++            func chain(_ v: NSView, _ d: Int) -> String { guard d > 0, let f = v.subviews.first else { return "" }; return "\(Int(f.frame.width))" + (d > 1 ? ">" + chain(f, d - 1) : "") }
++            self.contentSamples.append("W\(Int(content.frame.width)) \(chain(content, 4))")
++            self.displaySamples.append("P\(Int(side.frame.width)) last=\(Int(self.lastPaneWidth)) div=\(Int(split.subviews[1].frame.minX)) child=\(Int(side.subviews.first?.frame.width ?? -1)) scroll=\(Int(scroll?.frame.width ?? -1)) clip=\(Int(scroll?.contentView.frame.width ?? -1)) outline=\(Int(outline?.frame.width ?? -1)) col=\(Int(outline?.tableColumns.first?.width ?? -1)) row=\(Int(row?.frame.width ?? -1))")
++        }
++        CFRunLoopAddObserver(CFRunLoopGetMain(), displayObserver, .commonModes)
++    }
++
++    private func stopDisplayTrace() {
++        if let displayObserver { CFRunLoopRemoveObserver(CFRunLoopGetMain(), displayObserver, .commonModes) }
++        displayObserver = nil
++        if tracing, !displaySamples.isEmpty { fputs("[display] \(displaySamples.joined(separator: " | "))\n", stderr); fputs("[content] \(contentSamples.joined(separator: " | "))\n", stderr) }
++        contentSamples = []
++        displaySamples = []
++    }
++    private var liveLayouts: [Double] = []
++    private var liveTrace: [String] = []
++    private var sideTrace: [String] = []
++    private let tracing = ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil
++    private var resizeEvents = 0
++    private var lastLiveLayout: CFTimeInterval = 0
++
++    weak var splitView: NSSplitView?
++
++    /// Cursor rects and tracking areas are recomputed over the whole view tree at every frame change:
++    /// off while the panes move, with the resize cursor held by hand.
++    private func quiet(_ on: Bool) {
++        guard ProcessInfo.processInfo.environment["IPPM_NO_QUIET"] == nil, let window = splitView?.window else { return }
++        if on {
++            window.disableCursorRects()
++            NSCursor.resizeLeftRight.push()
++        } else {
++            NSCursor.pop()
++            window.enableCursorRects()
++            window.resetCursorRects()
++        }
++    }
++
++    func beginDrag() {
++        quiet(true)
++        startDisplayTrace()
++        isDragging = true
++        widthAtDragStart = leadingWidth
++        lastTrailingWidth = nil
++    }
++
++    /// The sidebar is being opened or closed by `setSidebarOpen`: the bounds don't apply.
++    var animating = false
++
++    /// The sidebar is shown or hidden inside the app's own update: the bounds don't apply and the app is
++    /// not asked to lay out again.
++    var silent = false
++
++    func beginSilent() {
++        silent = true
++        animating = true
++    }
++
++    func endSilent(width: CGFloat) {
++        leadingWidth = Int(width.rounded())
++        animating = false
++        silent = false
++    }
++
++    func beginAnimation() {
++        animating = true
++        beginDrag()
++    }
++
++    func endAnimation() {
++        animating = false
++        isDragging = false
++        lastTrailingWidth = nil
++        quiet(false)
++        stopDisplayTrace()
++        resizeHandler?()
++    }
++
++    func endDrag() {
++        if ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil {
++            let sorted = liveLayouts.sorted()
++            func pct(_ p: Double) -> String { sorted.isEmpty ? "-" : String(format: "%.1f", sorted[min(sorted.count - 1, Int(Double(sorted.count) * p))]) }
++            fputs("[live] events=\(resizeEvents) layouts=\(sorted.count) median=\(pct(0.5)) p90=\(pct(0.9)) max=\(pct(0.999)) ms\n", stderr)
++        }
++        if tracing, !liveTrace.isEmpty { fputs("[trace] after fill (pane:child x+w): \(liveTrace.joined(separator: " "))\n", stderr) }
++        if tracing, !sideTrace.isEmpty { fputs("[sidetrace] \(sideTrace.joined(separator: " "))\n", stderr) }
++        sideTrace = []
++        liveTrace = []
++        liveLayouts = []
++        resizeEvents = 0
++        isDragging = false
++        lastTrailingWidth = nil
++        quiet(false)
++        stopDisplayTrace()
++        if leadingWidth != widthAtDragStart {
++            resizeHandler?()
++            if let splitView { fillPanes(of: splitView) }
++        }
++    }
++
++    /// While a pane is resized natively, the app's layout doesn't run: its views get autoresizing
++    /// masks instead, so AppKit carries the new width down the whole tree. A view that spans its
++    /// parent's width stretches with it, one that hugs its right edge follows that edge.
++    /// SwiftCrossUI's layout is a few points off the pane's width during a drag, and its views ignore
++    /// autoresizing masks. Once it has laid out, the views that fill each pane are put back to the pane's
++    /// exact width and the difference is carried down the tree by hand: views as wide as their parent
++    /// follow its width, views flush with its right edge follow that edge.
++    private func fillPanes(of splitView: NSSplitView) {
++        guard splitView.subviews.count > 1 else { return }
++        func carry(_ view: NSView, from oldWidth: CGFloat, to width: CGFloat) {
++            let delta = width - oldWidth
++            guard abs(delta) >= 0.5 else { return }
++            for sub in view.subviews {
++                let subOld = sub.frame.width
++                var frame = sub.frame
++                // Already at the new width: the view (or its parent, which lays its children out itself when
++                // it is resized) has followed on its own. Moving it again would count the difference twice.
++                if abs(subOld - width) < 0.5 { continue }
++                if abs(subOld - oldWidth) < 12 || (frame.minX < 24 && abs(frame.maxX - oldWidth) < 24 && subOld > 0) {
++                    frame.size.width = max(subOld + delta, 0)
++                    sub.frame = frame
++                    // A scroll view, a table or a text view resizes its own insides when its frame changes:
++                    // carrying the difference down into them as well would count it twice.
++                    if sub is NSScrollView || sub is NSTableView || sub is NSClipView || sub is NSTextView { continue }
++                    carry(sub, from: subOld, to: frame.width)
++                } else if abs(frame.maxX - oldWidth) < 24, frame.minX >= 24 {
++                    frame.origin.x += delta
++                    sub.frame = frame
++                }
++            }
++        }
++        func fill(_ view: NSView, width: CGFloat) {
++            let slack = max(40, width * 0.25)  // a fast drag moves the pane by tens of points per event
++            for child in view.subviews where abs(child.frame.width - width) < slack {
++                let old = child.frame.width
++                if abs(old - width) >= 0.5 {
++                    child.setFrameSize(NSSize(width: width, height: child.frame.height))
++                    carry(child, from: old, to: width)
++                }
++                if abs(child.frame.minX) < slack, abs(child.frame.minX) >= 0.5 { child.setFrameOrigin(NSPoint(x: 0, y: child.frame.minY)) }
++            }
++        }
++        let sidebar = splitView.subviews[0], content = splitView.subviews[1]
++        fill(content, width: content.bounds.width)
++        // The sidebar's container is pinned by Auto Layout, which catches up with the pane one pass late: set now.
++        fill(sidebar, width: sidebar.bounds.width)
++        for wrapper in sidebar.subviews { fill(wrapper, width: sidebar.bounds.width) }
++    }
++
++    private var savedMasks: [(NSView, NSView.AutoresizingMask, Bool)] = []
++
++    private func prepareAutoresizing(of splitView: NSSplitView) {
++        guard savedMasks.isEmpty else { return }
++        let slack: CGFloat = 24
++        func prepare(_ view: NSView) {
++            savedMasks.append((view, view.autoresizingMask, view.autoresizesSubviews))
++            view.autoresizesSubviews = true
++            let width = view.bounds.width
++            for sub in view.subviews {
++                let leftGap = sub.frame.minX, rightGap = width - sub.frame.maxX
++                if leftGap <= slack, rightGap <= slack, sub.frame.width > 0 {
++                    savedMasks.append((sub, sub.autoresizingMask, sub.autoresizesSubviews))
++                    sub.autoresizingMask = .width
++                } else if rightGap <= slack {
++                    savedMasks.append((sub, sub.autoresizingMask, sub.autoresizesSubviews))
++                    sub.autoresizingMask = .minXMargin
++                } else if abs(leftGap - rightGap) <= slack {
++                    savedMasks.append((sub, sub.autoresizingMask, sub.autoresizesSubviews))
++                    sub.autoresizingMask = [.minXMargin, .maxXMargin]
++                } else {
++                    savedMasks.append((sub, sub.autoresizingMask, sub.autoresizesSubviews))
++                    sub.autoresizingMask = []
++                }
++                prepare(sub)
++            }
++        }
++        for pane in splitView.subviews { prepare(pane) }
++    }
++
++    private func restoreAutoresizing() {
++        // Restored in reverse, so the first entry of a view (its original state) wins.
++        for (view, mask, subviews) in savedMasks.reversed() {
++            view.autoresizingMask = mask
++            view.autoresizesSubviews = subviews
++        }
++        savedMasks.removeAll()
++    }
+ 
+     func setResizeHandler(_ handler: @escaping () -> Void) {
+         resizeHandler = handler
+@@ -25,8 +234,38 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+             Int(width.rounded())
+         }
+         let previousWidth = leadingWidth
+-        leadingWidth = paneWidths[0]
++        leadingWidth = splitView.subviews[0].isHidden ? 0 : paneWidths[0]
+ 
++        if silent { return }
++        if isDragging {
++            resizeEvents += 1
++            lastPaneWidth = splitView.subviews[0].frame.width
++            if tracing { fputs("[rs] didResize pane=\(Int(splitView.subviews[0].frame.width)) leadingWidth=\(leadingWidth) previous=\(previousWidth)\n", stderr) }
++            // One path, no throttle: at every move the app lays out synchronously with this exact width, so
++            // the sidebar and the content (the two panes of this one container) are placed from the same
++            // number, together. Pointer events coalesce on their own while a layout runs.
++            if leadingWidth != previousWidth, !layingOut {
++                layingOut = true
++                let t0 = CACurrentMediaTime()
++                resizeHandler?()
++                layingOut = false
++                lastLiveLayout = CACurrentMediaTime()
++                liveLayouts.append((lastLiveLayout - t0) * 1000)
++            }
++            // Safety net: anything the layout left a step behind is put back to the panes' widths.
++            fillPanes(of: splitView)
++            if tracing, let pane = splitView.subviews.last, let child = pane.subviews.first {
++                func inner(_ view: NSView, _ depth: Int) -> String {
++                    guard depth > 0 else { return "" }
++                    return view.subviews.prefix(2).map { "\(Int($0.frame.minX))+\(Int($0.frame.width))" + (depth > 1 ? "(" + inner($0, depth - 1) + ")" : "") }.joined(separator: ",")
++                }
++                liveTrace.append("p\(Int(pane.frame.width)):c\(Int(child.frame.minX))+\(Int(child.frame.width))[\(inner(child, 3))]")
++                if let side = splitView.subviews.first, let sideChild = side.subviews.first {
++                    sideTrace.append("P\(Int(side.frame.width)):C\(Int(sideChild.frame.minX))+\(Int(sideChild.frame.width))[\(inner(sideChild, 4))]")
++                }
++            }
++            return
++        }
+         // Only call the handler if the side bar has actually changed size.
+         if leadingWidth != previousWidth {
+             resizeHandler?()
+@@ -39,6 +278,7 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+         ofSubviewAt dividerIndex: Int
+     ) -> CGFloat {
+         if dividerIndex == 0 {
++            if animating { return proposedMinimumPosition }
+             return CGFloat(minimumLeadingWidth)
+         } else {
+             return proposedMinimumPosition
+@@ -51,6 +291,7 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+         ofSubviewAt dividerIndex: Int
+     ) -> CGFloat {
+         if dividerIndex == 0 {
++            if animating { return proposedMaximumPosition }
+             return CGFloat(maximumLeadingWidth)
+         } else {
+             return proposedMaximumPosition
+@@ -58,7 +299,10 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+     }
+ 
+     func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
++        let before = splitView.subviews[0].frame.width
+         splitView.adjustSubviews()
++        if tracing, isDragging { fputs("[rs] resizeSubviews pane \(Int(before)) -> \(Int(splitView.subviews[0].frame.width)) leadingWidth=\(leadingWidth) appKitIsResizing=\(appKitIsResizing)\n", stderr) }
++        if animating { return }
+ 
+         if isFirstUpdate {
+             splitView.setPosition(max(200, CGFloat(minimumLeadingWidth)), ofDividerAt: 0)
+diff --git a/Sources/SwiftCrossUI/Scenes/WindowReference.swift b/Sources/SwiftCrossUI/Scenes/WindowReference.swift
+index f3358592..8edd7560 100644
+--- a/Sources/SwiftCrossUI/Scenes/WindowReference.swift
++++ b/Sources/SwiftCrossUI/Scenes/WindowReference.swift
+@@ -172,6 +172,7 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
+                 // TODO: Figure out whether this would still work if we didn't recompute the
+                 //   scene's body. I have a vague feeling that it wouldn't work in all cases?
+                 //   But I don't have the time to come up with a counterexample right now.
++                let started = DispatchTime.now().uptimeNanoseconds
+                 self.update(
+                     self.scene,
+                     proposedWindowSize: backend.size(ofWindow: window),
+@@ -179,6 +180,10 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
+                     backend: backend,
+                     environment: environment
+                 )
++                if layoutTimingEnabled {
++                    let ms = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
++                    fputs("[layout] \(String(format: "%.1f", ms)) ms\n", stderr)
++                }
+             }
+         let outerColorScheme = environment.colorScheme
+ 
+@@ -258,6 +263,7 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
+             minimum: minimumWindowSize.vector,
+             maximum: maximumWindowSize?.vector
+         )
++        if layoutTimingEnabled { fputs("[min] window min=\(minimumWindowSize.vector) proposed=\(proposedWindowSize)\n", stderr) }
+ 
+         let finalContentResult = viewGraph.computeLayout(
+             proposedSize: ProposedViewSize(proposedWindowSize),
+@@ -340,3 +346,6 @@ final class WindowReference<SceneType: WindowingScene>: ModelObserver {
+         }
+     }
+ }
++
++/// IPPM_BENCH_LAYOUT=1 prints how long each window update (probe layout, layout and commit) takes.
++private let layoutTimingEnabled = ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil
+diff --git a/Sources/SwiftCrossUI/Views/SplitView.swift b/Sources/SwiftCrossUI/Views/SplitView.swift
+index 3dd4f5c9..0f8f05d9 100644
+--- a/Sources/SwiftCrossUI/Views/SplitView.swift
++++ b/Sources/SwiftCrossUI/Views/SplitView.swift
+@@ -51,6 +51,7 @@ struct SplitView<Sidebar: View, Detail: View>: TypeSafeView, View {
+         backend: Backend
+     ) -> ViewLayoutResult {
+         let leadingWidth = Double(backend.sidebarWidth(ofSplitView: widget))
++        if splitTracing { fputs("[split] compute lead=\(leadingWidth) proposed=\(String(describing: proposedSize.width))\n", stderr) }
+ 
+         // TODO: If computeLayout ever becomes a pure requirement of View, then we
+         //   can delay this until commit.
+@@ -127,6 +128,7 @@ struct SplitView<Sidebar: View, Detail: View>: TypeSafeView, View {
+         }
+ 
+         let leadingWidth = backend.sidebarWidth(ofSplitView: widget)
++        if splitTracing { fputs("[split] commit lead=\(leadingWidth) size=\(layout.size.width)\n", stderr) }
+         let leadingResult = children.leadingChild.commit()
+         let trailingResult = children.trailingChild.commit()
+ 
+@@ -213,3 +215,5 @@ class SplitViewChildren<Sidebar: View, Detail: View>: ViewGraphNodeChildren {
+         paneChildren.child1
+     }
+ }
++
++private let splitTracing = ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil

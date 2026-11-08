@@ -17,7 +17,7 @@ Journal de la refonte de l'interface sur la branche `codex/interface-glass` (mac
 
 ## Sidebar
 
-- Verre sombre (`hudWindow`, voile noir 0,45, masque d'arrondi à gauche), plus sombre que la barre et le rail. Le voile est arrondi à gauche seulement par un masque de forme (`CAShapeLayer`) et non par `maskedCorners`, que le rendu en image ignore : les coins droits sont droits, y compris en capture. Flou du fond réglé à 60 (filtre `gaussianBlur` de `CABackdropLayer`, par KVC, réappliqué après 0,5 s car créé après le premier dessin). Trait sombre de 1 pt sur son bord droit.
+- (Verre retiré depuis le 7 novembre 2026, le temps de la refonte du séparateur : la sidebar est le panneau gauche du split natif, sur le fond de fenêtre. L'ancien rendu :) Verre sombre (`hudWindow`, voile noir 0,45, masque d'arrondi à gauche), plus sombre que la barre et le rail. Le voile est arrondi à gauche seulement par un masque de forme (`CAShapeLayer`) et non par `maskedCorners`, que le rendu en image ignore : les coins droits sont droits, y compris en capture. Flou du fond réglé à 60 (filtre `gaussianBlur` de `CABackdropLayer`, par KVC, réappliqué après 0,5 s car créé après le premier dessin). Trait sombre de 1 pt sur son bord droit.
 - Elle glisse par-dessus le panneau (Core Animation, `transform.translation.x`, ease-in-out 0,3 s, réglable par `IPPM_SLIDE_SECONDS`). Les animations sont posées avant la mise en page de l'app (appel `onSidebarChange` différé) pour supprimer le délai avant le départ ; le contenu et la liste s'estompent en fondu.
 - Titres (7 novembre 2026) : le titre de la section principale (« Music ») est en 19 pt gras (`SidebarMetrics.titleFontSize`, 17 avant) et son centre vertical est aligné sur celui de l'icône la plus haute du rail, l'iPod : mesure sur capture, le texte était 2,75 pt trop bas, corrigé par `headerLift` (2,25 pt, après le changement de taille). « Playlists » n'est plus une section à part entière mais un groupe natif de liste latérale : légende petite et grise dessinée par le système, repliable par le chevron qui apparaît au survol, sans « + » (rangée de 30 pt, `subHeaderHeight`, texte aligné sur les icônes). Elle reste un groupe de même niveau que Music, comme les groupes du Finder, pour garder l'indentation native. Seul le premier groupe (`isMain`) a le grand titre.
 - La ligne « All Songs » prend le symbole `music.quarternote.3`.
@@ -35,11 +35,9 @@ Journal de la refonte de l'interface sur la branche `codex/interface-glass` (mac
 
 Mesuré en build release : une mise en page de l'app après un changement de largeur coûte **~40 ms** (84 ms en debug), soit un plafond d'environ 25 images par seconde. Le profil du fil principal montre le temps dans le graphe de vues de SwiftCrossUI (`ViewGraphNode.computeLayout` / `commit`, `withObservationTracking` imbriqué).
 
-Solution retenue (macOS) : pendant le glisser, la largeur est **native**. Les vues de la sidebar sont redimensionnées directement et le contenu, encore calculé pour l'ancienne largeur, est déplacé par sa couche (aucune mise en page de l'app à chaque mouvement). L'app ne recalcule qu'une fois, au relâchement ou au claquement ouvert/fermé. Tant que sa mise en page n'a pas rattrapé la valeur, tout ce qu'elle valide entre-temps est remis en place aussitôt (observateurs de `frameDidChange`, `liveWidth`). Limite : pendant le glisser, le contenu garde sa largeur d'avant (légère coupe ou marge à droite), corrigée au relâchement.
+Solution retenue (7 novembre 2026) : le séparateur natif de SwiftCrossUI, avec un layout synchrone à chaque changement de largeur (médiane 7 ms sur page vide). Détails, causes des oscillations et mesures dans [[Séparateur de sidebar natif macOS]]. L'ancienne solution (largeur native, contenu déplacé par sa couche, rattrapage au relâchement) est abandonnée.
 
-Première tentative, abandonnée : la même idée sans rattrapage, la sidebar reprenait sa largeur dès que l'app validait autre chose (chargement de la bibliothèque, etc.).
-
-Piste pour la suite et pour GTK/WinUI : conteneurs de séparation natifs (`GtkPaned`, `SplitView`/`Grid` WinUI), SwiftCrossUI ne gardant que le contenu des panneaux. Détail dans [[Manques SwiftCrossUI]].
+Pour GTK/WinUI : conteneurs de séparation natifs (`GtkPaned`, `SplitView`/`Grid` WinUI), SwiftCrossUI ne gardant que le contenu des panneaux. Détail dans [[Manques SwiftCrossUI]].
 
 ## Mise à jour de SwiftCrossUI
 

@@ -39,6 +39,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Manques SwiftCrossUI]] : ce qu'il faut ajouter au framework, et ce que le prototype a découvert
 - [[Composants natifs par plateforme]] : tableau, sidebar, icônes et fenêtre natifs, derrière une même vue Swift
 - [[Refonte verre macOS]] : cadre de verre, rail, sidebar redimensionnable, recherche native, mesures de mise en page
+- [[Séparateur de sidebar natif macOS]] : `NSSplitView` natif, glisser, zoom et page iPod sans saut, causes des oscillations
 - [[Barre de titre 44 pt macOS]] : barre de 44 pt, recentrage des boutons, tailles des contrôles de la barre d'outils
 - [[Symboles personnalisés SVG]] : icônes hors SF Symbols (Apple Music) traitées comme des symboles, largeur du rail normalisée
 - [[Captures d'écran en développement]] : variables de capture, mesures sur image, et ce qu'une capture ne montre pas

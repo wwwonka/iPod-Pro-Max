@@ -323,11 +323,23 @@ extension Array {
             else { return }
             let spacing = table.intercellSpacing.width * CGFloat(columns.count)
             let fixed = columns.filter { $0.width >= 1 }.reduce(0) { $0 + $1.width }
-            let flexible = max(0, contentView.bounds.width - spacing - fixed - 24)
+            let flexible = max(0, contentView.bounds.width - spacing - fixed - 24).rounded(.down)
+            // Rounding each flexible column down separately leaves up to a few points over, which moved the
+            // fixed columns behind them (Year, Time) at every width: the last flexible one takes the exact rest.
+            let lastFlexible = columns.indices.last { columns[$0].width < 1 }
+            var used: CGFloat = 0
             for column in table.tableColumns {
                 guard let index = Int(column.identifier.rawValue), columns.indices.contains(index) else { continue }
                 let spec = columns[index]
-                column.width = spec.width >= 1 ? spec.width : (flexible * spec.width).rounded(.down)
+                if spec.width >= 1 {
+                    column.width = spec.width
+                } else if index == lastFlexible {
+                    column.width = max(0, flexible - used)
+                } else {
+                    let width = (flexible * spec.width).rounded(.down)
+                    column.width = width
+                    used += width
+                }
             }
         }
     }

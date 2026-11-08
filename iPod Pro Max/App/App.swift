@@ -13,6 +13,10 @@ import iPodKit
     import WinAppSDK
 #endif
 
+#if canImport(AppKitBackend)
+    private let nativeSplitProbe = ProcessInfo.processInfo.environment["IPPM_LEGACY_SPLIT"] == nil
+#endif
+
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
     @State var portableLibrary: LoadedPortableLibrary?
@@ -48,15 +52,29 @@ struct ContentView: View {
     @State var playlistEditorName = ""
 
     var body: some View {
+        #if canImport(AppKitBackend)
+        // Before the layout of this pass, so the sidebar and the page change in the same frame.
+        let _: Void = MacChrome.shared.setSidebarAvailable(!isDevicePage)
+        #endif
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .bottom) {
                 HStack(spacing: 0) {
                     MediaRail(selection: navigationSelection, devices: devices)
                     #if canImport(AppKitBackend)
-                    // The main view keeps its place; the sidebar floats over its left side.
-                    ZStack(alignment: .topLeading) {
-                        detail
-                        sidebarColumn.frame(width: sidebarPoints)
+                    if nativeSplitProbe {
+                        // SwiftCrossUI's own NSSplitView, as on Linux and Windows (IPPM_LEGACY_SPLIT=1: the old overlay).
+                        NavigationSplitView {
+                            sidebarColumn
+                        } detail: {
+                            // Always fills its pane (SwiftCrossUI centres a smaller one), and bounds the sidebar's width.
+                            detail.frame(minWidth: 760, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        }
+                    } else {
+                        // The main view keeps its place; the sidebar floats over its left side.
+                        ZStack(alignment: .topLeading) {
+                            detail
+                            sidebarColumn.frame(width: sidebarPoints)
+                        }
                     }
                     #else
                     NavigationSplitView {
@@ -561,7 +579,7 @@ struct ContentView: View {
         }
         #if canImport(AppKitBackend)
         // Dark glass in the main view's shape: below the top band, flush with the window's bottom.
-        .background(SidebarGlass())
+        .background(nativeSplitProbe ? AnyView(WindowBackground()) : AnyView(SidebarGlass()))
         .padding(.top, Int(titleBarHeight))
         .padding(.bottom, floatingPanelMargin)
         #else
@@ -695,7 +713,7 @@ struct ContentView: View {
                 }
                 #if canImport(AppKitBackend)
                 // The content makes room for the sidebar, which fills the panel's left side.
-                .padding(.leading, sidebarOpen && !isDevicePage ? sidebarPoints : 0)
+                .padding(.leading, !nativeSplitProbe && sidebarOpen && !isDevicePage ? sidebarPoints : 0)
                 .background(WindowBackground())
                 .cornerRadius(floatingPanelRadius)
                 .padding(.trailing, floatingPanelMargin)

@@ -52,6 +52,17 @@
         /// Tells the app the sidebar's width while its edge is dragged.
         var onSidebarWidth: ((Int) -> Void)?
         private var sidebarOpen = true
+        /// The sidebar is SwiftCrossUI's own NSSplitView, which owns its geometry (IPPM_LEGACY_SPLIT=1 brings the old overlay back).
+        static let nativeSplitMode = ProcessInfo.processInfo.environment["IPPM_LEGACY_SPLIT"] == nil
+        private var benchStarted = false
+        private func nativeSplit() -> NSCustomSplitView? {
+            func find(_ view: NSView) -> NSCustomSplitView? {
+                if let split = view as? NSCustomSplitView { return split }
+                for sub in view.subviews { if let found = find(sub) { return found } }
+                return nil
+            }
+            return window?.contentView.flatMap(find)
+        }
         /// Open, and the page has a sidebar.
         private var sidebarShown: Bool { sidebarOpen && sidebarAvailable }
         private var slideRevision = 0
@@ -397,6 +408,23 @@
         /// The cut and the rim must exist from the start, not only after the first slide: waits for the
         /// sidebar's views to be built.
         private func shapeAreaWhenReady(attempt: Int = 0) {
+            if Self.nativeSplitMode {
+                if ProcessInfo.processInfo.environment["IPPM_BENCH_SIDEBAR"] != nil {
+                    if let split = nativeSplit(), split.frame.width > 500 {
+                        guard !benchStarted else { return }
+                        benchStarted = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            split.setSidebarOpen(true, animated: false)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { split.benchDrag() }
+                        }
+                    } else if attempt < 100 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                            MainActor.assumeIsolated { self?.shapeAreaWhenReady(attempt: attempt + 1) }
+                        }
+                    }
+                }
+                return
+            }
             // Only once the layout has settled: the column is as wide as the sidebar and its area is wider.
             if let column = sidebarColumn(), let area = column.superview,
                column.frame.width > 150, column.frame.width <= sidebarWidthRange.upperBound + 10, area.frame.width > 500, abs(area.frame.minX - CGFloat(mediaRailWidth)) < 1 {
@@ -447,13 +475,14 @@
         private static let snapOpenAbove: CGFloat = 80
 
         /// While the edge is dragged, the width is native: the app's layout takes ~40 ms, far too slow for
-        /// every pointer move, so the sidebar's views are resized directly and the content, still laid out
-        /// for the old width, is moved by its layer. The app lays out once, when the drag ends; the width
-        /// stays ours until its layout has caught up (`liveWidth` is nil again), and whatever the app
-        /// commits in between is put back at once.
+        /// every pointer move, so the sidebar's views are resized directly and so is the content, which
+        /// keeps its right edge and takes whatever width the sidebar leaves (views as wide as the content
+        /// follow it). The app lays out once, when the drag ends; the width stays ours until its layout
+        /// has caught up (`liveWidth` is nil again), and whatever the app commits in between is put back.
         private var liveWidth: CGFloat?
-        private var liveObservers: [NSObjectProtocol] = []
-        private var liveFixScheduled = false
+        private var liveContentRight: CGFloat?
+        private var liveObserver: NSObjectProtocol?
+        private var applyingLive = false
 
         func dragSidebarEdge(to x: CGFloat) {
             if sidebarShown {
@@ -465,44 +494,66 @@
             // The content needs its own minimum, so the sidebar can't take more than the window leaves.
             let areaWidth = sidebarColumn()?.superview?.bounds.width ?? 1100
             let upper = max(Self.narrowest, min(sidebarWidthRange.upperBound, Double(areaWidth) - 760 - Double(floatingPanelMargin)))
+            if liveContentRight == nil { liveContentRight = contentContainer?.frame.maxX }
             liveWidth = CGFloat(min(max(Double(x), Self.narrowest), upper).rounded())
-            observeLiveFrames()
+            observeLiveFrame()
             applyLiveWidth()
         }
 
-        private func observeLiveFrames() {
-            guard liveObservers.isEmpty, let column = sidebarColumn(), let content = contentContainer else { return }
-            for view in [column, content] {
-                view.postsFrameChangedNotifications = true
-                liveObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.applyLiveWidth() }
-                })
+        /// Watches the content's frame, for the app putting it back to a stale layout (or catching up).
+        private func observeLiveFrame() {
+            guard liveObserver == nil, let content = contentContainer else { return }
+            content.postsFrameChangedNotifications = true
+            liveObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: content, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.applyingLive, let live = self.liveWidth, let content = self.contentContainer else { return }
+                    let left = self.sidebarShown ? live : 0
+                    if abs(content.frame.minX - left) < 0.5, !(self.resizeHandle?.tracking ?? false) {
+                        self.finishLive()  // the app's layout has caught up
+                    } else {
+                        self.applyLiveWidth()  // a stale layout: put the drag back
+                    }
+                }
             }
         }
 
-        /// Puts the sidebar's views and the content where the drag left them.
+        private func finishLive() {
+            liveWidth = nil
+            liveContentRight = nil
+            if let observer = liveObserver { NotificationCenter.default.removeObserver(observer) }
+            liveObserver = nil
+        }
+
+        /// Puts the sidebar's views and the content where the drag left them. Never re-entered by the
+        /// frame changes it causes itself.
         private func applyLiveWidth() {
-            guard let live = liveWidth, let column = sidebarColumn(), let content = contentContainer else { return }
+            guard !applyingLive, let live = liveWidth, let content = contentContainer else { return }
+            applyingLive = true
+            defer { applyingLive = false }
             if sidebarShown { resizeSidebarViews(to: live); placeResizeHandle() }
-            content.wantsLayer = true
-            let shift = (sidebarShown ? live : 0) - content.frame.minX
+            let left = sidebarShown ? live : 0
+            let right = liveContentRight ?? content.frame.maxX
+            let target = NSRect(x: left, y: content.frame.minY, width: max(right - left, 1), height: content.frame.height)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            content.layer?.setAffineTransform(abs(shift) < 0.5 ? .identity : CGAffineTransform(translationX: shift, y: 0))
-            CATransaction.commit()
-            // The app's layout has caught up: nothing left to hold.
-            if abs(shift) < 0.5, !(resizeHandle?.tracking ?? false), !sidebarShown || abs(column.frame.width - live) < 0.5 {
-                liveWidth = nil
-                return
+            content.layer?.setAffineTransform(.identity)
+            if abs(content.frame.minX - target.minX) >= 0.5 || abs(content.frame.width - target.width) >= 0.5 {
+                let old = content.frame.width
+                content.frame = target
+                resizeWidth(of: content, from: old, to: target.width)
             }
-            // The app sets a column's children after the column itself: look again once it is done.
-            guard !liveFixScheduled else { return }
-            liveFixScheduled = true
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.liveFixScheduled = false
-                    self?.applyLiveWidth()
-                }
+            CATransaction.commit()
+        }
+
+        /// Descendants as wide as their parent was follow it to the new width.
+        private func resizeWidth(of view: NSView, from oldWidth: CGFloat, to width: CGFloat) {
+            for sub in view.subviews {
+                let subOld = sub.frame.width
+                guard abs(subOld - oldWidth) < 1.5 else { continue }
+                var frame = sub.frame
+                frame.size.width = width
+                sub.frame = frame
+                resizeWidth(of: sub, from: subOld, to: width)
             }
         }
 
@@ -546,6 +597,10 @@
             if sidebarOpen, let width = liveWidth { onSidebarWidth?(Int(width)) }
             placeResizeHandle()
             applyLiveWidth()
+            // A safety net, once: if the app never lays out (same width as before), let go of the drag.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                MainActor.assumeIsolated { if !(self?.resizeHandle?.tracking ?? false) { self?.finishLive() } }
+            }
         }
 
         private var areaObserver: NSObjectProtocol?
@@ -604,6 +659,22 @@
         }
 
         func setSidebarAvailable(_ available: Bool, attempt: Int = 0) {
+            if Self.nativeSplitMode {
+                wantsSidebar = available
+                sidebarAvailable = available
+                if #available(macOS 15.0, *) { toggleItem?.isHidden = !available; scheduleTitleAreaRelayout() }
+                toggleItem?.isEnabled = available
+                if let split = nativeSplit() {
+                    // At once, in the update pass that changes the page: the layout being computed reads the new width.
+                    if ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil { FileHandle.standardError.write(Data("[avail] \(available) open=\(sidebarOpen) pane=\(Int(split.frame.width))\n".utf8)) }
+                    split.setSidebarOpenAtOnce(available && sidebarOpen)
+                } else if attempt < 40 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                        MainActor.assumeIsolated { self?.setSidebarAvailable(available, attempt: attempt + 1) }
+                    }
+                }
+                return
+            }
             if attempt == 0 { wantsSidebar = available }
             guard wantsSidebar == available, available != sidebarAvailable else { return }
             // Taking the sidebar away waits until it exists (an iPod can be the first page shown).
@@ -628,6 +699,12 @@
         }
 
         @objc func toggleSidebar() {
+            if Self.nativeSplitMode {
+                guard sidebarAvailable, let split = nativeSplit() else { return }
+                sidebarOpen.toggle()
+                split.setSidebarOpen(sidebarOpen, animated: true)
+                return
+            }
             guard sidebarAvailable, let column = sidebarColumn() else { return }
             sidebarOpen.toggle()
             let opening = sidebarOpen
