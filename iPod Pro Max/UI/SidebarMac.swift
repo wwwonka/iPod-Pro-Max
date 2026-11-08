@@ -21,6 +21,7 @@
         var onAdd: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
+        private var videoPlaylists: [Playlist] { library?.videoPlaylists ?? [] }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -71,11 +72,11 @@
             // An iPod's page keeps the list of the section the user came from.
             if let media = selection.media { coordinator.media = media }
             let deviceKey: [String] = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") }
-            let playlistKey: [String] = playlists.map { $0.id + $0.name }
+            let playlistKey: [String] = (playlists + videoPlaylists).map { $0.id + $0.name }
             let key: [String] = deviceKey + ["|"] + playlistKey + ["|", coordinator.media.title]
             if key != coordinator.key {
                 coordinator.key = key
-                coordinator.sections = Self.sections(devices: devices, playlists: playlists, media: coordinator.media)
+                coordinator.sections = Self.sections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: coordinator.media)
                 outline.reloadData()
                 outline.expandItem(nil, expandChildren: true)
             }
@@ -89,9 +90,9 @@
 
         /// Group rows are what NSOutlineView collapses: on hover they show a chevron at the right,
         /// and the section slides closed or open.
-        private static func sections(devices: [String], playlists: [Playlist], media: SidebarItem) -> [Node] {
+        private static func sections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist], media: SidebarItem) -> [Node] {
             // The iPods live at the rail's bottom, not in this list.
-            let nodes = sidebarSections(devices: devices, playlists: playlists, media: media).filter { $0.title != "iPods" }.map { section in
+            let nodes = sidebarSections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: media).filter { $0.title != "iPods" }.map { section in
                 Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item, ejectable: $0.ejectable) })
             }
             nodes.first?.isMain = true
@@ -218,7 +219,7 @@
             var onEject: (SidebarItem) -> Void = { _ in }
             var onAdd: (SidebarItem) -> Void = { _ in }
             /// Libraries that have something to add.
-            private static let addable: Set<SidebarItem> = [.music, .podcasts, .audiobooks]
+            private static let addable: Set<SidebarItem> = [.music, .podcasts, .audiobooks, .videos]
             private var isSyncingSelection = false
 
             // Drops are decided by `MusicDropOutlineView` itself (it answers the drag events, see there): the

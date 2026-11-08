@@ -77,6 +77,17 @@ final class PortableFailureTests: XCTestCase {
         XCTAssertEqual(hosts.version, 1); XCTAssertTrue(hosts.hosts[0].sources.isEmpty); XCTAssertEqual(hosts.hosts[1].name, "linux")
         let cache = try decoder.decode(PortableLibraryCache.self, from: Data(#"{"tracks":[]}"#.utf8))
         XCTAssertTrue(cache.playlists.isEmpty)
+        XCTAssertTrue(cache.videoPlaylists.isEmpty)
+        let legacyDocument = try decoder.decode(LibraryDocument.self, from: Data(#"{"tracks":[],"playlists":[]}"#.utf8))
+        XCTAssertTrue(legacyDocument.videoPlaylists.isEmpty)
+    }
+    func testVideoPlaylistsRoundTripSeparatelyFromMusicPlaylists() throws {
+        let music = LibraryPlaylist(name: "Songs")
+        let video = LibraryPlaylist(name: "Clips")
+        let cache = PortableLibraryCache(playlists: [music], videoPlaylists: [video])
+        let decoded = try JSONDecoder().decode(PortableLibraryCache.self, from: JSONEncoder().encode(cache))
+        XCTAssertEqual(decoded.playlists, [music])
+        XCTAssertEqual(decoded.videoPlaylists, [video])
     }
     func testBackupPreferencesRecoverWithoutErasingOtherFields() throws {
         let (base, device, _) = try fixture(); defer { try? FileManager.default.removeItem(at: base) }

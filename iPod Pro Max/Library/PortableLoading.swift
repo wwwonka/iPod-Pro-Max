@@ -25,7 +25,7 @@ enum PortableLoading {
             if cache.tracks.isEmpty, store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.contains(where: { $0.id == hostID }) != true {
                 let legacy = legacyLibraryURL ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/iPod Pro Max/library.json")
                 if let bytes = try? Data(contentsOf: legacy), let doc = try? JSONDecoder().decode(iPodKit.LibraryDocument.self, from: bytes) {
-                    cache = PortableLibraryCache(tracks: doc.tracks, playlists: doc.playlists)
+                    cache = PortableLibraryCache(tracks: doc.tracks, playlists: doc.playlists, videoPlaylists: doc.videoPlaylists)
                     if selectedFolder == nil, let path = doc.musicFolderPath { selectedFolder = URL(fileURLWithPath: path) }
                     let oldArt = legacy.deletingLastPathComponent().appendingPathComponent("Artwork")
                     if FileManager.default.fileExists(atPath: oldArt.path), !FileManager.default.fileExists(atPath: store.artwork.path) {

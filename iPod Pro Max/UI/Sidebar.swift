@@ -8,10 +8,11 @@ enum ConnectedDeviceTitles {
 
 enum SidebarItem: Hashable {
     case device(String)
-    case music, recentMusic, artists, albums, podcasts, audiobooks, videos, photos
+    case music, recentMusic, artists, albums, podcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
     /// Sections kept out of the rail, behind its "…" menu.
     case games, contacts, calendars, notes, files
     case playlist(String)
+    case videoPlaylist(String)
 
     /// Library rows, in the order the SwiftUI app shows them by default.
     static let library: [SidebarItem] = [.music, .podcasts, .audiobooks, .videos, .photos]
@@ -29,6 +30,9 @@ enum SidebarItem: Hashable {
         case .podcasts: "podcasts"
         case .audiobooks: "audiobooks"
         case .videos: "videos"
+        case .movies: "movies"
+        case .tvShows: "tvShows"
+        case .musicVideos: "musicVideos"
         case .photos: "photos"
         case .games: "games"
         case .contacts: "contacts"
@@ -36,12 +40,14 @@ enum SidebarItem: Hashable {
         case .notes: "notes"
         case .files: "files"
         case .playlist(let id): "playlist:" + id
+        case .videoPlaylist(let id): "videoPlaylist:" + id
         }
     }
     init?(persistentName name: String) {
         if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
+        if name.hasPrefix("videoPlaylist:") { self = .videoPlaylist(String(name.dropFirst("videoPlaylist:".count))); return }
         let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .podcasts, .audiobooks, .videos, .photos,
-                                  .games, .contacts, .calendars, .notes, .files]
+                                  .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files]
         guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
         self = item
     }
@@ -50,7 +56,8 @@ enum SidebarItem: Hashable {
     var media: SidebarItem? {
         switch self {
         case .music, .recentMusic, .artists, .albums, .playlist: .music
-        case .podcasts, .audiobooks, .videos, .photos, .games, .contacts, .calendars, .notes, .files: self
+        case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: .videos
+        case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files: self
         case .device: nil
         }
     }
@@ -62,6 +69,7 @@ enum SidebarItem: Hashable {
         case .podcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
+        case .movies, .tvShows, .musicVideos, .videoPlaylist: "Videos"
         case .photos: "Photos"
         case .games: "Games"
         case .contacts: "Contacts"
@@ -83,6 +91,9 @@ enum SidebarItem: Hashable {
         case .podcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
+        case .movies: "Movies"
+        case .tvShows: "TV Shows"
+        case .musicVideos: "Music Videos"
         case .photos: "Photos"
         case .games: "Games"
         case .contacts: "Contacts"
@@ -90,6 +101,7 @@ enum SidebarItem: Hashable {
         case .notes: "Notes"
         case .files: "Files"
         case .playlist: "Playlist"
+        case .videoPlaylist: "Video Playlist"
         }
     }
 
@@ -103,6 +115,9 @@ enum SidebarItem: Hashable {
         case .podcasts: "podcasts"
         case .audiobooks: "book"
         case .videos: "film.stack"
+        case .movies: "film"
+        case .tvShows: "tv"
+        case .musicVideos: "music.note.tv"
         case .photos: "photo.on.rectangle.angled"
         case .games: "gamecontroller"
         case .contacts: "person"
@@ -110,6 +125,7 @@ enum SidebarItem: Hashable {
         case .notes: "long.text.page.and.pencil"
         case .files: "folder"
         case .playlist: "music.note.list"
+        case .videoPlaylist: "film.stack"
         }
     }
 }
@@ -131,7 +147,17 @@ struct SidebarSection {
 
 /// The sidebar's sections, the same on every platform.
 @MainActor
-func sidebarSections(devices: [String], playlists: [Playlist], media: SidebarItem = .music) -> [SidebarSection] {
+func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist] = [], media: SidebarItem = .music) -> [SidebarSection] {
+    if media == .videos {
+        return [
+            SidebarSection(title: "Videos", rows: [SidebarItem.movies, .tvShows, .musicVideos].map {
+                .init(title: $0.title, icon: $0.icon, item: $0)
+            }),
+            SidebarSection(title: "Video Playlists", rows: videoPlaylists.map {
+                .init(title: $0.name, icon: "film.stack", item: .videoPlaylist($0.id))
+            }),
+        ]
+    }
     // Another library section: its own header and its pages, no playlists (those are music's).
     if media != .music {
         return [SidebarSection(title: media.title, rows: [.init(title: "All \(media.title)", icon: media.icon, item: media)])]

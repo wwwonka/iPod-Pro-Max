@@ -84,6 +84,10 @@ struct Library {
     var artworkFolder: URL?
     var playlists: [Playlist]
     var rowsByPlaylist: [String: [TrackRow]]
+    var videoPlaylists: [Playlist] = []
+    var videoRows: [TrackRow] = []
+    var videoRowsByCategory: [VideoCategory: [TrackRow]] = [:]
+    var rowsByVideoPlaylist: [String: [TrackRow]] = [:]
     var loadMs: Int
     var indexMs: Int
     var recentRows: [TrackRow] = []
@@ -96,7 +100,26 @@ struct Library {
                   discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded)
         }
         let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
+        let videoPlaylists = cache.videoPlaylists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
+        library.videoPlaylists = videoPlaylists
+        let videos = cache.tracks.filter { $0.kind == .video }.map { track in
+            TrackRow(id: track.id.uuidString, title: track.title,
+                     artist: track.artist ?? "", album: track.album ?? "",
+                     number: track.trackNumber > 0 ? "\(track.trackNumber)" : "",
+                     year: track.year > 0 ? "\(track.year)" : "",
+                     duration: formatDuration(track.durationMs), path: track.path,
+                     artworkKey: track.artworkKey, dateAdded: track.dateAdded)
+        }
+        library.videoRows = videos
+        let categoryByID = Dictionary(uniqueKeysWithValues: cache.tracks.filter { $0.kind == .video }.map {
+            ($0.id.uuidString, $0.videoCategory ?? .movie)
+        })
+        library.videoRowsByCategory = Dictionary(grouping: videos) { categoryByID[$0.id] ?? .movie }
+        let videoByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
+        library.rowsByVideoPlaylist = Dictionary(uniqueKeysWithValues: videoPlaylists.map { playlist in
+            (playlist.id, playlist.trackIDs.compactMap { videoByID[$0] })
+        })
         library.artworkFolder = artworkFolder
         if let artworkFolder {
             library.artists = library.artists.map { artist in

@@ -434,6 +434,23 @@ struct ContentView: View {
         updatePlaylists { $0.append(playlist) }
     }
 
+    private func createVideoPlaylist() {
+        guard !scanning, !playlistSaving, portableLibrary != nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "New Video Playlist"
+        alert.informativeText = "Choose a name for your video playlist."
+        let field = NSTextField(string: "")
+        field.placeholderString = "Video playlist name"
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        updateVideoPlaylists { $0.append(LibraryPlaylist(name: name)) }
+    }
+
     #endif
 
     private func addTracksToPlaylist(_ ids: [String], _ playlistID: String) {
@@ -457,6 +474,30 @@ struct ContentView: View {
 
     private var selectedPlaylistID: String? {
         if case .playlist(let id) = selection { return id }
+        return nil
+    }
+
+    private func addVideosToPlaylist(_ ids: [String], _ playlistID: String) {
+        guard let id = UUID(uuidString: playlistID) else { return }
+        let trackIDs = ids.compactMap(UUID.init(uuidString:))
+        updateVideoPlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            var existing = Set(playlists[index].trackIDs)
+            for track in trackIDs where existing.insert(track).inserted { playlists[index].trackIDs.append(track) }
+        }
+    }
+
+    private func removeVideosFromPlaylist(_ ids: [String], _ playlistID: String) {
+        guard let id = UUID(uuidString: playlistID) else { return }
+        let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
+        updateVideoPlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
+        }
+    }
+
+    private var selectedVideoPlaylistID: String? {
+        if case .videoPlaylist(let id) = selection { return id }
         return nil
     }
 
@@ -484,6 +525,29 @@ struct ContentView: View {
         selection = .music
     }
 
+    private func renameVideoPlaylist(_ id: String) {
+        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        let alert = NSAlert(); alert.messageText = "Rename Video Playlist"
+        let field = NSTextField(string: playlist.name); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field; alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        updateVideoPlaylists { playlists in
+            if let index = playlists.firstIndex(where: { $0.id == uuid }) { playlists[index].name = name }
+        }
+    }
+
+    private func deleteVideoPlaylist(_ id: String) {
+        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        let alert = NSAlert(); alert.messageText = "Delete Video Playlist?"
+        alert.informativeText = "Delete “\(playlist.name)”? Your video files won't be deleted."
+        alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        updateVideoPlaylists { $0.removeAll { $0.id == uuid } }
+        selection = .videos
+    }
+
     #endif
 
     private func updatePlaylists(_ change: (inout [LibraryPlaylist]) -> Void) {
@@ -505,6 +569,29 @@ struct ContentView: View {
                 applyArtistPhotos()
                 transferStatus = "Playlist saved."
             } catch { transferStatus = "Couldn't save playlist: \(error.localizedDescription)" }
+            playlistSaving = false
+        }
+    }
+
+    private func updateVideoPlaylists(_ change: (inout [LibraryPlaylist]) -> Void) {
+        guard !scanning, !playlistSaving, var loaded = portableLibrary else {
+            transferStatus = "Wait for the video library to finish updating."
+            return
+        }
+        change(&loaded.cache.videoPlaylists)
+        playlistSaving = true
+        playlistWrite = Task {
+            do {
+                let saved = loaded
+                let indexed = try await Task.detached(priority: .userInitiated) {
+                    try saved.store.save(saved.cache)
+                    return Library.portable(saved.cache, source: saved.store.hostFolder.url.path, artworkFolder: saved.store.artwork)
+                }.value
+                portableLibrary = saved
+                library = indexed
+                applyArtistPhotos()
+                transferStatus = "Video playlist saved."
+            } catch { transferStatus = "Couldn't save video playlist: \(error.localizedDescription)" }
             playlistSaving = false
         }
     }
@@ -563,6 +650,8 @@ struct ContentView: View {
                 if let name = settings?.lastTab, let item = SidebarItem(persistentName: name) {
                     if case .playlist(let id) = item, !(library?.playlists.contains { $0.id == id } ?? false) {
                         selection = .music
+                    } else if case .videoPlaylist(let id) = item, !(library?.videoPlaylists.contains { $0.id == id } ?? false) {
+                        selection = .videos
                     } else if item == .artists {
                         selection = .music; mode = .byArtist
                     } else {
@@ -593,6 +682,10 @@ struct ContentView: View {
                     case .music: Task { await configureMusic() }
                     case .podcasts: addingPodcast.toggle()
                     case .audiobooks: Task { await configureAudiobooks() }
+                    case .videos:
+                        #if canImport(AppKitBackend)
+                        createVideoPlaylist()
+                        #endif
                     default: break
                     }
                 })
@@ -649,8 +742,10 @@ struct ContentView: View {
                         TrackTable(rows: tableRows(library), isActive: trackTableActive(library),
                                    onPlay: { row, displayed in startPlayback(row, displayed: displayed, library: library) },
                                    artworkFolder: library.artworkFolder,
-                                   playlists: library.playlists, onAddToPlaylist: addTracksToPlaylist,
-                                   currentPlaylistID: selectedPlaylistID, onRemoveFromPlaylist: removeTracksFromPlaylist)
+                                   playlists: selection.media == .videos ? library.videoPlaylists : library.playlists,
+                                   onAddToPlaylist: selection.media == .videos ? addVideosToPlaylist : addTracksToPlaylist,
+                                   currentPlaylistID: selection.media == .videos ? selectedVideoPlaylistID : selectedPlaylistID,
+                                   onRemoveFromPlaylist: selection.media == .videos ? removeVideosFromPlaylist : removeTracksFromPlaylist)
                         if selection == .albums && selectedAlbumID == nil {
                             AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
                                          onSelect: { selectedAlbumID = $0 }).background(WindowBackground())
@@ -768,6 +863,21 @@ struct ContentView: View {
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
             subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+        case .videos:
+            title = "Videos"
+            subtitle = videoCount(library.videoRows.count)
+        case .movies:
+            title = "Movies"
+            subtitle = videoCount(library.videoRowsByCategory[.movie]?.count ?? 0)
+        case .tvShows:
+            title = "TV Shows"
+            subtitle = videoCount(library.videoRowsByCategory[.tvShow]?.count ?? 0)
+        case .musicVideos:
+            title = "Music Videos"
+            subtitle = videoCount(library.videoRowsByCategory[.musicVideo]?.count ?? 0)
+        case .videoPlaylist(let id):
+            title = library.videoPlaylists.first { $0.id == id }?.name ?? "Video Playlist"
+            subtitle = videoCount(library.rowsByVideoPlaylist[id]?.count ?? 0)
         case .audiobooks:
             title = "Audiobooks"
             let count = audiobooks.count
@@ -798,6 +908,14 @@ struct ContentView: View {
                 Button("Delete…") { deletePlaylist(id) }.titleBarControl()
                 #endif
                 SearchField(prompt: "Search playlist", text: $search)
+            } else if case .videoPlaylist(let id) = selection {
+                #if canImport(AppKitBackend)
+                Button("Rename…") { renameVideoPlaylist(id) }.titleBarControl()
+                Button("Delete…") { deleteVideoPlaylist(id) }.titleBarControl()
+                #endif
+                SearchField(prompt: "Search video playlist", text: $search)
+            } else if selection.media == .videos {
+                SearchField(prompt: "Search videos", text: $search)
             } else if selection == .audiobooks {
                 ToolbarButton(icon: "plus") { Task { await configureAudiobooks() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
@@ -820,6 +938,7 @@ struct ContentView: View {
         case .recentMusic: return true
         case .albums: return selectedAlbumID != nil
         case .playlist: return true
+        case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: return true
         default: return false
         }
     }
@@ -838,6 +957,16 @@ struct ContentView: View {
             return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
         case .playlist(let id):
             return filtered(library.rowsByPlaylist[id] ?? [])
+        case .videos:
+            return filtered(library.videoRows)
+        case .movies:
+            return filtered(library.videoRowsByCategory[.movie] ?? [])
+        case .tvShows:
+            return filtered(library.videoRowsByCategory[.tvShow] ?? [])
+        case .musicVideos:
+            return filtered(library.videoRowsByCategory[.musicVideo] ?? [])
+        case .videoPlaylist(let id):
+            return filtered(library.rowsByVideoPlaylist[id] ?? [])
         case .podcasts where addingPodcast:
             return nil
         case .podcasts:
@@ -864,7 +993,16 @@ struct ContentView: View {
         case .audiobooks where audiobookRows.isEmpty:
             return EmptyState(icon: "book", title: scanning ? "Scanning…" : "No Audiobooks Yet",
                               message: "Choose a folder with + . A subfolder with several files becomes a book with chapters, merged into a single file with chapter marks on the iPod; a single file becomes a one-part book. Drag chapters onto an iPod in the sidebar.")
-        case .music, .playlist, .podcasts, .audiobooks, .photos:
+        case .videos where library.videoRows.isEmpty,
+             .movies where library.videoRowsByCategory[.movie, default: []].isEmpty,
+             .tvShows where library.videoRowsByCategory[.tvShow, default: []].isEmpty,
+             .musicVideos where library.videoRowsByCategory[.musicVideo, default: []].isEmpty:
+            return EmptyState(icon: selection.icon, title: "No \(selection.title) Yet",
+                              message: "Videos added to the library will appear here according to their category.")
+        case .videoPlaylist(let id) where library.rowsByVideoPlaylist[id, default: []].isEmpty:
+            return EmptyState(icon: "film.stack", title: "Empty Video Playlist",
+                              message: "Add videos from Movies, TV Shows or Music Videos.")
+        case .music, .playlist, .podcasts, .audiobooks, .photos, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).
@@ -1090,6 +1228,10 @@ func mainThreadIdle() async -> Date {
 
 func songCount(_ n: Int) -> String {
     n == 1 ? "1 song" : "\(n) songs"
+}
+
+func videoCount(_ n: Int) -> String {
+    n == 1 ? "1 video" : "\(n) videos"
 }
 
 /// Optional diagnostic output; the default Windows log also stays on the portable volume.

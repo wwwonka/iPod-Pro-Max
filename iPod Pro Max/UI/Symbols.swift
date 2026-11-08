@@ -65,6 +65,10 @@ let symbolCodepoints: [String: UInt32] = [
     "square.and.arrow.down": 0xF2FC,
     "magnifyingglass": 0xF12C,
     "film": 0xEDF5,  // landscape, as in SF Symbols 4
+    // SF Symbols 4 font fallbacks for the newer video-navigation names.
+    "film.stack": 0xEDF5,
+    "tv": 0xEDF5,
+    "music.note.tv": 0xEDF5,
     "sidebar.left": 0xED77,
     "chevron.right": 0xEBCC,
     "eject.fill": 0xF1E7,
@@ -106,7 +110,7 @@ private func symbolFallback(_ name: String) -> String {
     case "clock": "Recent"
     case "antenna.radiowaves.left.and.right": "Podcasts"
     case "book": "Books"
-    case "film": "Video"
+    case "film", "film.stack", "tv", "music.note.tv": "Video"
     case "photo.on.rectangle.angled": "Photos"
     case "plus": "+"
     case "xmark": "×"

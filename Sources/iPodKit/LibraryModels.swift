@@ -332,6 +332,8 @@ public struct LibraryDocument: Codable, Sendable {
     public var version: Int = 1
     public var tracks: [LibraryTrack] = []
     public var playlists: [LibraryPlaylist] = []
+    /// Kept separate from music playlists so the two media libraries can evolve independently.
+    public var videoPlaylists: [LibraryPlaylist] = []
     public var shows: [PodcastShow] = []
     public var deviceRecords: [String: DeviceSyncRecord] = [:]
     public var photoSelection: PhotoSelection? = PhotoSelection()
@@ -340,14 +342,33 @@ public struct LibraryDocument: Codable, Sendable {
     /// Folder the music library lives in; scanned for new files at launch and from Library ▸ Scan.
     public var musicFolderPath: String? = nil
 
-    public init(version: Int = 1, tracks: [LibraryTrack] = [], playlists: [LibraryPlaylist] = [], shows: [PodcastShow] = [], deviceRecords: [String: DeviceSyncRecord] = [:], photoSelection: PhotoSelection? = PhotoSelection(), audiobooksFolderPath: String? = nil, musicFolderPath: String? = nil) {
+    public init(version: Int = 1, tracks: [LibraryTrack] = [], playlists: [LibraryPlaylist] = [], videoPlaylists: [LibraryPlaylist] = [], shows: [PodcastShow] = [], deviceRecords: [String: DeviceSyncRecord] = [:], photoSelection: PhotoSelection? = PhotoSelection(), audiobooksFolderPath: String? = nil, musicFolderPath: String? = nil) {
         self.version = version
         self.tracks = tracks
         self.playlists = playlists
+        self.videoPlaylists = videoPlaylists
         self.shows = shows
         self.deviceRecords = deviceRecords
         self.photoSelection = photoSelection
         self.audiobooksFolderPath = audiobooksFolderPath
         self.musicFolderPath = musicFolderPath
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, tracks, playlists, videoPlaylists, shows, deviceRecords, photoSelection
+        case audiobooksFolderPath, musicFolderPath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        tracks = try values.decodeIfPresent([LibraryTrack].self, forKey: .tracks) ?? []
+        playlists = try values.decodeIfPresent([LibraryPlaylist].self, forKey: .playlists) ?? []
+        videoPlaylists = try values.decodeIfPresent([LibraryPlaylist].self, forKey: .videoPlaylists) ?? []
+        shows = try values.decodeIfPresent([PodcastShow].self, forKey: .shows) ?? []
+        deviceRecords = try values.decodeIfPresent([String: DeviceSyncRecord].self, forKey: .deviceRecords) ?? [:]
+        photoSelection = try values.decodeIfPresent(PhotoSelection.self, forKey: .photoSelection)
+        audiobooksFolderPath = try values.decodeIfPresent(String.self, forKey: .audiobooksFolderPath)
+        musicFolderPath = try values.decodeIfPresent(String.self, forKey: .musicFolderPath)
     }
 }

@@ -22,6 +22,7 @@
         var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
+        private var videoPlaylists: [Playlist] { library?.videoPlaylists ?? [] }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -49,10 +50,12 @@
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.onEject = onEject
-            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name }
+            if let media = selection.media { coordinator.media = media }
+            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"]
+                + (playlists + videoPlaylists).map { $0.id + $0.name } + ["|", coordinator.media.title]
             if key != coordinator.key {
                 coordinator.key = key
-                coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists))
+                coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: coordinator.media))
             }
             coordinator.select(selection)
             coordinator.updateActivity(busyDevices)
@@ -68,6 +71,7 @@
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
             var onEject: (SidebarItem) -> Void = { _ in }
+            var media: SidebarItem = .music
             /// The item each eject button ejects.
             private var ejectButtons: [OpaquePointer: SidebarItem] = [:]
 

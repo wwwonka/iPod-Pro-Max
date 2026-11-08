@@ -43,16 +43,18 @@ public struct PortableLibraryCache: Codable, Equatable, Sendable {
     public var version = 1
     public var tracks: [LibraryTrack]
     public var playlists: [LibraryPlaylist]
+    public var videoPlaylists: [LibraryPlaylist]
     public var sourcePaths: [String: String]?
-    public init(tracks: [LibraryTrack] = [], playlists: [LibraryPlaylist] = []) {
-        self.tracks = tracks; self.playlists = playlists
+    public init(tracks: [LibraryTrack] = [], playlists: [LibraryPlaylist] = [], videoPlaylists: [LibraryPlaylist] = []) {
+        self.tracks = tracks; self.playlists = playlists; self.videoPlaylists = videoPlaylists
     }
-    private enum CodingKeys: String, CodingKey { case version, tracks, playlists, sourcePaths }
+    private enum CodingKeys: String, CodingKey { case version, tracks, playlists, videoPlaylists, sourcePaths }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
         tracks = try values.decodeIfPresent([LibraryTrack].self, forKey: .tracks) ?? []
         playlists = try values.decodeIfPresent([LibraryPlaylist].self, forKey: .playlists) ?? []
+        videoPlaylists = try values.decodeIfPresent([LibraryPlaylist].self, forKey: .videoPlaylists) ?? []
         sourcePaths = try values.decodeIfPresent([String: String].self, forKey: .sourcePaths)
     }
 }

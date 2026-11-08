@@ -26,6 +26,7 @@
         var onEject: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
+        private var videoPlaylists: [Playlist] { library?.videoPlaylists ?? [] }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -47,11 +48,13 @@
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
             coordinator.onEject = onEject
+            if let media = selection.media { coordinator.media = media }
             let dark = context.environment.colorScheme == .dark
-            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"] + playlists.map { $0.id + $0.name } + [dark ? "dark" : "light"]
+            let key = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") } + ["|"]
+                + (playlists + videoPlaylists).map { $0.id + $0.name } + ["|", coordinator.media.title, dark ? "dark" : "light"]
             if key != coordinator.key {
                 coordinator.key = key
-                coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists), dark: dark)
+                coordinator.rebuild(sidebarSections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: coordinator.media), dark: dark)
             }
             coordinator.select(selection)
             coordinator.updateActivity(busyDevices)
@@ -67,6 +70,7 @@
             var key: [String] = []
             var onSelect: (SidebarItem) -> Void = { _ in }
             var onEject: (SidebarItem) -> Void = { _ in }
+            var media: SidebarItem = .music
 
             fileprivate typealias Cell = (cell: WinUI.Grid, glyph: TextBlock, label: TextBlock, eject: EjectButton?, row: SidebarSection.Row)
 
