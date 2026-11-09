@@ -1,35 +1,18 @@
-# iPod Pro Max — working notes for Codex
+# iPod Pro Max — working notes
 
-See README.md for what the app does and how it's built.
+See README.md for what the app does, the repo layout and how it's built. Every change to the app ships on macOS, Windows and Linux together.
 
 ## Performance principles (always apply)
 
-The app must stay **ultra-lightweight, ultra-responsive and ultra-snappy**, and must never drain the battery for nothing. Treat these as requirements for every feature, not polish to add later.
+The app must stay **ultra-lightweight, ultra-responsive and ultra-snappy**, and must never drain the battery for nothing. These are requirements for every feature, not polish.
 
-### Use every core for heavy work
-- Any batch work over files or tracks (importing, scanning, tag reading, artwork, transcoding, sync preparation) is designed as **parallel from the start**, sized to the machine at runtime: `ProcessInfo.processInfo.activeProcessorCount`, never a hard-coded number.
-- Pattern: a `withTaskGroup` sliding window with one in-flight task per core (see `LibraryStore.importFiles` / `refreshChangedTrackMetadata`). Use fewer workers for disk-bound or memory-heavy work (e.g. ffmpeg transcodes, which are multi-threaded themselves).
-- Shared state between workers uses a lock (`OSAllocatedUnfairLock`, e.g. `ArtworkKeyCache`) or an actor, never the main actor.
-- Deduplicate expensive work: e.g. an album's tracks share one cover, so its JPEG re-encode happens once per import.
-
-### Keep the main thread free
-- The main actor only does UI and cheap bookkeeping. Disk I/O, AVFoundation, image decoding/encoding, hashing and JSON encoding of large data run off it.
-- **Batch updates to observed state.** Every mutation of `LibraryStore.tracks` re-renders and regroups the views, so append results in chunks (about every 500 ms), never one item at a time. Progress text is updated at the same cadence, not per item.
-- Views cache derived data (grouping, sorting) and recompute only when inputs change; no disk access per row per render (see `missingPaths`).
-
-### Zero work when idle
-- When the app is idle, nothing runs: no timers, no polling loops, no periodic background refreshes. React to events instead (IOKit/disk notifications, user actions, app launch).
-- Any unavoidable wait loop must be short-lived and tied to a specific operation (e.g. `SyncCoordinator.scheduleSync` waiting for the current sync to end), never open-ended.
-- Background work uses an appropriate QoS (`.utility`/`.background` for housekeeping, `.userInitiated` only for work the user is waiting on) so macOS can schedule it efficiently on battery.
-
-### Measure, don't guess
-- Benchmark hot paths before and after a change. `Tools/DbTest/run.sh <music folder> <scratch dir> --import-bench` times a full import into a throwaway library (the parallel import took 5,299 files from 77.8 s to 8.7 s on 10 cores).
+- **Use every core for heavy work.** Batch work over files or tracks (import, scan, tags, artwork, transcoding, sync prep) is parallel from the start, sized with `ProcessInfo.processInfo.activeProcessorCount`, never a hard-coded number. Use a `withTaskGroup` sliding window with one in-flight task per core (reference implementation: `LibraryStore.importFiles` in `Refs/SwiftUI/`). Use fewer workers for disk-bound or already multi-threaded work (ffmpeg). Shared state between workers goes behind a lock (`OSAllocatedUnfairLock`) or an actor, never the main actor. Deduplicate expensive work (an album's tracks share one cover, re-encoded once per import).
+- **Keep the main thread free.** The main actor only does UI and cheap bookkeeping; disk I/O, AVFoundation, image coding, hashing and large JSON encoding run off it. Batch updates to observed state (append results about every 500 ms, progress text at the same cadence), because each mutation re-renders and regroups views. Views cache derived data and recompute only when inputs change; no disk access per row per render.
+- **Zero work when idle.** No timers, polling loops or periodic refreshes; react to events (IOKit/disk notifications, user actions, launch). Any unavoidable wait loop is short-lived and tied to one operation. Background work uses the lowest suitable QoS (`.utility`/`.background`; `.userInitiated` only when the user is waiting).
+- **Measure, don't guess.** Benchmark hot paths before and after: `Tools/DbTest/run.sh <music folder> <scratch dir> --import-bench` times a full import into a throwaway library.
 
 ## How we track work
-- **Tasks and progress**: the private GitHub Project "iPod Pro Max" (https://github.com/users/wwwonka/projects/5). Issues are disabled on the public repo, so cards are draft items with a `Status` (Todo / In Progress / Done) and a `Phase` field. Manage them with `gh project item-list|item-create|item-edit 5 --owner wwwonka`.
-- When starting a task, set its card to In Progress; when it's done, set Done and put the commit hashes in the card body. New work gets a card first.
+- **Tasks**: private GitHub Project "iPod Pro Max" (https://github.com/users/wwwonka/projects/5); issues are disabled, cards are draft items with `Status` (Todo / In Progress / Done) and `Phase`. Manage with `gh project item-list|item-create|item-edit 5 --owner wwwonka`. New work gets a card first; set In Progress when starting, Done (with commit hashes in the body) when finished.
 - **Decisions, architecture, measurements**: `Docs/` (Obsidian vault opened on `Docs/`, never the repo root). Don't duplicate task status there.
-- Main application: SwiftCrossUI in `iPod Pro Max/`, built by the root `Package.swift`. Build/run helpers and framework patches live in `Tools/Build/`.
-- Former SwiftUI app: `Refs/SwiftUI/iPod Pro Max/`; Xcode project: `Refs/SwiftUI/iPod Pro Max.xcodeproj`. Preserve it as a porting reference.
-- Naming: initial capitals for project folders; keep established module names and tool-managed hidden folders. Do not create empty placeholder folders.
-- Current restructuring does not define the final feature roadmap; that will be discussed with the owner before creating the next GitHub Project.
+- **Conventions**: initial capitals for project folders; keep established module names and tool-managed hidden folders; no empty placeholder folders. The old SwiftUI app in `Refs/SwiftUI/` is a porting reference only.
+- The final feature roadmap is not defined yet; discuss it with the owner before creating the next GitHub Project.
