@@ -31,7 +31,9 @@ struct RetainedPage<Content: View>: View {
             children.node = AnyViewGraphNode(for: view, backend: backend, environment: environment)
         }
         #if canImport(AppKitBackend)
-        if MacChrome.shared.isSliding, var cached = children.lastLayout {
+        // A native resize only changes the retained viewport. Re-measuring the entire control-heavy
+        // device tree on every pointer event is wasted work; one final layout follows live resize.
+        if (MacChrome.shared.isSliding || MacChrome.shared.isLiveResizing), var cached = children.lastLayout {
             children.frozen = true
             cached.size = ViewSize(proposedSize.width ?? cached.size.width, proposedSize.height ?? cached.size.height)
             return cached
@@ -66,11 +68,11 @@ struct RetainedPage<Content: View>: View {
                 offset = 0
             }
             #if canImport(AppKitBackend)
-            // Moving the retained page can expose the container behind its old viewport.
-            // Cover the inactive track table with the same color as the page background.
+            // Moving the retained page can expose the container behind its old viewport. Keep it
+            // transparent so the window-level glass remains continuous under the whole device page.
             if let view = widget as? NSView {
                 view.wantsLayer = true
-                view.layer?.backgroundColor = devicePageBackgroundColor.cgColor
+                view.layer?.backgroundColor = NSColor.clear.cgColor
             }
             #endif
             backend.setPosition(ofChildAt: 0, in: widget, to: SIMD2(Int(offset.rounded()), 0))

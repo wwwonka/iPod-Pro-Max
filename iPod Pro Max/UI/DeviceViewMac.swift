@@ -121,13 +121,9 @@
 
         private func header(device: IPodDevice, page: DeviceView.PageState, onRename: @escaping (String) -> Void) -> NSView {
             let box = NSStackView(); box.orientation = .horizontal; box.spacing = 16; box.alignment = .centerY
-            let icon = NSImageView(image: NSImage())
-            if #available(macOS 11, *) {
-                icon.image = NSImage(systemSymbolName: "ipod", accessibilityDescription: nil)
-                icon.symbolConfiguration = .init(pointSize: 48, weight: .regular)
-                icon.contentTintColor = .controlAccentColor
-            }
-            icon.setFrameSize(NSSize(width: 80, height: 80)); box.addArrangedSubview(icon)
+            let icon = MacVolumeIconImageView(frame: .zero)
+            icon.configure(volumeRoot: device.mountPoint)
+            box.addArrangedSubview(icon)
             let labels = NSStackView(); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 4
             let name = page.renamed ?? page.contents?.name ?? device.displayName
             if page.isRenaming {
@@ -212,6 +208,309 @@
         private func secondary(_ text: String, size: CGFloat = 12) -> NSTextField { let field = label(text, size: size); field.textColor = .secondaryLabelColor; return field }
         private func check(_ title: String, on: Bool, action: Selector, object: String, enabled: Bool = true) -> NSButton { let b = NSButton(checkboxWithTitle: title, target: self, action: action); b.state = on ? .on : .off; b.identifier = NSUserInterfaceItemIdentifier(object); b.isEnabled = enabled; return b }
         private func separator() -> NSBox { let box = NSBox(); box.boxType = .separator; return box }
+    }
+
+    struct MacStorageBar: NSViewRepresentable {
+        var total: Int64
+        var values: [Int64]
+        func makeNSView(context: Context) -> StorageBarView { StorageBarView(total: total, values: values) }
+        func updateNSView(_ view: StorageBarView, context: Context) { view.update(total: total, values: values) }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: StorageBarView, context: Context) -> ViewSize {
+            ViewSize(proposal.width ?? 680, 18)
+        }
+    }
+
+    /// Inline rename actions with the same native hover language as the rail: quiet outline at
+    /// rest, then a white filled symbol under the pointer. AppKit tracking avoids view rebuilds.
+    struct MacRenameControls: NSViewRepresentable {
+        var editing: Bool
+        var onEdit: () -> Void
+        var onConfirm: () -> Void
+        var onCancel: () -> Void
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+        func makeNSView(context: Context) -> RenameControlsView {
+            let view = RenameControlsView()
+            view.coordinator = context.coordinator
+            return view
+        }
+        func updateNSView(_ view: RenameControlsView, context: Context) {
+            context.coordinator.onEdit = onEdit
+            context.coordinator.onConfirm = onConfirm
+            context.coordinator.onCancel = onCancel
+            view.setEditing(editing)
+        }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: RenameControlsView, context: Context) -> ViewSize {
+            ViewSize(editing ? 56 : 24, 34)
+        }
+
+        final class Coordinator {
+            var onEdit: () -> Void = {}
+            var onConfirm: () -> Void = {}
+            var onCancel: () -> Void = {}
+        }
+    }
+
+    final class RenameControlsView: NSView {
+        var coordinator: MacRenameControls.Coordinator?
+        private lazy var edit = makeButton(outline: "pencil", filled: "pencil",
+                                           label: "Rename", action: #selector(editName(_:)))
+        private lazy var confirm = makeButton(outline: "checkmark.circle", filled: "checkmark.circle.fill",
+                                              label: "Confirm rename", action: #selector(confirmName(_:)))
+        private lazy var cancel = makeButton(outline: "xmark.circle", filled: "xmark.circle.fill",
+                                             label: "Cancel rename", action: #selector(cancelName(_:)))
+        private var currentEditing: Bool?
+        private var transitionRevision = 0
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            addSubview(edit); addSubview(confirm); addSubview(cancel)
+            setEditing(false)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        func setEditing(_ editing: Bool) {
+            guard currentEditing != editing else { return }
+            let initial = currentEditing == nil
+            currentEditing = editing
+            transitionRevision += 1
+            let revision = transitionRevision
+            if initial {
+                edit.isHidden = editing
+                confirm.isHidden = !editing
+                cancel.isHidden = !editing
+            } else if editing {
+                edit.playDisappear { [weak self] in
+                    guard let self, self.transitionRevision == revision else { return }
+                    self.edit.isHidden = true
+                    self.confirm.isHidden = false; self.cancel.isHidden = false
+                    self.confirm.playAppear(); self.cancel.playAppear()
+                }
+            } else {
+                confirm.playDisappear { [weak self] in
+                    guard let self, self.transitionRevision == revision else { return }
+                    self.confirm.isHidden = true; self.cancel.isHidden = true
+                    self.edit.isHidden = false; self.edit.playAppear()
+                }
+            }
+            needsLayout = true
+        }
+        override func layout() {
+            super.layout()
+            // The pencil glyph is optically top-heavy inside NSButton; lower it slightly so its
+            // visual centre matches the 26-point title rather than its bounding box.
+            edit.frame = NSRect(x: 0, y: 2, width: 24, height: 24)
+            confirm.frame = NSRect(x: 0, y: (bounds.height - 24) / 2, width: 24, height: 24)
+            cancel.frame = NSRect(x: 32, y: confirm.frame.minY, width: 24, height: 24)
+        }
+        private func makeButton(outline: String, filled: String, label: String,
+                                action: Selector) -> HoverSymbolButton {
+            let button = HoverSymbolButton(outline: outline, filled: filled)
+            button.target = self
+            button.action = action
+            button.setButtonType(.momentaryChange)
+            button.toolTip = label
+            button.setAccessibilityLabel(label)
+            return button
+        }
+        @objc private func editName(_ sender: Any?) { coordinator?.onEdit() }
+        @objc private func confirmName(_ sender: Any?) { coordinator?.onConfirm() }
+        @objc private func cancelName(_ sender: Any?) { coordinator?.onCancel() }
+    }
+
+    /// One native text control for both display and editing. Switching modes therefore cannot
+    /// change the glyph origin, baseline or height; only editability and first responder change.
+    struct MacInlineNameEditor: NSViewRepresentable {
+        @Binding var text: String
+        var displayText: String
+        var textWidth: Int
+        var editing: Bool
+        var onEdit: () -> Void
+        var onSubmit: () -> Void
+        var onCancel: () -> Void
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+        func makeNSView(context: Context) -> InlineNameEditorView {
+            let view = InlineNameEditorView()
+            let field = view.field
+            field.delegate = context.coordinator
+            field.target = context.coordinator
+            field.action = #selector(Coordinator.submit)
+            context.coordinator.field = field
+            view.controls.coordinator = context.coordinator.controls
+            return view
+        }
+        func updateNSView(_ view: InlineNameEditorView, context: Context) {
+            let field = view.field
+            let coordinator = context.coordinator
+            coordinator.setText = { text = $0 }
+            coordinator.onSubmit = onSubmit
+            coordinator.controls.onEdit = onEdit
+            coordinator.controls.onConfirm = onSubmit
+            coordinator.controls.onCancel = onCancel
+            view.update(textWidth: CGFloat(textWidth), editing: editing)
+            let wanted = editing ? text : displayText
+            if field.stringValue != wanted { field.stringValue = wanted }
+            field.isEditable = editing
+            field.isSelectable = editing
+            if editing != coordinator.editing {
+                coordinator.editing = editing
+                if editing {
+                    DispatchQueue.main.async { [weak field] in
+                        guard let field, field.window != nil else { return }
+                        field.window?.makeFirstResponder(field)
+                        field.currentEditor()?.selectedRange = NSRange(location: 0, length: field.stringValue.utf16.count)
+                    }
+                } else if field.currentEditor() != nil {
+                    field.window?.makeFirstResponder(nil)
+                }
+            }
+        }
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: InlineNameEditorView, context: Context) -> ViewSize {
+            ViewSize(Double(textWidth + (editing ? 59 : 27)), 34)
+        }
+
+        final class Coordinator: NSObject, NSTextFieldDelegate {
+            weak var field: NSTextField?
+            var editing = false
+            let controls = MacRenameControls.Coordinator()
+            var setText: (String) -> Void = { _ in }
+            var onSubmit: () -> Void = {}
+            func controlTextDidChange(_ notification: Notification) {
+                if let field = notification.object as? NSTextField { setText(field.stringValue) }
+            }
+            @objc func submit() { onSubmit() }
+        }
+    }
+
+    final class InlineNameEditorView: NSView {
+        let field = NSTextField(frame: .zero)
+        let controls = RenameControlsView(frame: .zero)
+        private var textWidth: CGFloat = 0
+        private var editing = false
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            field.font = .systemFont(ofSize: 26, weight: .bold)
+            field.isBordered = false
+            field.drawsBackground = false
+            field.focusRingType = .none
+            field.lineBreakMode = .byClipping
+            field.maximumNumberOfLines = 1
+            field.cell?.wraps = false
+            field.cell?.isScrollable = true
+            addSubview(field)
+            addSubview(controls, positioned: .above, relativeTo: field)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        func update(textWidth: CGFloat, editing: Bool) {
+            self.textWidth = textWidth
+            self.editing = editing
+            controls.setEditing(editing)
+            needsLayout = true
+        }
+        override func layout() {
+            super.layout()
+            field.frame = NSRect(x: 0, y: 0, width: textWidth, height: bounds.height)
+            controls.frame = NSRect(x: textWidth + 3, y: 0, width: editing ? 56 : 24, height: bounds.height)
+        }
+    }
+
+    final class HoverSymbolButton: NSButton {
+        private let outline: String
+        private let filled: String
+        private var tracking: NSTrackingArea?
+        private var hovered = false { didSet { if hovered != oldValue { refresh() } } }
+        private let glyphView = NSImageView()
+
+        init(outline: String, filled: String) {
+            self.outline = outline; self.filled = filled
+            super.init(frame: .zero)
+            isBordered = false
+            imagePosition = .imageOnly
+            focusRingType = .none
+            addSubview(glyphView)
+            refresh()
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func layout() { super.layout(); glyphView.frame = bounds }
+        // The animated image view must never become the event target. AppKit has already established
+        // that the point lies in this subview before asking it to resolve the deepest hit.
+        override func hitTest(_ point: NSPoint) -> NSView? { self }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            let next = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)
+            addTrackingArea(next); tracking = next
+        }
+        override func mouseEntered(with event: NSEvent) { hovered = true }
+        override func mouseExited(with event: NSEvent) { hovered = false }
+        func playAppear() {
+            if #available(macOS 14.0, *) {
+                glyphView.addSymbolEffect(.disappear, options: .default, animated: false)
+                DispatchQueue.main.async { [weak self] in self?.glyphView.addSymbolEffect(.appear) }
+            } else {
+                alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.25; animator().alphaValue = 1
+                }
+            }
+        }
+        func playDisappear(completion: @escaping () -> Void) {
+            if #available(macOS 14.0, *) {
+                glyphView.addSymbolEffect(.disappear)
+            } else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.25; animator().alphaValue = 0
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { completion() }
+        }
+        private func refresh() {
+            if #available(macOS 11.0, *) {
+                glyphView.image = NSImage(systemSymbolName: hovered ? filled : outline, accessibilityDescription: nil)
+                glyphView.symbolConfiguration = .init(pointSize: 15, weight: .regular)
+            }
+            glyphView.contentTintColor = hovered ? .white : .secondaryLabelColor
+        }
+    }
+
+    /// Stable native storage drawing: resizing redraws one view instead of rebuilding a GeometryReader tree.
+    final class StorageBarView: NSView {
+        private var total: Int64
+        private var values: [Int64]
+        private let colors: [NSColor] = [.systemBlue, .systemPurple, .systemOrange, .systemPink,
+                                         .systemGreen, .systemGray]
+
+        init(total: Int64, values: [Int64]) {
+            self.total = total
+            self.values = values
+            super.init(frame: .zero)
+            wantsLayer = true
+            layer?.cornerRadius = 6
+            layer?.masksToBounds = true
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        func update(total: Int64, values: [Int64]) {
+            guard self.total != total || self.values != values else { return }
+            self.total = total; self.values = values; needsDisplay = true
+        }
+        override var isFlipped: Bool { true }
+        override func draw(_ dirtyRect: NSRect) {
+            NSColor.secondaryLabelColor.withAlphaComponent(0.12).setFill()
+            bounds.fill()
+            guard total > 0 else { return }
+            var x: CGFloat = 0
+            for (index, value) in values.enumerated() where value > 0 {
+                // A real but proportionally tiny category must still be identifiable. Three points
+                // is enough to expose its color without materially falsifying the capacity scale.
+                let proportional = bounds.width * CGFloat(Double(value) / Double(total))
+                let width = min(bounds.width - x, max(3, proportional))
+                guard width > 0 else { continue }
+                colors[min(index, colors.count - 1)].setFill()
+                NSRect(x: x, y: 0, width: width, height: bounds.height).fill()
+                x += width
+            }
+        }
     }
 
 #endif

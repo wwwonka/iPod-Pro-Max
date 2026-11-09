@@ -455,19 +455,11 @@ extension Array {
 
     }
 
-    /// The iPod page and the surface exposed while it slides use exactly the same color.
-    let devicePageBackgroundColor = NSColor(srgbRed: 40.0 / 255, green: 40.0 / 255, blue: 40.0 / 255, alpha: 1)
-
     struct DevicePageBackground: NSViewRepresentable {
-        func makeNSView(context: Context) -> NSBox {
-            let box = NSBox()
-            box.boxType = .custom
-            box.borderWidth = 0
-            box.fillColor = devicePageBackgroundColor
-            return box
-        }
+        /// Exposes the one window-level glass shared with the rail and title toolbar.
+        func makeNSView(context: Context) -> NSView { NSView() }
 
-        func updateNSView(_ box: NSBox, context: Context) {}
+        func updateNSView(_ view: NSView, context: Context) {}
     }
 #elseif canImport(GtkBackend)
     import CGtk

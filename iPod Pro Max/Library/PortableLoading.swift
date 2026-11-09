@@ -11,7 +11,7 @@ struct LoadedPortableLibrary {
 }
 
 enum PortableLoading {
-    static func load(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool = false, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
+    static func load(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool = false, removedKind: SourceKind? = nil, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
         try await Task.detached(priority: .userInitiated) {
             guard let root = overrideRoot ?? PortableRoot.url else { throw LoadingError.noRoot }
             guard let hostID = HostIdentity.current() else { throw LoadingError.noIdentity }
@@ -68,6 +68,18 @@ enum PortableLoading {
                 cache.sourcePaths = Dictionary(host.sources.map { ($0.id.uuidString, $0.path) }, uniquingKeysWith: { a, _ in a })
             } else {
                 cache.tracks.removeAll { !FileManager.default.isReadableFile(atPath: $0.path) }
+            }
+            // The library only holds what the folders in Settings hold: the last folder of a kind was
+            // removed (its tracks go), or a folder left known_hosts.json while the app was closed.
+            let musicRoots = host.sources.filter { $0.kind == .music || $0.kind == .audiobooks }.map { $0.path.hasSuffix("/") ? $0.path : $0.path + "/" }
+            if removedKind == .music, !host.sources.contains(where: { $0.kind == .music }) {
+                cache.tracks = cache.tracks.filter(\.isAudiobook)
+            }
+            if removedKind == .audiobooks, !host.sources.contains(where: { $0.kind == .audiobooks }) {
+                cache.tracks = cache.tracks.filter { !$0.isAudiobook }
+            }
+            if !musicRoots.isEmpty {
+                cache.tracks.removeAll { track in !musicRoots.contains { track.path.hasPrefix($0) } }
             }
             // Playlist membership is a saved choice. Missing tracks have no visible rows,
             // but keep their IDs so a reconnected source can populate the playlist again.

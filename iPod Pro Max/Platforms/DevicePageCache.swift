@@ -45,6 +45,9 @@ final class DevicePageCache {
     func invalidate(_ device: IPodDevice) { snapshots.invalidate(device) }
     func forget(_ device: IPodDevice) {
         invalidate(device)
+        #if canImport(AppKitBackend)
+            MacVolumeIconLoader.shared.remove(device.mountPoint)
+        #endif
         lastKnown[device] = nil
         writes.removeValue(forKey: device)?.cancel()
         pending[device] = nil

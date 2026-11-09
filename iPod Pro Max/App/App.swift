@@ -19,6 +19,7 @@ import iPodKit
 
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
+    @Environment(\.openWindow) private var openWindow
     @State var portableLibrary: LoadedPortableLibrary?
     @State var busyDevices: Set<String> = []
     @State var transferStatus = ""
@@ -50,6 +51,9 @@ struct ContentView: View {
     @State var selectedAlbumID: String?
     @State var playlistEditorVisible = false
     @State var playlistEditorName = ""
+    @State var didReceiveInitialDevices = false
+    /// The launch found an iPod, whose page opens first (the last page shown is not restored over it).
+    @State var launchedOnDevice = false
 
     var body: some View {
         #if canImport(AppKitBackend)
@@ -59,7 +63,8 @@ struct ContentView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .bottom) {
                 HStack(spacing: 0) {
-                    MediaRail(selection: navigationSelection, devices: devices)
+                    MediaRail(selection: navigationSelection, devices: devices,
+                              animateDeviceChanges: didReceiveInitialDevices)
                     #if canImport(AppKitBackend)
                     if nativeSplitProbe {
                         // SwiftCrossUI's own NSSplitView, as on Linux and Windows (IPPM_LEGACY_SPLIT=1: the old overlay).
@@ -94,6 +99,19 @@ struct ContentView: View {
         .followingSystemColorScheme(colorScheme)
 
         .task {
+            // With a library open the menu adds a folder (as Settings does); the first one sets it up.
+            AppCommands.addMusicFolder = { Task {
+                if portableLibrary == nil { await configureMusic() }
+                else { await chooseAndAdd(.music, title: "Choose Music Folder") }
+            } }
+            AppCommands.addAudiobooksFolder = { Task {
+                if portableLibrary == nil { await configureAudiobooks() }
+                else { await chooseAndAdd(.audiobooks, title: "Choose Audiobooks Folder") }
+            } }
+            AppCommands.addPhotosFolder = { Task { await addPhotosFolder() } }
+            AppCommands.openSettings = { openWindow(id: "settings") }
+            AppCommands.addSource = { kind, folder in Task { await addSource(kind: kind, folder: folder) } }
+            AppCommands.removeSource = { id in Task { await removeSource(id: id) } }
             #if canImport(AppKitBackend)
             MacChrome.shared.installContainerMask()
             MacChrome.shared.onSidebarChange = { open in sidebarOpen = open }
@@ -162,16 +180,20 @@ struct ContentView: View {
                     preview.artworkFolder = URL(fileURLWithPath: path)
                 }
                 library = preview
+                LaunchReadiness.shared.mark(.library)
                 return
             }
             if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] != nil {
                 await loadPortable(refresh: false)
+                LaunchReadiness.shared.mark(.library)
                 await benchLoadedViews()
             } else if ProcessInfo.processInfo.environment["IPPM_BENCH"] != nil {
                 library = await Library.load(arguments: CommandLine.arguments)
+                LaunchReadiness.shared.mark(.library)
                 await benchSidebar()
             } else {
                 await loadPortable(refresh: false)
+                LaunchReadiness.shared.mark(.library)
                 if ProcessInfo.processInfo.environment["IPPM_CHECK_PREF_EXIT"] != nil {
                     await checkPreferencesOnExit()
                     return
@@ -181,6 +203,7 @@ struct ContentView: View {
         }
         .task {
             await watchIPods { found in
+                let isInitialDiscovery = !didReceiveInitialDevices
                 let names = found.map(\.id)
                 ConnectedDeviceTitles.names = Dictionary(found.map { ($0.id, $0.displayName) }, uniquingKeysWith: { a, _ in a })
                 if names != devices { log("[app] iPods: \(names.isEmpty ? "none" : names.joined(separator: ", "))") }
@@ -199,6 +222,30 @@ struct ContentView: View {
                     selection = ProcessInfo.processInfo.environment["IPPM_SELECT_MUSIC"] != nil ? .music : .device(added.id)
                 } else if case .device(let name) = selection, !names.contains(name) {
                     selection = .music
+                }
+                if isInitialDiscovery {
+                    // The iPod the app was launched from, else the one the first page shows: the
+                    // page opens on it, with its snapshot and icon ready before anything appears.
+                    let launchRoot = PortableRoot.url.map(FileOps.canonicalPath)
+                    let launchDevice = found.first { launchRoot == FileOps.canonicalPath($0.mountPoint) } ?? added
+                    // `IPPM_SELECT_MUSIC=1` keeps Music, to look at its page.
+                    let opensOnDevice = launchDevice != nil && ProcessInfo.processInfo.environment["IPPM_SELECT_MUSIC"] == nil
+                    launchedOnDevice = opensOnDevice
+                    if opensOnDevice, let launchDevice { selection = .device(launchDevice.id) }
+                    Task {
+                        #if canImport(AppKitBackend)
+                        if let launchDevice {
+                            let icon = await MacVolumeIconLoader.shared.image(for: launchDevice.mountPoint)
+                            MacLaunchTransition.shared.setIcon(icon)
+                        } else {
+                            MacLaunchTransition.shared.setIcon(nil)
+                        }
+                        #endif
+                        if let launchDevice { _ = await DevicePageCache.shared.load(launchDevice) }
+                        LaunchReadiness.shared.mark(.device)
+                    }
+                    // Let the first device list commit without motion. Later mount notifications animate.
+                    DispatchQueue.main.async { didReceiveInitialDevices = true }
                 }
             }
         }
@@ -615,7 +662,50 @@ struct ContentView: View {
         await loadPortable(audiobooksFolder: folder, refresh: true)
     }
 
-    private func loadPortable(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool) async {
+    private func chooseAndAdd(_ kind: SourceKind, title: String) async {
+        guard let folder = await chooseFile(title: title, defaultButtonLabel: "Add Folder",
+            allowSelectingFiles: false, allowSelectingDirectories: true) else { return }
+        await addSource(kind: kind.rawValue, folder: folder)
+    }
+
+    /// A folder picked in Settings: kept with this computer's sources, then the library is rescanned
+    /// for the kinds that feed it (music, audiobooks) or the photo list refreshed.
+    private func addSource(kind: String, folder: URL) async {
+        guard let store = portableLibrary?.store, let kind = SourceKind(rawValue: kind) else { return }
+        _ = try? await Task.detached(priority: .userInitiated) { try store.addSource(kind: kind, path: folder.path) }.value
+        await refreshAfterSourceChange(kind, store: store)
+    }
+
+    private func removeSource(id: Foundation.UUID) async {
+        guard let store = portableLibrary?.store else { return }
+        let kind = await Task.detached(priority: .userInitiated) { () -> SourceKind? in
+            let kind = store.data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == store.hostID }?
+                .sources.first { $0.id == id }?.kind
+            try? store.removeSource(id: id)
+            return kind
+        }.value
+        guard let kind else { return }
+        await refreshAfterSourceChange(kind, store: store, removed: true)
+    }
+
+    private func refreshAfterSourceChange(_ kind: SourceKind, store: PortableLibraryStore, removed: Bool = false) async {
+        switch kind {
+        case .music, .audiobooks: await loadPortable(refresh: true, removedKind: removed ? kind : nil)
+        case .photos: _ = await PhotoInventory.shared.load(store, refresh: true)
+        default: break  // video folders are only recorded for now
+        }
+        SettingsController.shared.attach(store)
+    }
+
+    private func addPhotosFolder() async {
+        guard let store = portableLibrary?.store,
+              let url = await chooseFile(title: "Choose a Folder of Pictures", defaultButtonLabel: "Add Folder",
+                allowSelectingFiles: false, allowSelectingDirectories: true) else { return }
+        _ = try? await Task.detached(priority: .userInitiated) { try store.addSource(kind: .photos, path: url.path) }.value
+        _ = await PhotoInventory.shared.load(store, refresh: true)
+    }
+
+    private func loadPortable(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool, removedKind: SourceKind? = nil) async {
         guard !scanning, !playlistSaving else { return }
         scanning = true
         defer { scanning = false }
@@ -624,9 +714,10 @@ struct ContentView: View {
             if configuredFolder == nil, let i = CommandLine.arguments.firstIndex(of: "--music-folder"), i + 1 < CommandLine.arguments.count {
                 configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             }
-            let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh)
+            let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
+            SettingsController.shared.attach(loaded.store)
             await ArtistPhotoController.shared.load(store: loaded.store)
             applyArtistPhotos()
             if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] == nil {
@@ -647,7 +738,8 @@ struct ContentView: View {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
                 // The page shown last time (a deleted playlist falls back to Music).
-                if let name = settings?.lastTab, let item = SidebarItem(persistentName: name) {
+                // A launch with an iPod opens on its page, not on the page shown last time.
+                if !launchedOnDevice, let name = settings?.lastTab, let item = SidebarItem(persistentName: name) {
                     if case .playlist(let id) = item, !(library?.playlists.contains { $0.id == id } ?? false) {
                         selection = .music
                     } else if case .videoPlaylist(let id) = item, !(library?.videoPlaylists.contains { $0.id == id } ?? false) {
@@ -708,7 +800,9 @@ struct ContentView: View {
         if let library {
             // Opaque: on Windows the window itself is translucent, for the sidebar.
             VStack(spacing: 0) {
-                header(library)
+                // The iPod scroll view reaches behind the unified toolbar. Its native content inset
+                // keeps the resting content below it, while rubber-band overscroll can fill it.
+                if !isDevicePage { header(library) }
                 // On macOS the content is a panel floating over the window's glass.
                 VStack(spacing: 0) {
                 #if canImport(AppKitBackend)
@@ -829,7 +923,7 @@ struct ContentView: View {
                 #if canImport(AppKitBackend)
                 // The content makes room for the sidebar, which fills the panel's left side.
                 .padding(.leading, !nativeSplitProbe && sidebarOpen && !isDevicePage ? sidebarPoints : 0)
-                .background(WindowBackground())
+                .background(isDevicePage ? AnyView(DevicePageBackground()) : AnyView(WindowBackground()))
                 // The split view's container mask rounds the corners in native mode.
                 .cornerRadius(nativeSplitProbe ? 0 : floatingPanelRadius)
                 .padding(.trailing, floatingPanelMargin)
@@ -1291,6 +1385,13 @@ struct IPodProMaxApp: App {
         AppMetadata(identifier: appIdentifier, version: "0.1", additionalMetadata: [:])
     }
 
+    init() {
+        #if canImport(AppKitBackend)
+        // First thing: the launch panel is up before anything loads.
+        MainActor.assumeIsolated { MacChrome.shared.beginLaunch(); AppMenuMac.shared.install() }
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("iPod Pro Max") {
             if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
@@ -1300,5 +1401,33 @@ struct IPodProMaxApp: App {
             }
         }
         .defaultSize(width: 1100, height: 700)
+        .commands {
+            // Merged into the system File menu by the backend.
+            CommandMenu("File") {
+                #if !canImport(AppKitBackend)
+                // macOS has "Settings… ⌘," in the application menu (AppMenuMac).
+                Button("Settings…") { AppCommands.openSettings?() }
+                #endif
+                Menu("Add to Library") {
+                    Button("Local Music Folder…") { AppCommands.addMusicFolder?() }
+                    Button("Local Audiobooks Folder…") { AppCommands.addAudiobooksFolder?() }
+                    Menu("Local Videos Folder") {
+                        // Video folders can't be imported yet.
+                        Button("Movies…") {}.disabled(true)
+                        Button("TV Shows…") {}.disabled(true)
+                        Button("Music Videos…") {}.disabled(true)
+                        Button("Web Videos…") {}.disabled(true)
+                    }
+                    Button("Local Photos Folder…") { AppCommands.addPhotosFolder?() }
+                }
+            }
+        }
+
+        // Opened on demand (⌘, / Settings…), never at launch.
+        Window("Settings", id: "settings") {
+            SettingsView()
+        }
+        .defaultSize(width: 520, height: 420)
+        .windowResizability(.contentSize)
     }
 }

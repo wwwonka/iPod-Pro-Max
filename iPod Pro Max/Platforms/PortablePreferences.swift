@@ -10,6 +10,7 @@ final class PortablePreferences {
         var mode: String?
         var sidebarWidth: Double?
         var lastTab: String?
+        var syncArtwork: Bool?
         var revision: Int
     }
     private var pending: Pending?
@@ -25,6 +26,9 @@ final class PortablePreferences {
     }
     func stageLastTab(_ tab: String, store: PortableLibraryStore) {
         stage(store) { guard $0.lastTab != tab else { return false }; $0.lastTab = tab; return true }
+    }
+    func stageSyncArtwork(_ value: Bool, store: PortableLibraryStore) {
+        stage(store) { guard $0.syncArtwork != value else { return false }; $0.syncArtwork = value; return true }
     }
     /// Merges one change into what is waiting to be written; false when nothing changed.
     private func stage(_ store: PortableLibraryStore, _ change: (inout Pending) -> Bool) {
@@ -43,12 +47,12 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, store: value.store)
+            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, syncArtwork: value.syncArtwork, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, store: PortableLibraryStore) throws {
+        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, syncArtwork: Bool?, store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
@@ -56,6 +60,7 @@ final class PortablePreferences {
             if let mode, value.musicViewMode != mode { value.musicViewMode = mode; changed = true }
             if let sidebarWidth, value.sidebarWidth != sidebarWidth { value.sidebarWidth = sidebarWidth; changed = true }
             if let lastTab, value.lastTab != lastTab { value.lastTab = lastTab; changed = true }
+            if let syncArtwork, value.syncArtwork != syncArtwork { value.syncArtwork = syncArtwork; changed = true }
             guard changed else { return }
             try store.data.write(value, to: "settings.json")
         }

@@ -42,6 +42,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Séparateur de sidebar natif macOS]] : `NSSplitView` natif, glisser, zoom et page iPod sans saut, causes des oscillations
 - [[Barre de titre 44 pt macOS]] : barre de 44 pt, recentrage des boutons, tailles des contrôles de la barre d'outils
 - [[Symboles personnalisés SVG]] : icônes hors SF Symbols (Apple Music) traitées comme des symboles, largeur du rail normalisée
+- [[Fenêtre des préférences]] : ⌘,, verre de la fenêtre principale, onglets natifs, dossiers de la bibliothèque et cohérence
 - [[Captures d'écran en développement]] : variables de capture, mesures sur image, et ce qu'une capture ne montre pas
 - [[Sidebar translucide sous Linux]] : verre (compositeur), teinte du fond d'écran (GNOME) ou opaque, sans rien installer
 

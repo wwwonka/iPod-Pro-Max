@@ -8,8 +8,10 @@ import AppKitBackend
 struct MediaRail: NSViewRepresentable {
     @Binding var selection: SidebarItem
     var devices: [String]
+    var animateDeviceChanges = true
     func makeNSView(context: Context) -> MediaRailView { MediaRailView() }
     func updateNSView(_ view: MediaRailView, context: Context) {
+        view.animateDeviceChanges = animateDeviceChanges
         view.devices = devices
         view.onSelect = { selection = $0 }
         view.show(selection)
@@ -748,10 +750,16 @@ final class ExtrasPopover {
 }
 
 final class MediaRailView: NSView {
+    var animateDeviceChanges = true
     var devices: [String] = [] {
         didSet {
             guard devices.isEmpty != oldValue.isEmpty else { return }
-            animateDevicePresence(visible: !devices.isEmpty)
+            if animateDeviceChanges {
+                animateDevicePresence(visible: !devices.isEmpty)
+            } else {
+                animatingDevicePresence = false
+                needsLayout = true
+            }
         }
     }
     var onSelect: (SidebarItem) -> Void = { _ in }
@@ -1204,6 +1212,9 @@ struct GlassSurface: NSViewRepresentable {
         view.layer?.masksToBounds = floating
     }
 }
+/// How much black the rail's glass is tinted with.
+let railGlassTint: CGFloat = 0.55
+
 /// The sidebar's panel: dark translucent glass, like the App Switcher's highlight, with the main
 /// view's shape along its left side: the same rounding at the top left and the bottom left.
 /// The blur is clipped by a mask image, not by the layer, which would switch the blur off.
@@ -1230,7 +1241,7 @@ final class SidebarGlassView: NSView {
         addSubview(glass)
         // Darker than the plain material, still translucent.
         tint.wantsLayer = true
-        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        tint.layer?.backgroundColor = NSColor.black.withAlphaComponent(railGlassTint).cgColor
         // Round on the left only. A shape mask, not `maskedCorners`: that one isn't honored when the
         // layer is rendered into an image, which rounded the right corners too.
         tint.layer?.mask = tintMask

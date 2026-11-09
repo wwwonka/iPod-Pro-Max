@@ -10,6 +10,7 @@ func checkNativeMusicInteractions() async {
     }
     checkNativeAlbumGrid()
     checkPlaybackController()
+    await checkMacVolumeIcon()
     let rows = (0..<3).map {
         TrackRow(id: UUID().uuidString, title: "Track \($0)", artist: "Artist", album: "Album", number: "\($0)", year: "", duration: "")
     }
@@ -181,6 +182,41 @@ func checkNativeMusicInteractions() async {
     TrackDrag.end()
     await checkViewCaches()
     log("PASS: native 3-track pasteboard drop, whole-artist drop, external payload rejection, centered spinning glyph/resize lifecycle, accent drop feedback and busy eject guard")
+}
+
+/// The real simulated-iPod ICNS proves ImageIO reads the format. The isolated invalid fixture
+/// proves fallback and negative-result caching without touching the user's volume.
+@MainActor private func checkMacVolumeIcon() async {
+    let loader = MacVolumeIconLoader.shared
+    let simulated = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        .appendingPathComponent("Build", isDirectory: true)
+    let realIcon = simulated.appendingPathComponent(".VolumeIcon.icns")
+    if FileManager.default.fileExists(atPath: realIcon.path) {
+        loader.remove(simulated)
+        let before = loader.readCount
+        let first = await loader.image(for: simulated)
+        let second = await loader.image(for: simulated)
+        precondition(first != nil, "Build/.VolumeIcon.icns did not decode")
+        precondition(second != nil)
+        precondition(loader.readCount == before + 1, "Cached volume icon was read more than once")
+    }
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("ippm-volume-icon-" + UUID().uuidString)
+    let invalid = root.appendingPathComponent(".VolumeIcon.icns")
+    await Task.detached {
+        try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try! Data("not an image".utf8).write(to: invalid)
+    }.value
+    loader.remove(root)
+    let beforeInvalid = loader.readCount
+    let firstInvalid = await loader.image(for: root)
+    let secondInvalid = await loader.image(for: root)
+    precondition(firstInvalid == nil)
+    precondition(secondInvalid == nil)
+    precondition(loader.readCount == beforeInvalid + 1, "Invalid volume icon was repeatedly read")
+    loader.remove(root)
+    await Task.detached { try? FileManager.default.removeItem(at: root) }.value
+    log("PASS: custom volume ICNS decodes once; invalid icon falls back and caches its failure")
 }
 /// Real disk fixtures, isolated from the launching iPod and the user's media.
 @MainActor private func checkViewCaches() async {

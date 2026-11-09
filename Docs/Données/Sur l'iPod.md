@@ -23,7 +23,7 @@ Ce qui concerne **l'iPod lui-même** voyage avec lui. Décision : [[ADR-001 Bibl
       ├─ device.json     options de sync de cet iPod (en place)
       ├─ cli-sync.json   registre de sync de la CLI (en place)
       ├─ settings.json   préférences communes aux trois interfaces
-      ├─ known_hosts.json   identité, nom et dossiers sources de chaque hôte
+      ├─ known_hosts.json   identité, nom et dossiers sources de chaque hôte (musique, livres audio, photos, et films, séries, clips et vidéos web : voir [[Fenêtre des préférences]])
       ├─ manifest.json   transferts : dbid, propriétaire, empreinte source et références
       └─ Hosts/<hostID>/
          ├─ library.json   cache des pistes accessibles, playlists et chemins sources

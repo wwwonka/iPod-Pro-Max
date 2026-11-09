@@ -1,6 +1,10 @@
 import Foundation
 
-public enum SourceKind: String, Codable, Sendable { case music, audiobooks, videos, photos }
+public enum SourceKind: String, Codable, Sendable {
+    case music, audiobooks, videos, photos
+    /// Folders dedicated to one kind of video (Settings → General → Videos).
+    case movies, tvShows, musicVideos, webVideos
+}
 
 public struct KnownSource: Codable, Equatable, Sendable {
     public var id: UUID

@@ -3,6 +3,7 @@
     import AppKitBackend
     import Foundation
     import SwiftCrossUI
+    import iPodKit
 
     /// macOS draws its own traffic lights and toggle (in the toolbar).
     let drawsWindowControls = false
@@ -40,6 +41,14 @@
         static let shared = MacChrome()
 
         private weak var window: NSWindow?
+        /// The window starts as a small square and grows when the launch is ready (`MacLaunchTransition`).
+        /// `IPPM_NO_LAUNCH_PANEL=1` shows it at once, as before.
+        static let launchPanelEnabled = ProcessInfo.processInfo.environment["IPPM_NO_LAUNCH_PANEL"] == nil
+        /// Longest the launch may wait: a slow iPod must never keep the app from showing.
+        private static let launchTimeout: UInt64 = 4_000_000_000
+        private var launchIsReady = false
+        private var launchTimeoutTask: Task<Void, Never>?
+        private var revealedInitialWindow = false
         /// The sidebar's list view, registered when AppKit creates it.
         weak var sidebarAnchor: NSView?
         /// A marker inside the main view's content.
@@ -70,6 +79,7 @@
         private static let searchID = NSToolbarItem.Identifier("search")
 
         var isSliding: Bool { false }
+        var isLiveResizing: Bool { window?.inLiveResize == true }
         /// The sidebar's rows always fill their panel: nothing is pinned during the slide.
         var pinnedSidebarContentWidth: Double? { nil }
         /// What already lies left of the main view, for the title's clearance.
@@ -78,6 +88,11 @@
         func install(on window: NSWindow) {
             guard self.window !== window else { return }
             self.window = window
+            if Self.launchPanelEnabled {
+                window.alphaValue = 0
+                // Ready before the window existed: reveal once its chrome and content are laid out.
+                if launchIsReady { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.revealWhenReady() } } }
+            }
             MacWindowLifecycle.shared.beforeTerminate = { try await ApplicationLifecycle.shared.prepareForExit() }
             MacWindowLifecycle.shared.onTerminationError = { ApplicationLifecycle.shared.report($0) }
             MacWindowLifecycle.shared.afterHide = {
@@ -114,6 +129,7 @@
             if #available(macOS 11, *) { window.toolbarStyle = .unifiedCompact }
             keepTrafficLightsCentered(in: window)
             snapshotIfRequested(window)
+            if Self.launchPanelEnabled { MacLaunchTransition.shared.prepare(window) }
             // `IPPM_FRONT=1`: floats the window above everything, to screenshot it over the desktop.
             if ProcessInfo.processInfo.environment["IPPM_FRONT"] != nil {
                 window.level = .floating
@@ -127,6 +143,31 @@
                     other.makeKeyAndOrderFront(nil)
                 }
             }
+        }
+
+        /// Arms the launch: waits for the app to be ready, with a time limit. Called first thing at launch.
+        func beginLaunch() {
+            guard Self.launchPanelEnabled else { return }
+            LaunchReadiness.shared.onReady = { [weak self] in self?.launchReady() }
+            launchTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.launchTimeout)
+                guard !Task.isCancelled else { return }
+                self?.launchReady()
+            }
+        }
+
+        /// Everything the first page shows is loaded (or the time limit passed).
+        private func launchReady() {
+            launchIsReady = true
+            launchTimeoutTask?.cancel()
+            launchTimeoutTask = nil
+            revealWhenReady()
+        }
+
+        private func revealWhenReady() {
+            guard launchIsReady, let window, !revealedInitialWindow else { return }
+            revealedInitialWindow = true
+            MacLaunchTransition.shared.expand(window)
         }
 
         /// The first of the two glass panels: the whole window, under everything. The sidebar's own

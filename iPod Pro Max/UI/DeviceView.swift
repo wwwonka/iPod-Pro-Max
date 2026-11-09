@@ -82,7 +82,13 @@ struct DeviceView: View {
                 optionsPanel.disabled(page.savedOptions == nil)
                 actionsPanel
             }
+            #if canImport(AppKitBackend)
+            .padding(.horizontal, 24)
+            .padding(.top, Int(titleBarHeight) + 24)
+            .padding(.bottom, 24)
+            #else
             .padding(24)
+            #endif
             .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -117,33 +123,65 @@ struct DeviceView: View {
         return device.displayName
     }
 
+    private func nameFieldWidth(_ text: String) -> Int {
+        #if canImport(AppKitBackend)
+        let font = NSFont.systemFont(ofSize: 26, weight: .bold)
+        let measured = (text as NSString).size(withAttributes: [.font: font]).width
+        // Borderless NSTextField only needs its tiny cell inset; keep the action against the name.
+        return max(72, min(520, Int(ceil(measured)) + 4))
+        #else
+        return max(72, min(520, page.newName.count * 16 + 20))
+        #endif
+    }
+
     // MARK: Sections
 
     private var header: some View {
         HStack(alignment: .center, spacing: 18) {
-            Symbol(name: "ipod", size: 80, pointSize: 56, tint: .accent)
-                .background(RoundedRectangle(cornerRadius: 16).fill(MacColor.accent.opacity(0.1)))
+            #if canImport(AppKitBackend)
+                MacVolumeIcon(volumeRoot: device.mountPoint)
+            #else
+                Symbol(name: "ipod", size: 80, pointSize: 56, tint: .accent)
+                    .background(RoundedRectangle(cornerRadius: 16).fill(MacColor.accent.opacity(0.1)))
+            #endif
             VStack(alignment: .leading, spacing: 4) {
-                if page.isRenaming {
-                    HStack(spacing: 8) {
+                HStack(alignment: .center, spacing: 3) {
+                    #if canImport(AppKitBackend)
+                    let textWidth = nameFieldWidth(page.isRenaming ? page.newName : displayName)
+                    MacInlineNameEditor(text: $page.newName, displayText: displayName,
+                                        textWidth: textWidth, editing: page.isRenaming,
+                                        onEdit: {
+                                            page.newName = displayName
+                                            page.isRenaming = true
+                                        }, onSubmit: { rename() }, onCancel: { page.isRenaming = false })
+                        .frame(width: textWidth + (page.isRenaming ? 59 : 27), height: 34)
+                    #else
+                    if page.isRenaming {
                         TextField("Name", text: $page.newName)
-                            .frame(width: 260)
+                            // Match the rendered title instead of opening a full-width editor.
+                            .frame(width: nameFieldWidth(page.newName), height: 34)
+                            .font(.system(size: 26, weight: .bold))
                             .onSubmit { rename() }
+                    } else {
+                        Text(displayName).font(.system(size: 26, weight: .bold))
+                    }
+                    #endif
+                    #if !canImport(AppKitBackend)
+                    if page.isRenaming {
                         Button("Rename") { rename() }
                         Button("Cancel") { page.isRenaming = false }
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Text(displayName).font(.system(size: 26, weight: .bold))
+                    } else {
                         Button {
                             page.newName = displayName
                             page.isRenaming = true
                         } label: {
                             Symbol(name: "pencil", size: 16, pointSize: 13, tint: .secondary)
+                                .frame(width: 16, height: 31, alignment: .center)
                         }
                         .buttonStyle(.borderless)
                         .help("Rename")
                     }
+                    #endif
                 }
                 Text([device.displayModelName, device.capacityLabel].compactMap { $0 }.joined(separator: " · "))
                     .foregroundColor(MacColor.secondaryText)
@@ -203,6 +241,10 @@ struct DeviceView: View {
             (MacColor.pink, audiobooks), (MacColor.green, photos), (MacColor.gray.opacity(0.6), other),
         ]
         return VStack(alignment: .leading, spacing: 8) {
+            #if canImport(AppKitBackend)
+            MacStorageBar(total: stats.total, values: segments.map(\.1))
+                .frame(height: 18)
+            #else
             GeometryReader { geo in
                 HStack(spacing: 1) {
                     if stats.total > 0 {
@@ -215,6 +257,7 @@ struct DeviceView: View {
             }
             .frame(height: 18)
             .cornerRadius(6)
+            #endif
             HStack(spacing: 18) {
                 legend(MacColor.blue, "Music", bytes(music), detail: page.contents.map { "\($0.songs) songs" })
                 legend(MacColor.purple, "Podcasts", bytes(podcasts), detail: page.contents.map { "\($0.podcasts) episodes" })
