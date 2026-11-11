@@ -69,6 +69,8 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
     public var hasLyrics: Bool = false
     /// 0…5 stars
     public var rating: Int = 0
+    /// Explicit favorite, independent of the iPod star rating; nil in older libraries.
+    public var isFavorite: Bool? = nil
     public var playCount: Int = 0
     public var lastPlayed: Date?
     public var dateAdded: Date = Date()
@@ -93,7 +95,7 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
 
     public var fileExists: Bool { FileManager.default.fileExists(atPath: path) }
 
-    public init(id: UUID = UUID(), path: String, source: TrackSource = .file, musicPersistentID: String? = nil, kind: MediaKind? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil, videoCategory: VideoCategory? = nil, title: String, artist: String? = nil, album: String? = nil, albumArtist: String? = nil, genre: String? = nil, composer: String? = nil, comment: String? = nil, grouping: String? = nil, year: Int = 0, trackNumber: Int = 0, trackCount: Int = 0, discNumber: Int = 0, discCount: Int = 0, durationMs: Int = 0, bitrate: Int = 0, sampleRate: Int = 44100, fileSize: Int64 = 0, fileExtension: String, isLossless: Bool = false, compilation: Bool = false, bpm: Int = 0, hasLyrics: Bool = false, rating: Int = 0, playCount: Int = 0, lastPlayed: Date? = nil, dateAdded: Date = Date(), dateModified: Date? = nil, artworkKey: String? = nil, syncEnabled: Bool = true) {
+    public init(id: UUID = UUID(), path: String, source: TrackSource = .file, musicPersistentID: String? = nil, kind: MediaKind? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil, videoCategory: VideoCategory? = nil, title: String, artist: String? = nil, album: String? = nil, albumArtist: String? = nil, genre: String? = nil, composer: String? = nil, comment: String? = nil, grouping: String? = nil, year: Int = 0, trackNumber: Int = 0, trackCount: Int = 0, discNumber: Int = 0, discCount: Int = 0, durationMs: Int = 0, bitrate: Int = 0, sampleRate: Int = 44100, fileSize: Int64 = 0, fileExtension: String, isLossless: Bool = false, compilation: Bool = false, bpm: Int = 0, hasLyrics: Bool = false, rating: Int = 0, isFavorite: Bool? = nil, playCount: Int = 0, lastPlayed: Date? = nil, dateAdded: Date = Date(), dateModified: Date? = nil, artworkKey: String? = nil, syncEnabled: Bool = true) {
         self.id = id
         self.path = path
         self.source = source
@@ -125,6 +127,7 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
         self.bpm = bpm
         self.hasLyrics = hasLyrics
         self.rating = rating
+        self.isFavorite = isFavorite
         self.playCount = playCount
         self.lastPlayed = lastPlayed
         self.dateAdded = dateAdded

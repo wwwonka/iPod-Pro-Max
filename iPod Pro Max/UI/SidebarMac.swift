@@ -116,6 +116,11 @@
                 if superview != nil { MainActor.assumeIsolated { MacChrome.shared.sidebarAnchor = self } }
             }
 
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                if window != nil { MainActor.assumeIsolated { MacChrome.shared.sidebarHierarchyDidChange() } }
+            }
+
             override func resizeSubviews(withOldSize oldSize: NSSize) {
                 let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
                 subviews.first?.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
@@ -313,7 +318,7 @@
                     let image = systemSymbol(icon)
                     // AppKit automatically substitutes filled variants in source lists. Keep the
                     // TV Shows glyph on the explicitly requested outline `tv`, selected or not.
-                    (cell as? SidebarCell)?.customIcon = customSymbols[icon] != nil || icon == "tv" ? image : nil
+                    (cell as? SidebarCell)?.customIcon = customSymbols[icon] != nil || icon == "tv" || icon == "microphone.dynamic.on.stand" ? image : nil
                     cell.imageView?.image = image
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.

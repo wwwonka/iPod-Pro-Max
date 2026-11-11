@@ -557,7 +557,7 @@ final class RailLabel {
         panel.ignoresMouseEvents = true
         panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
-        glass.material = .hudWindow
+        glass.material = .underWindowBackground
         glass.blendingMode = .behindWindow
         glass.state = .active
         // Clipped by a mask image, not by the layer (which would switch the blur off), so the blur,
@@ -939,7 +939,7 @@ final class MediaRailView: NSView {
             let selected: Bool
             if index == 0 { if case .device = selection { selected = true } else { selected = false } }
             else if button.item == .music {
-                switch selection { case .music, .artists, .albums, .recentMusic, .playlist: selected = true; default: selected = false }
+                switch selection { case .music, .artists, .albums, .recentMusic, .favorites, .playlist: selected = true; default: selected = false }
             } else { selected = selection == button.item }
             button.isCurrent = selected
             button.isDropTarget = index == 0 && dropActive
@@ -1162,6 +1162,7 @@ final class MediaRailView: NSView {
 struct MediaRail: View {
     @Binding var selection: SidebarItem
     var devices: [String]
+    var animateDeviceChanges = true
     var body: some View {
         VStack(spacing: 14) {
             Spacer().frame(height: titleBarHeight + 6)
@@ -1184,10 +1185,7 @@ struct MediaRail: View {
         .background(GlassSurface())
     }
     private func isSelected(_ item: SidebarItem) -> Bool {
-        if item == .music {
-            switch selection { case .music, .artists, .albums, .recentMusic, .playlist: return true; default: return false }
-        }
-        return selection == item
+        selection.media == item
     }
 }
 
@@ -1213,7 +1211,7 @@ struct GlassSurface: NSViewRepresentable {
     }
 }
 /// How much black the rail's glass is tinted with.
-let railGlassTint: CGFloat = 0.55
+let railGlassTint: CGFloat = 0.25
 
 /// The sidebar's panel: dark translucent glass, like the App Switcher's highlight, with the main
 /// view's shape along its left side: the same rounding at the top left and the bottom left.
@@ -1232,10 +1230,10 @@ final class SidebarGlassView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        glass.material = .hudWindow
+        glass.material = .underWindowBackground
         glass.blendingMode = .behindWindow
         glass.state = .active  // stays glass when another app comes forward
-        glass.appearance = NSAppearance(named: .darkAqua)
+        // Follow the window appearance while retaining the shared backdrop.
         glass.maskImage = Self.leftRoundedMask(radius: CGFloat(floatingPanelRadius))
         glass.autoresizingMask = [.width, .height]
         addSubview(glass)

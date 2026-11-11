@@ -72,7 +72,21 @@ public enum FolderImporter {
                     if let old, old.fileSize == Int64(attrs?.fileSize ?? -1), old.dateModified == attrs?.contentModificationDate {
                         return (index, old)
                     }
-                    return (index, await makeTrack(from: url, id: old?.id ?? stableID(for: (namespace.map { $0 + ":" } ?? "") + relative), artwork: artwork))
+                    var track = await makeTrack(from: url, id: old?.id ?? stableID(for: (namespace.map { $0 + ":" } ?? "") + relative), artwork: artwork)
+                    // A tag rescan replaces media metadata, not the user's favorite choice.
+                    track?.isFavorite = old?.isFavorite
+                    if let old {
+                        track?.source = old.source
+                        track?.musicPersistentID = old.musicPersistentID
+                        track?.kind = old.kind
+                        track?.videoCategory = old.videoCategory
+                        track?.rating = old.rating
+                        track?.playCount = old.playCount
+                        track?.lastPlayed = old.lastPlayed
+                        track?.dateAdded = old.dateAdded
+                        track?.syncEnabled = old.syncEnabled
+                    }
+                    return (index, track)
                 }
             }
             for _ in 0..<min(workers, files.count) { addNext() }

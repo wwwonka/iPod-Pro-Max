@@ -214,7 +214,7 @@
             styleContent()
             guard let window, let paned = Self.findPaned(gtk_window_get_child(window)) else { return }
             self.paned = paned
-            gtk_paned_set_position(paned, Int32(sidebarWidth))
+            gtk_paned_set_position(paned, sidebarWantedOpen ? expandedWidth : 0)
             g_signal_connect_data(cast(paned), "notify::position", unsafeBitCast(panedMoved, to: GCallback.self),
                                   nil, nil, GConnectFlags(rawValue: 0))
         }
@@ -228,6 +228,7 @@
             let clamped = min(max(position, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
             if clamped != position { gtk_paned_set_position(paned, Int32(clamped)) }
             expandedWidth = Int32(clamped)
+            onSidebarWidth?(clamped)
         }
 
         // MARK: Corners
@@ -337,6 +338,15 @@
         // MARK: Sidebar
 
         private var expandedWidth = Int32(sidebarWidth)
+        private var sidebarWantedOpen = true
+        private var onSidebarOpen: ((Bool) -> Void)?
+        private var onSidebarWidth: ((Double) -> Void)?
+        func restoreSidebar(open: Bool, width: Double?, onOpen: @escaping (Bool) -> Void, onWidth: @escaping (Double) -> Void) {
+            expandedWidth = Int32(min(max(width ?? sidebarWidth, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound).rounded())
+            sidebarWantedOpen = open
+            if let paned { gtk_paned_set_position(paned, open ? expandedWidth : 0) }
+            onSidebarOpen = onOpen; onSidebarWidth = onWidth
+        }
         /// The sidebar's sections: given the open width during a slide (see WindowChrome.swift).
         var sidebarContent: UnsafeMutablePointer<GtkWidget>?
         private var slide: SidebarSlide?
@@ -370,6 +380,8 @@
                 g_object_get_property(cast(settings), "gtk-enable-animations", &value)
                 enabled = g_value_get_boolean(&value); g_value_unset(&value)
             }
+            sidebarWantedOpen = !closing
+            onSidebarOpen?(!closing)
             let target = closing ? 0 : Double(expandedWidth)
             guard enabled != 0 else { slide = nil; gtk_paned_set_position(paned, Int32(target)); return }
             if closing, let sidebar = gtk_paned_get_start_child(paned), gtk_widget_get_width(sidebar) > 0 {

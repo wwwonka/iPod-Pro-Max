@@ -19,8 +19,8 @@ final class PortableSyncTests: XCTestCase {
         XCTAssertEqual(registry.hosts.count, 2)
         XCTAssertEqual(registry.hosts.first { $0.id == "mac" }?.sources.first?.path, "/new/music")
         try a.save(PortableLibraryCache(tracks: [LibraryTrack(path: "/music/a.mp3", title: "A", fileExtension: "mp3")]))
-        XCTAssertEqual(a.cache().tracks.count, 1)
-        XCTAssertTrue(b.cache().tracks.isEmpty)
+        XCTAssertEqual(try a.cache().tracks.count, 1)
+        XCTAssertTrue(try b.cache().tracks.isEmpty)
     }
     func testDamagedRegistryDoesNotEraseKnownHosts() throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }

@@ -387,6 +387,15 @@
         private var rendering: EventCleanup?
         /// Where the sidebar reopens: its width before it last closed, or as dragged.
         private var expandedWidth = sidebarWidth
+        private var sidebarWantedOpen = true
+        private var onSidebarOpen: ((Bool) -> Void)?
+        private var onSidebarWidth: ((Double) -> Void)?
+        func restoreSidebar(open: Bool, width: Double?, onOpen: @escaping (Bool) -> Void, onWidth: @escaping (Double) -> Void) {
+            expandedWidth = min(max(width ?? sidebarWidth, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)
+            sidebarWantedOpen = open
+            if splitView != nil { setSidebarWidth(open ? expandedWidth : 0) }
+            onSidebarOpen = onOpen; onSidebarWidth = onWidth
+        }
         /// WinUI's split view can't be resized: this handle over the pane's edge does it.
         private var resizeHandle: ResizeHandle?
 
@@ -416,7 +425,7 @@
                 grid.children.append(handle)
                 resizeHandle = handle
             }
-            setSidebarWidth(sidebarWidth)
+            setSidebarWidth(sidebarWantedOpen ? expandedWidth : 0)
         }
 
         /// Dragging the handle: the sidebar follows the pointer, within `sidebarWidthRange`.
@@ -425,6 +434,7 @@
             let width = min(max(x, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound).rounded()
             expandedWidth = width
             setSidebarWidth(width)
+            onSidebarWidth?(width)
         }
 
         /// Slides the sidebar closed or open. The frame callback exists only for the slide.
@@ -432,6 +442,8 @@
             guard let splitView else { return }
             let from = currentSidebarWidth
             let opening = !splitView.isPaneOpen
+            sidebarWantedOpen = opening
+            onSidebarOpen?(opening)
             if !opening { expandedWidth = splitView.openPaneLength }
             let translation = detailTranslation ?? TranslateTransform()
             let interruptedX = translation.x

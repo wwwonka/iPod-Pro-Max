@@ -12,6 +12,8 @@ struct PhotosView: View {
     var devices: [String]
     var isBusy: (String) -> Bool
     var onSync: (String) -> Void
+    var onAddFolder: (URL) async -> Bool
+    var onRemoveFolder: (UUID) async -> Bool
     @Environment(\.chooseFile) private var chooseFile
 
     @State private var catalog = PhotoInventory.Snapshot()
@@ -146,25 +148,18 @@ struct PhotosView: View {
     #endif
 
     private func addFolder() async {
-        guard let store, let url = await chooseFile(title: "Choose a Folder of Pictures", defaultButtonLabel: "Add Folder",
+        guard store != nil, let url = await chooseFile(title: "Choose a Folder of Pictures", defaultButtonLabel: "Add Folder",
             allowSelectingFiles: false, allowSelectingDirectories: true) else { return }
         message = ""
-        do {
-            _ = try await Task.detached(priority: .userInitiated) { try store.addSource(kind: .photos, path: url.path) }.value
-        } catch { message = "Couldn't add the folder: \(error.localizedDescription)"; return }
+        guard await onAddFolder(url) else { message = "Couldn't add the folder."; return }
         await refresh(force: true)
     }
 
     private func remove(_ folder: KnownSource) {
-        guard let store else { return }
-        catalog.folders.removeAll { $0.id == folder.id }
-        catalog.counts[folder.id] = nil
+        guard store != nil else { return }
         Task {
-            do {
-                try await Task.detached(priority: .utility) { try store.removeSource(id: folder.id) }.value
-                await refresh(force: true)
-            }
-            catch { message = "Couldn't remove the folder: \(error.localizedDescription)" }
+            guard await onRemoveFolder(folder.id) else { message = "Couldn't remove the folder."; return }
+            await refresh(force: true)
         }
     }
 }

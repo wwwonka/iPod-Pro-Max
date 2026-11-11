@@ -56,13 +56,7 @@ struct ArtistDetail: View {
             if allowsPhotoSelection { Button("Choose Photo…") { onChoosePhoto() } }
             SendButtons(devices: devices, isBusy: isBusy, onSend: { onSend(allIDs, $0) })
         }
-        .padding(18)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 16).fill(MacColor.accent.opacity(0.08))
-                RoundedRectangle(cornerRadius: 16).stroke(MacColor.groupBorder)
-            }
-        )
+        .padding(.vertical, 8)
     }
 }
 
@@ -111,5 +105,35 @@ final class ArtistRowsCache: SwiftCrossUI.ObservableObject {
         cached = albums.flatMap(\.rows).filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
             || $0.artist.localizedCaseInsensitiveContains(query) || $0.album.localizedCaseInsensitiveContains(query) }
         return cached
+    }
+}
+
+/// Album identity stays above the virtualized song list, like Music's album view.
+struct MusicAlbumHeader: View {
+    var album: AlbumInfo
+    var artworkFolder: URL?
+    var onPlay: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 24) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color(white: 0.5, opacity: 0.15))
+                if let key = album.artworkKey, let folder = artworkFolder {
+                    Thumbnail(url: folder.appendingPathComponent(key + ".jpg"), pixels: 320)
+                } else {
+                    Symbol(name: "music.note", size: 60, pointSize: 40, tint: .secondary)
+                }
+            }.frame(width: 160, height: 160).cornerRadius(8)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(album.title).font(.system(size: 26, weight: .bold)).lineLimit(2)
+                Text(album.artist).foregroundColor(MacColor.accent)
+                Text([album.genre, album.year.isEmpty ? nil : album.year].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 12)).foregroundColor(MacColor.secondaryText)
+                Text(songsSummary(count: album.rows.count, durationMs: album.durationMs))
+                    .font(.system(size: 12)).foregroundColor(MacColor.secondaryText)
+                Button("Play", action: onPlay).disabled(!album.rows.contains { $0.path != nil })
+            }
+            Spacer()
+        }.padding(24)
     }
 }

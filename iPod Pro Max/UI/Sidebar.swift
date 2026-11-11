@@ -8,7 +8,7 @@ enum ConnectedDeviceTitles {
 
 enum SidebarItem: Hashable {
     case device(String)
-    case music, recentMusic, artists, albums, podcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
+    case music, recentMusic, artists, albums, favorites, podcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
     /// Sections kept out of the rail, behind its "…" menu.
     case games, contacts, calendars, notes, files, firmware
     case playlist(String)
@@ -27,6 +27,7 @@ enum SidebarItem: Hashable {
         case .recentMusic: "recentMusic"
         case .artists: "artists"
         case .albums: "albums"
+        case .favorites: "favorites"
         case .podcasts: "podcasts"
         case .audiobooks: "audiobooks"
         case .videos: "videos"
@@ -47,7 +48,7 @@ enum SidebarItem: Hashable {
     init?(persistentName name: String) {
         if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
         if name.hasPrefix("videoPlaylist:") { self = .videoPlaylist(String(name.dropFirst("videoPlaylist:".count))); return }
-        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .podcasts, .audiobooks, .videos, .photos,
+        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .favorites, .podcasts, .audiobooks, .videos, .photos,
                                   .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files, .firmware]
         guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
         self = item
@@ -56,7 +57,7 @@ enum SidebarItem: Hashable {
     /// The library section this page belongs to (the rail's button); nil for an iPod's page.
     var media: SidebarItem? {
         switch self {
-        case .music, .recentMusic, .artists, .albums, .playlist: .music
+        case .music, .recentMusic, .artists, .albums, .favorites, .playlist: .music
         case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: .videos
         case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files, .firmware: self
         case .device: nil
@@ -90,6 +91,7 @@ enum SidebarItem: Hashable {
         case .recentMusic: "Recently Added"
         case .artists: "Artists"
         case .albums: "Albums"
+        case .favorites: "Favorites"
         case .podcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
@@ -113,8 +115,9 @@ enum SidebarItem: Hashable {
         case .device: "ipod"
         case .music: "apple-music"
         case .recentMusic: "clock"
-        case .artists: "person.fill"
+        case .artists: "microphone.dynamic.on.stand"
         case .albums: "square.stack"
+        case .favorites: "star.fill"
         case .podcasts: "podcasts"
         case .audiobooks: "book"
         case .videos: "film.stack"
@@ -172,7 +175,7 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
                 : devices.map { .init(title: ConnectedDeviceTitles.names[$0] ?? "iPod", icon: "ipod", item: .device($0), ejectable: true) }),
-        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .music, .artists, .albums].map {
+        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .artists, .albums, .favorites, .music].map {
             // The rail shows Apple Music's own icon for Music; the list names the section's songs.
             .init(title: $0.title, icon: $0 == .music ? "music.quarternote.3" : $0.icon, item: $0)
         }),

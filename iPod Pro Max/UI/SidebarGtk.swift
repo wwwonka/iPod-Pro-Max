@@ -20,6 +20,7 @@
         @Binding var selection: SidebarItem
         @Binding var busyDevices: Set<String>
         var onEject: (SidebarItem) -> Void = { _ in }
+        var onAdd: (SidebarItem) -> Void = { _ in }
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
         private var videoPlaylists: [Playlist] { library?.videoPlaylists ?? [] }

@@ -135,7 +135,7 @@ struct ArtistTrackList: NSViewRepresentable {
                 let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? SongCell) ?? SongCell()
                 cell.identifier = id
                 cell.number.stringValue = song.number
-                cell.title.stringValue = song.title
+                cell.title.stringValue = song.isFavorite ? "★  " + song.title : song.title
                 cell.duration.stringValue = song.duration
                 return cell
             }

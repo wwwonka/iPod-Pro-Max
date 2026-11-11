@@ -38,6 +38,7 @@ extension Array {
         var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
         var currentPlaylistID: String?
         var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
+        var onSelectionChange: ([String]) -> Void = { _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -77,6 +78,7 @@ extension Array {
             coordinator.onAddToPlaylist = onAddToPlaylist
             coordinator.currentPlaylistID = currentPlaylistID
             coordinator.onRemoveFromPlaylist = onRemoveFromPlaylist
+            coordinator.onSelectionChange = onSelectionChange
             coordinator.setActive(isActive, in: scroll)
             // Same array storage means same rows: skip the reload on unrelated redraws.
             guard let rows, !coordinator.sourceRows.sameStorage(as: rows),
@@ -91,10 +93,16 @@ extension Array {
             var isActive = true
             var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
             var artworkFolder: URL?
+            var showsArtwork = true
             var playlists: [Playlist] = []
             var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
             var currentPlaylistID: String?
             var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
+            var onSelectionChange: ([String]) -> Void = { _ in }
+            func tableViewSelectionDidChange(_ notification: Notification) {
+                guard let table = notification.object as? NSTableView else { return }
+                onSelectionChange(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil })
+            }
             @objc func playSelected(_ sender: NSTableView) {
                 guard isActive, rows.indices.contains(sender.clickedRow), rows[sender.clickedRow].path != nil else { return }
                 onPlay(rows[sender.clickedRow], rows)
@@ -187,10 +195,11 @@ extension Array {
                 guard let tableColumn, let index = Int(tableColumn.identifier.rawValue) else { return nil }
                 let cell = (tableView.makeView(withIdentifier: cellID, owner: nil) as? CenteredTrackCell) ?? CenteredTrackCell()
                 cell.identifier = cellID
-                cell.label.stringValue = rows[row][keyPath: columns[index].value]
+                let value = rows[row][keyPath: columns[index].value]
+                cell.label.stringValue = index == 1 && rows[row].isFavorite ? "★  " + value : value
                 cell.setLyrics(index == 1 && rows[row].hasLyrics)
-                cell.showArtwork(index == 1 ? rows[row].artworkKey.flatMap { artworkFolder?.appendingPathComponent($0 + ".jpg") } : nil,
-                                 reservesSpace: index == 1)
+                cell.showArtwork(index == 1 && showsArtwork ? rows[row].artworkKey.flatMap { artworkFolder?.appendingPathComponent($0 + ".jpg") } : nil,
+                                 reservesSpace: index == 1 && showsArtwork)
                 return cell
             }
         }
@@ -432,7 +441,11 @@ extension Array {
             addSubview(glass)
             tint.boxType = .custom
             tint.borderWidth = 0
-            tint.fillColor = NSColor.windowBackgroundColor.withAlphaComponent(0.7)
+            tint.fillColor = NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    ? NSColor.black.withAlphaComponent(0.50)
+                    : NSColor.white.withAlphaComponent(0.50)
+            }
             tint.autoresizingMask = [.width, .height]
             addSubview(tint)
         }
@@ -479,6 +492,7 @@ extension Array {
         var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
         var currentPlaylistID: String?
         var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
+        var onSelectionChange: ([String]) -> Void = { _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -489,6 +503,8 @@ extension Array {
             g_object_ref(cast(coordinator.model))
             let selection = gtk_multi_selection_new(cast(coordinator.model))!
             coordinator.selection = selection
+            g_signal_connect_data(cast(selection), "selection-changed", unsafeBitCast(trackSelectionChanged, to: GCallback.self),
+                                  Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
             let view = gtk_column_view_new(selection)!
             g_signal_connect_data(cast(view), "activate", unsafeBitCast(activateTrack, to: GCallback.self),
                                   Unmanaged.passUnretained(coordinator).toOpaque(), nil, GConnectFlags(rawValue: 0))
@@ -531,6 +547,7 @@ extension Array {
             if coordinator.isActive && !isActive { TrackDrag.end() }
             coordinator.isActive = isActive
             coordinator.onPlay = onPlay
+            coordinator.onSelectionChange = onSelectionChange
             coordinator.artworkFolder = artworkFolder
             gtk_widget_set_visible(widget.widgetPointer, isActive ? 1 : 0)
             gtk_widget_set_sensitive(widget.widgetPointer, isActive ? 1 : 0)
@@ -545,13 +562,16 @@ extension Array {
             var isActive = true
             var rows: [TrackRow] = []
             var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+            var onSelectionChange: ([String]) -> Void = { _ in }
             var artworkFolder: URL?
             var revision = 0
+            var selectedPositions: Set<Int> = []
 
             /// Replaces every item, so GTK rebinds the visible cells: O(rows) tiny objects, no widgets.
             func show(_ newRows: [TrackRow]) {
                 let old = rows.count
                 revision += 1
+                selectedPositions.removeAll()
                 rows = newRows
                 let empty = strdup("")
                 defer { free(empty) }
@@ -579,6 +599,22 @@ extension Array {
     }
 
 
+    private let trackSelectionChanged: @convention(c) (OpaquePointer?, UInt32, UInt32, gpointer?) -> Void = { _, first, count, data in
+        guard let data else { return }
+        MainActor.assumeIsolated {
+            let c = Unmanaged<TrackTable.Coordinator>.fromOpaque(data).takeUnretainedValue()
+            guard c.isActive, let selection = c.selection else { return }
+            let start = min(Int(first), c.rows.count)
+            let end = min(c.rows.count, start + Int(count))
+            if start < end {
+                for position in start..<end {
+                    if gtk_selection_model_is_selected(selection, UInt32(position)) != 0 { c.selectedPositions.insert(position) }
+                    else { c.selectedPositions.remove(position) }
+                }
+            }
+            c.onSelectionChange(c.selectedPositions.sorted().map { c.rows[$0].id })
+        }
+    }
     private let activateTrack: @convention(c) (OpaquePointer?, UInt32, gpointer?) -> Void = { _, position, data in
         guard let data else { return }
         MainActor.assumeIsolated {
@@ -639,7 +675,7 @@ extension Array {
             let row = c.rows[position]
             if binding.column != 1 { gtk_label_set_text(cast(child), row[keyPath: columns[binding.column].value]); return }
             guard let image = gtk_widget_get_first_child(child), let label = gtk_widget_get_next_sibling(image) else { return }
-            gtk_label_set_text(cast(label), row.title)
+            gtk_label_set_text(cast(label), row.isFavorite ? "★  " + row.title : row.title)
             gtk_image_set_from_icon_name(cast(image), "audio-x-generic-symbolic")
             guard let folder = c.artworkFolder, let key = row.artworkKey else { return }
             let revision = c.revision
@@ -672,6 +708,7 @@ extension Array {
         var onAddToPlaylist: ([String], String) -> Void = { _, _ in }
         var currentPlaylistID: String?
         var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
+        var onSelectionChange: ([String]) -> Void = { _ in }
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -700,7 +737,8 @@ extension Array {
                     let grid = Self.rowGrid()
                     grid.padding = Thickness(left: 12, top: 6, right: 12, bottom: 6)
                     for (index, column) in columns.enumerated() {
-                        (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = row[keyPath: column.value]
+                        let value = row[keyPath: column.value]
+                        (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = index == 1 && row.isFavorite ? "★  " + value : value
                     }
                     if let folder = c.artworkFolder, let key = row.artworkKey,
                        let title = grid.children.getAt(1) as? TextBlock {
@@ -717,6 +755,20 @@ extension Array {
                 }
             }
             list.canDragItems = true
+            list.selectionChanged.addHandler { [weak coordinator, weak list] _, _ in
+                guard let coordinator, let list else { return }
+                MainActor.assumeIsolated {
+                    guard coordinator.isActive else { return }
+                    var ids: [String] = []
+                    for index in 0..<list.selectedRanges.size {
+                        guard let range = list.selectedRanges.getAt(index), range.firstIndex >= 0,
+                              Int(range.firstIndex) < coordinator.rows.count else { continue }
+                        let end = min(Int(range.lastIndex), coordinator.rows.count - 1)
+                        if end >= Int(range.firstIndex) { ids.append(contentsOf: coordinator.rows[Int(range.firstIndex)...end].map(\.id)) }
+                    }
+                    coordinator.onSelectionChange(ids)
+                }
+            }
             list.doubleTapped.addHandler { [weak coordinator, weak list] _, _ in
                 MainActor.assumeIsolated {
                     guard let c = coordinator, c.isActive, let list, c.rows.indices.contains(Int(list.selectedIndex)) else { return }
@@ -758,6 +810,7 @@ extension Array {
             if coordinator.isActive && !isActive { TrackDrag.end() }
             coordinator.isActive = isActive
             coordinator.onPlay = onPlay
+            coordinator.onSelectionChange = onSelectionChange
             coordinator.artworkFolder = artworkFolder
             root.visibility = isActive ? .visible : .collapsed
             root.isHitTestVisible = isActive
@@ -767,7 +820,7 @@ extension Array {
             // the items go in one by one.
             guard let items = coordinator.list?.items else { return }
             items.clear()
-            for row in rows { items.append("\(row.title)   —   \(row.artist)   —   \(row.album)") }
+            for row in rows { items.append("\(row.isFavorite ? "★  " : "")\(row.title)   —   \(row.artist)   —   \(row.album)") }
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, winUIElement: WinUI.Grid, context: Context) -> ViewSize {
@@ -798,6 +851,7 @@ extension Array {
             var list: WinUI.ListView?
             var artworkFolder: URL?
             var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+            var onSelectionChange: ([String]) -> Void = { _ in }
             var isActive = true
         }
     }
@@ -826,7 +880,7 @@ extension Array {
     /// system on macOS.
     struct WindowBackground: View {
         var body: some View {
-            Color.adaptive(light: Color(white: 1), dark: Color(red: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255))
+            Color.adaptive(light: Color(white: 1, opacity: 0.50), dark: Color(white: 0, opacity: 0.50))
         }
     }
 #endif

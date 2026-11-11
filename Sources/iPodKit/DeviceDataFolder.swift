@@ -68,7 +68,12 @@ public struct DeviceDataFolder: Sendable {
         return nil
     }
 
-    public func write<T: Encodable>(_ value: T, to name: String) throws {
+    public func write<T: Codable>(_ value: T, to name: String) throws {
+        try write(value, to: name, replacing: FileOps.writeReplacing)
+    }
+
+    /// Replacement can be injected by tests to simulate a failed primary write.
+    func write<T: Codable>(_ value: T, to name: String, replacing replace: (Data, URL) throws -> Void) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
         let data = try encoder.encode(value)
@@ -76,10 +81,25 @@ public struct DeviceDataFolder: Sendable {
         try fm.createDirectory(at: url, withIntermediateDirectories: true)
         let file = url.appendingPathComponent(name)
         let backup = url.appendingPathComponent(name + ".bak")
+        let decoder = JSONDecoder()
         if fm.fileExists(atPath: file.path) {
-            if fm.fileExists(atPath: backup.path) { try? fm.removeItem(at: backup) }
-            try? fm.copyItem(at: file, to: backup)
+            if let previous = try? Data(contentsOf: file),
+               (try? decoder.decode(T.self, from: previous)) != nil {
+                // A failed backup replacement leaves the valid primary untouched.
+                try replace(previous, backup)
+            } else {
+                // A recovered backup must remain untouched until the new primary is durable.
+                guard let bytes = try? Data(contentsOf: backup),
+                      (try? decoder.decode(T.self, from: bytes)) != nil else {
+                    throw IPodDBError.corrupt("Could not read \(name) or its backup.")
+                }
+            }
+        } else if fm.fileExists(atPath: backup.path) {
+            guard let bytes = try? Data(contentsOf: backup),
+                  (try? decoder.decode(T.self, from: bytes)) != nil else {
+                throw IPodDBError.corrupt("Could not read \(name) or its backup.")
+            }
         }
-        try FileOps.writeReplacing(data, to: file)
+        try replace(data, file)
     }
 }

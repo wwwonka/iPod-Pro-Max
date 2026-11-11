@@ -22,10 +22,10 @@ index 3329b554..95b6fc51 100644
      }
  
 diff --git a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-index c297bea2..f0ddd0ff 100644
+index c297bea2..6795cd68 100644
 --- a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
 +++ b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-@@ -1,5 +1,136 @@
+@@ -1,5 +1,142 @@
  import AppKit
  
 -class NSCustomSplitView: NSSplitView {
@@ -73,7 +73,10 @@ index c297bea2..f0ddd0ff 100644
 +    /// Sets the width the sidebar has when open (now, if it is open).
 +    public func applySidebarWidth(_ width: CGFloat) {
 +        openWidth = width
-+        guard isSidebarOpen, subviews.count > 1 else { return }
++        // Before the first real layout there is no room to position a divider. Keep the
++        // preference for the delegate's first layout instead of letting AppKit clamp it.
++        guard isSidebarOpen, subviews.count > 1, bounds.width > width + 100 else { return }
++        resizingDelegate?.isFirstUpdate = false
 +        setPosition(width, ofDividerAt: 0)
 +    }
 +
@@ -81,6 +84,8 @@ index c297bea2..f0ddd0ff 100644
 +    /// requested (the layout being computed reads the new width).
 +    public func setSidebarOpenAtOnce(_ open: Bool) {
 +        guard let delegate = resizingDelegate, subviews.count > 1 else { return }
++        // The first layout must not reopen a sidebar hidden on an iPod page.
++        if !open { delegate.isFirstUpdate = false }
 +        if animationTimer != nil, animationTarget == open { return }
 +        if animationTimer == nil, open == isSidebarOpen { return }
 +        animationTimer?.invalidate()
@@ -96,6 +101,7 @@ index c297bea2..f0ddd0ff 100644
 +        delegate.endSilent(width: open ? to : 0)
 +    }
 +
++    var preferredOpenWidth: CGFloat { openWidth }
 +    public var isSidebarOpen: Bool { !(subviews.first?.isHidden ?? true) }
 +
 +    /// Opens or closes the sidebar pane by moving the divider natively, frame by frame, the content
@@ -203,7 +209,7 @@ index cd364459..129114ee 100644
              let contentSize = sender.contentRect(
                  forFrameRect: NSRect(
 diff --git a/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift b/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
-index c9f05a89..b4f565ec 100644
+index c9f05a89..ebff0af8 100644
 --- a/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
 +++ b/Sources/AppKitBackend/Helpers/NSSplitViewResizingDelegate.swift
 @@ -8,6 +8,215 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
@@ -478,7 +484,7 @@ index c9f05a89..b4f565ec 100644
              return CGFloat(maximumLeadingWidth)
          } else {
              return proposedMaximumPosition
-@@ -58,7 +299,10 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
+@@ -58,10 +299,21 @@ class NSSplitViewResizingDelegate: NSObject, NSSplitViewDelegate {
      }
  
      func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
@@ -486,9 +492,21 @@ index c9f05a89..b4f565ec 100644
          splitView.adjustSubviews()
 +        if tracing, isDragging { fputs("[rs] resizeSubviews pane \(Int(before)) -> \(Int(splitView.subviews[0].frame.width)) leadingWidth=\(leadingWidth) appKitIsResizing=\(appKitIsResizing)\n", stderr) }
 +        if animating { return }
++        // A hidden leading pane must stay collapsed across the first layout and window resizes.
++        // Otherwise the default divider position reserves empty space on the iPod page.
++        if splitView.subviews[0].isHidden {
++            isFirstUpdate = false
++            leadingWidth = 0
++            return
++        }
  
          if isFirstUpdate {
-             splitView.setPosition(max(200, CGFloat(minimumLeadingWidth)), ofDividerAt: 0)
+-            splitView.setPosition(max(200, CGFloat(minimumLeadingWidth)), ofDividerAt: 0)
++            let preferred = (splitView as? NSCustomSplitView)?.preferredOpenWidth ?? 200
++            splitView.setPosition(max(preferred, CGFloat(minimumLeadingWidth)), ofDividerAt: 0)
+             isFirstUpdate = false
+         } else {
+             let newWidth = splitView.subviews[0].frame.width
 diff --git a/Sources/SwiftCrossUI/Scenes/WindowReference.swift b/Sources/SwiftCrossUI/Scenes/WindowReference.swift
 index f3358592..8edd7560 100644
 --- a/Sources/SwiftCrossUI/Scenes/WindowReference.swift

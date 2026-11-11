@@ -61,6 +61,16 @@
         /// Tells the app the sidebar's width while its edge is dragged.
         var onSidebarWidth: ((Int) -> Void)?
         private var sidebarOpen = true
+        /// Preserve actions made while the portable settings are still loading.
+        private var sidebarPreferencesRestored = false
+        private var sidebarChangedBeforeRestore = false
+        private var sidebarWidthBeforeRestore: Double?
+        private var pendingSidebarWidth: Double?
+        private var onPersistSidebarWidth: ((Double) -> Void)?
+        /// Only one short-lived retry can be pending, even if multiple views update together.
+        private var sidebarRetry: DispatchWorkItem?
+        private weak var observedSidebarSplit: NSCustomSplitView?
+        private var sidebarFrameObserver: NSObjectProtocol?
         /// The sidebar is SwiftCrossUI's own NSSplitView, which owns its geometry (IPPM_LEGACY_SPLIT=1 brings the old overlay back).
         static let nativeSplitMode = ProcessInfo.processInfo.environment["IPPM_LEGACY_SPLIT"] == nil
         private var benchStarted = false
@@ -426,8 +436,10 @@
             item.isBordered = true
             item.target = self
             item.action = #selector(toggleSidebar)
-            item.isEnabled = sidebarAvailable
+            if #available(macOS 15.0, *) { item.isHidden = !sidebarAvailable }
+            item.isEnabled = sidebarAvailable && !Self.nativeSplitMode
             toggleItem = item
+            if Self.nativeSplitMode { reconcileNativeSidebar() }
             return item
         }
 
@@ -625,6 +637,7 @@
         /// Opens or closes the sidebar with no slide and no fade: the drag itself is the motion.
         private func setSidebarAtOnce(open: Bool) {
             guard let column = sidebarColumn() else { return }
+            if !sidebarPreferencesRestored { sidebarChangedBeforeRestore = true }
             sidebarOpen = open
             slideRevision += 1
             column.layer?.removeAnimation(forKey: "sidebarSlide")
@@ -716,18 +729,90 @@
             }
         }
 
-        func setUpSidebarPersistence(width: Double?, onChange: @escaping (Double) -> Void, attempt: Int = 0) {
+        /// Builds an isolated chrome for the opt-in native sidebar state-machine check, without
+        /// installing application lifecycle hooks or changing the real window's chrome.
+        static func sidebarCheckChrome(window: NSWindow) -> MacChrome {
+            let chrome = MacChrome()
+            chrome.window = window
+            return chrome
+        }
+
+        /// Reconciles late-arriving preferences with any action the user already made.
+        @discardableResult
+        func restoreSidebar(open: Bool, width: Double?, onChange: @escaping (Double) -> Void) -> Bool {
+            if !sidebarChangedBeforeRestore { sidebarOpen = open }
+            sidebarPreferencesRestored = true
+            onSidebarChange?(sidebarOpen)
+            setUpSidebarPersistence(width: sidebarWidthBeforeRestore ?? width, onChange: onChange)
+            if let width = sidebarWidthBeforeRestore { onChange(width); sidebarWidthBeforeRestore = nil }
+            return sidebarOpen
+        }
+
+        func setUpSidebarPersistence(width: Double?, onChange: @escaping (Double) -> Void) {
             guard Self.nativeSplitMode else { return }
-            if let split = nativeSplit(), split.frame.width > 500 {
-                if let width {
-                    split.applySidebarWidth(CGFloat(min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)))
-                }
-                split.onDragEnd = { onChange(Double($0.rounded())) }
-            } else if attempt < 40 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    MainActor.assumeIsolated { self?.setUpSidebarPersistence(width: width, onChange: onChange, attempt: attempt + 1) }
+            pendingSidebarWidth = width
+            onPersistSidebarWidth = onChange
+            reconcileNativeSidebar()
+        }
+
+        /// Called by the sidebar when it joins a window. A pending setup survives slow launches.
+        func sidebarHierarchyDidChange() {
+            guard Self.nativeSplitMode else { return }
+            reconcileNativeSidebar()
+        }
+
+        private func scheduleSidebarRetry(attempt: Int) {
+            guard sidebarRetry == nil, attempt < 40 else { return }
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.sidebarRetry = nil
+                    self.reconcileNativeSidebar(attempt: attempt + 1)
                 }
             }
+            sidebarRetry = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        }
+
+        private func reconcileNativeSidebar(attempt: Int = 0) {
+            guard Self.nativeSplitMode else { return }
+            guard let split = nativeSplit() else {
+                toggleItem?.isEnabled = false
+                scheduleSidebarRetry(attempt: attempt)
+                return
+            }
+            if observedSidebarSplit !== split {
+                if let observer = sidebarFrameObserver { NotificationCenter.default.removeObserver(observer) }
+                observedSidebarSplit = split
+                split.postsFrameChangedNotifications = true
+                sidebarFrameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: split, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.reconcileNativeSidebar() }
+                }
+                split.onDragEnd = { [weak self] width in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        let value = Double(width.rounded())
+                        if !self.sidebarPreferencesRestored { self.sidebarWidthBeforeRestore = value }
+                        self.onSidebarWidth?(Int(value))
+                        self.onPersistSidebarWidth?(value)
+                    }
+                }
+            }
+            guard split.frame.width > 500, split.subviews.count > 1 else {
+                toggleItem?.isEnabled = false
+                scheduleSidebarRetry(attempt: attempt)
+                return
+            }
+            sidebarRetry?.cancel()
+            sidebarRetry = nil
+            if let width = pendingSidebarWidth {
+                pendingSidebarWidth = nil
+                split.applySidebarWidth(CGFloat(min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)))
+            }
+            split.dividerDragEnabled = sidebarAvailable && sidebarOpen
+            split.dividerTopInset = CGFloat(titleBarHeight)
+            split.setSidebarOpenAtOnce(sidebarAvailable && sidebarOpen)
+            toggleItem?.isEnabled = sidebarAvailable
         }
 
         func setSidebarAvailable(_ available: Bool, attempt: Int = 0) {
@@ -735,19 +820,7 @@
                 wantsSidebar = available
                 sidebarAvailable = available
                 if #available(macOS 15.0, *) { toggleItem?.isHidden = !available; scheduleTitleAreaRelayout() }
-                toggleItem?.isEnabled = available
-                if let split = nativeSplit() {
-                    // At once, in the update pass that changes the page: the layout being computed reads the new width.
-                    if ProcessInfo.processInfo.environment["IPPM_BENCH_LAYOUT"] != nil { FileHandle.standardError.write(Data("[avail] \(available) open=\(sidebarOpen) pane=\(Int(split.frame.width))\n".utf8)) }
-                    // No interaction with the sidebar's edge on the iPod page, nor from the toolbar.
-                    split.dividerDragEnabled = available
-                    split.dividerTopInset = CGFloat(titleBarHeight)
-                    split.setSidebarOpenAtOnce(available && sidebarOpen)
-                } else if attempt < 40 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                        MainActor.assumeIsolated { self?.setSidebarAvailable(available, attempt: attempt + 1) }
-                    }
-                }
+                reconcileNativeSidebar()
                 return
             }
             if attempt == 0 { wantsSidebar = available }
@@ -775,12 +848,16 @@
 
         @objc func toggleSidebar() {
             if Self.nativeSplitMode {
-                guard sidebarAvailable, let split = nativeSplit() else { return }
+                guard sidebarAvailable, let split = nativeSplit(), split.frame.width > 500, split.subviews.count > 1 else { return }
+                if !sidebarPreferencesRestored { sidebarChangedBeforeRestore = true }
                 sidebarOpen.toggle()
                 split.setSidebarOpen(sidebarOpen, animated: true)
+                split.dividerDragEnabled = sidebarOpen
+                onSidebarChange?(sidebarOpen)
                 return
             }
             guard sidebarAvailable, let column = sidebarColumn() else { return }
+            if !sidebarPreferencesRestored { sidebarChangedBeforeRestore = true }
             sidebarOpen.toggle()
             let opening = sidebarOpen
             slideRevision += 1
@@ -906,7 +983,6 @@
             NSApp.terminate(nil)
         }
     }
-#endif
 
 
 /// A thin glass-like rim around the main view: bright where the light would catch it, at the top left
@@ -997,3 +1073,5 @@ final class ContainerMask {
         CATransaction.commit()
     }
 }
+
+#endif

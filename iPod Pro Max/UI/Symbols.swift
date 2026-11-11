@@ -57,6 +57,7 @@ let symbolCodepoints: [String: UInt32] = [
     "music.note": 0xF134,
     "music.note.list": 0xF133,
     "music.mic": 0xF12D,
+    "microphone.dynamic.on.stand": 0xF12D,
     "ipod": 0xEE8E,
     "book": 0xF286,
     "antenna.radiowaves.left.and.right": 0xEE31,
@@ -106,6 +107,7 @@ private func symbolFallback(_ name: String) -> String {
     case "music.note": "Music"
     case "ipod": "iPod"
     case "person.fill": "Artists"
+    case "star.fill": "★"
     case "square.stack": "Albums"
     case "clock": "Recent"
     case "antenna.radiowaves.left.and.right": "Podcasts"
@@ -139,7 +141,9 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     func systemSymbol(_ name: String, description: String? = nil, pointSize: Double? = nil) -> NSImage? {
         if let custom = customSymbols[name] { return customSymbolImage(custom, description: description, pointSize: pointSize ?? 13) }
         guard #available(macOS 11, *) else { return nil }
+        // `music.mic` is Apple's earlier name for this same symbol on macOS 15 and older.
         let image = NSImage(systemSymbolName: name, accessibilityDescription: description)
+            ?? (name == "microphone.dynamic.on.stand" ? NSImage(systemSymbolName: "music.mic", accessibilityDescription: description) : nil)
         guard let pointSize else { return image }
         return image?.withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
     }
@@ -278,7 +282,7 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         let name = customSymbolFontStandIns[name] ?? name
         let glyph = localSymbolFontAvailable ? (symbolCodepoints[name].flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? symbolFallback(name)) : symbolFallback(name)
         if text.text != glyph {
-            if localSymbolFontAvailable { text.fontFamily = symbolFont }
+            if localSymbolFontAvailable && symbolCodepoints[name] != nil { text.fontFamily = symbolFont }
             text.text = glyph
         }
         if text.fontSize != pointSize { text.fontSize = pointSize }

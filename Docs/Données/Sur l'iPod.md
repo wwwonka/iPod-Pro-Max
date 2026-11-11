@@ -47,9 +47,11 @@ L'app lancée depuis `Build/` (par le lanceur ou directement) y voit un iPod sim
 
 Voir [[ADR-006 Application entièrement portable]]. Tout le stockage de l'application voyage sur l'iPod. `known_hosts.json` conserve les dossiers par catégorie (musique, audiolivres, vidéos, photos); seule la musique est raccordée dans cette livraison. Le bouton + configure son dossier et la flèche circulaire relance le scan. Les pistes inaccessibles disparaissent, leurs chemins sources restent connus.
 
+Les favoris sont propres à la bibliothèque de chaque hôte. `library.json` conserve, en plus des pistes accessibles, une référence minimale (identifiant et chemin) pour chaque favori : une source temporairement indisponible reste invisible et ne peut pas être synchronisée, puis retrouve ses favoris à son retour. Retirer explicitement un dossier efface les références favorites qui lui appartiennent. Les anciens caches sont enrichis à leur prochaine lecture ; si le cache et sa sauvegarde sont illisibles, le chargement échoue sans les remplacer.
+
 `manifest.json` mémorise les transferts et évite les doublons de fichiers identiques entre hôtes. Le dépôt de chansons ajoute uniquement la sélection et conserve les autres pistes, playlists et pochettes. Le bouton Sync reste désactivé en attendant les crochets par chanson.
 
-`device.json` et `cli-sync.json` restent compatibles. Les réglages actuellement partagés par `settings.json` sont le mode d'affichage musical et l'activation des pochettes; les fonctions futures ajouteront leurs préférences lorsqu'elles seront raccordées.
+`device.json` et `cli-sync.json` restent compatibles. `settings.json` partage entre les trois plateformes le mode d'affichage musical, l'activation des pochettes, la dernière page globale et la dernière page de chaque section, ainsi que l'état ouvert ou fermé et la largeur de la sidebar. Les changements sont enregistrés automatiquement et les anciens fichiers restent lisibles.
 
 ## Réactivité
 - Les réglages et registres sont petits; le cache de bibliothèque peut atteindre plusieurs Mo. On les lit en arrière-plan et on les garde en mémoire. Le cache est vérifié contre les sources au démarrage puis sur action explicite.

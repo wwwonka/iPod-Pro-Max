@@ -9,6 +9,20 @@ func checkNativeMusicInteractions() async {
         fputs("Native check exception: \(exception.name.rawValue): \(exception.reason ?? "")\n", stderr)
     }
     checkNativeAlbumGrid()
+    try! await checkPortableFavoriteRecovery()
+    await checkNativeSidebarPersistence()
+    let earlier = Date(timeIntervalSince1970: 100)
+    let later = Date(timeIntervalSince1970: 200)
+    let sample = PortableLibraryCache(tracks: [
+        LibraryTrack(path: "/old", title: "Old", artist: "Artist", album: "First", fileExtension: "mp3", isFavorite: true, dateAdded: earlier),
+        LibraryTrack(path: "/new", title: "New", artist: "Artist", album: "Second", fileExtension: "mp3", dateAdded: later),
+        LibraryTrack(path: "/newer", title: "Added later", artist: "Artist", album: "First", fileExtension: "mp3", dateAdded: later.addingTimeInterval(1))
+    ])
+    let indexed = Library.portable(sample, source: "test")
+    precondition(indexed.recentAlbums.map(\.title) == ["First", "Second"], "Recently added albums must follow their newest song")
+    precondition(indexed.recentAlbums.first?.rows.count == 2)
+    precondition(indexed.favoriteRows.map(\.title) == ["Old"], "Only favorite songs belong in Favorites")
+    log("PASS: recently added albums follow the newest song in each album")
     checkPlaybackController()
     await checkMacVolumeIcon()
     let rows = (0..<3).map {
@@ -19,9 +33,13 @@ func checkNativeMusicInteractions() async {
     let source = TrackTable.Coordinator()
     source.rows = rows
     table.dataSource = source
+    table.delegate = source
+    var favoriteSelection: [String] = []
+    source.onSelectionChange = { favoriteSelection = $0 }
     table.allowsMultipleSelection = true
     table.reloadData()
     table.selectRowIndexes(IndexSet(0..<3), byExtendingSelection: false)
+    precondition(Set(favoriteSelection) == Set(rows.map(\.id)), "Favorite actions must receive selected songs")
     let board = NSPasteboard(name: .init("ipodpromax-interaction-check-" + UUID().uuidString))
     defer { board.releaseGlobally(); TrackDrag.end() }
     let writers = (0..<3).compactMap { source.tableView(table, pasteboardWriterForRow: $0) }
@@ -31,6 +49,13 @@ func checkNativeMusicInteractions() async {
     MusicTransfer.shared.onDrop = { ids, device in received = ids; return device == "test-device" }
     precondition(TrackDrag.accept(musicDragPayload(in: board), device: "test-device"))
     precondition(Set(received) == Set(rows.map(\.id)), "Multi-row drag lost selected tracks")
+    TrackDrag.end()
+    let albums = AlbumBrowser.Coordinator()
+    albums.albums = [AlbumInfo(id: "drag-album", title: "Album", year: "", rows: rows, durationMs: 0)]
+    let albumGrid = NSCollectionView()
+    let albumItem = albums.collectionView(albumGrid, pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)) as? NSPasteboardItem
+    precondition(TrackDrag.accept(albumItem?.string(forType: .string), device: "test-device"))
+    precondition(Set(received) == Set(rows.map(\.id)), "Dragging an album must include every track")
     precondition(!TrackDrag.accept("external", device: "test-device"))
     TrackDrag.end()
 

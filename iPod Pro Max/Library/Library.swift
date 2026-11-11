@@ -18,6 +18,7 @@ struct Track: Decodable {
     var artworkKey: String?
     var hasLyrics: Bool? = nil
     var dateAdded: Date? = nil
+    var isFavorite: Bool? = nil
 }
 
 struct Playlist: Decodable, Identifiable, Equatable {
@@ -44,6 +45,7 @@ struct TrackRow: Equatable {
     var hasLyrics = false
     var artworkKey: String? = nil
     var dateAdded: Date? = nil
+    var isFavorite = false
 }
 
 struct NamedGroup: Identifiable {
@@ -90,14 +92,16 @@ struct Library {
     var rowsByVideoPlaylist: [String: [TrackRow]] = [:]
     var loadMs: Int
     var indexMs: Int
+    var favoriteRows: [TrackRow] = []
     var recentRows: [TrackRow] = []
     var albums: [AlbumInfo] = []
+    var recentAlbums: [AlbumInfo] = []
 
     static func portable(_ cache: PortableLibraryCache, source: String, artworkFolder: URL? = nil) -> Library {
         let tracks = cache.tracks.filter { $0.kind == nil || $0.kind == .song }.map {
             Track(id: $0.id.uuidString, title: $0.title, path: $0.path, artist: $0.artist, album: $0.album,
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
-                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded)
+                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded, isFavorite: $0.isFavorite)
         }
         let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         let videoPlaylists = cache.videoPlaylists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
@@ -214,7 +218,7 @@ struct Library {
                 album: t.album ?? "Unknown Album",
                 number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "",
                 year: (t.year ?? 0) > 0 ? "\(t.year!)" : "",
-                duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded
+                duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false
             )
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
@@ -239,6 +243,7 @@ struct Library {
                        albumsByArtist: albums, artworkFolder: nil,
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
+        library.favoriteRows = all.filter(\.isFavorite)
         library.recentRows = all.enumerated().sorted {
             let a = $0.element.dateAdded ?? .distantPast, b = $1.element.dateAdded ?? .distantPast
             return a == b ? $0.offset < $1.offset : a > b
@@ -251,6 +256,12 @@ struct Library {
                 return album
             }
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        // Compute recency once during indexing, never while the view renders.
+        var datedAlbums: [(index: Int, album: AlbumInfo, latest: Date)] = library.albums.enumerated().map { index, album in
+            (index, album, album.rows.compactMap(\.dateAdded).max() ?? Date.distantPast)
+        }
+        datedAlbums.sort { $0.latest == $1.latest ? $0.index < $1.index : $0.latest > $1.latest }
+        library.recentAlbums = datedAlbums.map { $0.album }
         return library
     }
 
@@ -272,7 +283,7 @@ struct Library {
                 artworkKey: songs.compactMap(\.artworkKey).first,
                 rows: songs.map { t in
                     TrackRow(id: t.id, title: t.title, artist: t.artist ?? "Unknown Artist", album: t.album ?? "Unknown Album",
-                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey)
+                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false)
                 },
                 durationMs: songs.reduce(0) { $0 + ($1.durationMs ?? 0) })
         }
