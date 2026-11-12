@@ -8,7 +8,7 @@ enum ConnectedDeviceTitles {
 
 enum SidebarItem: Hashable {
     case device(String)
-    case music, recentMusic, artists, albums, favorites, podcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
+    case music, recentMusic, artists, albums, favorites, podcasts, recentPodcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
     /// Sections kept out of the rail, behind its "…" menu.
     case games, contacts, calendars, notes, files, firmware
     case playlist(String)
@@ -29,6 +29,7 @@ enum SidebarItem: Hashable {
         case .albums: "albums"
         case .favorites: "favorites"
         case .podcasts: "podcasts"
+        case .recentPodcasts: "recentPodcasts"
         case .audiobooks: "audiobooks"
         case .videos: "videos"
         case .movies: "movies"
@@ -48,7 +49,7 @@ enum SidebarItem: Hashable {
     init?(persistentName name: String) {
         if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
         if name.hasPrefix("videoPlaylist:") { self = .videoPlaylist(String(name.dropFirst("videoPlaylist:".count))); return }
-        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .favorites, .podcasts, .audiobooks, .videos, .photos,
+        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .favorites, .podcasts, .recentPodcasts, .audiobooks, .videos, .photos,
                                   .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files, .firmware]
         guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
         self = item
@@ -59,6 +60,7 @@ enum SidebarItem: Hashable {
         switch self {
         case .music, .recentMusic, .artists, .albums, .favorites, .playlist: .music
         case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: .videos
+        case .recentPodcasts: .podcasts
         case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files, .firmware: self
         case .device: nil
         }
@@ -68,7 +70,7 @@ enum SidebarItem: Hashable {
     var railName: String {
         switch self {
         case .music: "Music"
-        case .podcasts: "Podcasts"
+        case .podcasts, .recentPodcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
         case .movies, .tvShows, .musicVideos, .videoPlaylist: "Videos"
@@ -93,6 +95,7 @@ enum SidebarItem: Hashable {
         case .albums: "Albums"
         case .favorites: "Favorites"
         case .podcasts: "Podcasts"
+        case .recentPodcasts: "Recently Updated"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
         case .movies: "Movies"
@@ -119,6 +122,7 @@ enum SidebarItem: Hashable {
         case .albums: "square.stack"
         case .favorites: "star.fill"
         case .podcasts: "podcasts"
+        case .recentPodcasts: "clock"
         case .audiobooks: "book"
         case .videos: "film.stack"
         case .movies: "film"
@@ -155,6 +159,11 @@ struct SidebarSection {
 /// The sidebar's sections, the same on every platform.
 @MainActor
 func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist] = [], media: SidebarItem = .music) -> [SidebarSection] {
+    if media == .podcasts {
+        return [SidebarSection(title: "Podcasts", rows: [SidebarItem.recentPodcasts, .podcasts].map {
+            .init(title: $0 == .podcasts ? "All Podcasts" : $0.title, icon: $0.icon, item: $0)
+        })]
+    }
     if media == .videos {
         return [
             SidebarSection(title: "Videos", rows: [SidebarItem.movies, .tvShows, .musicVideos].map {

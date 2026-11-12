@@ -201,7 +201,7 @@ final class PodcastRowsCache: SwiftCrossUI.ObservableObject {
     /// Rebuilt only when the show or the content revision changes (not on download progress ticks).
     @MainActor
     func rows(for show: PodcastShow?, revision: Int) -> [TrackRow] {
-        guard let show else { showID = nil; rows = []; return rows }
+        guard let show else { showID = nil; self.revision = -1; rows = []; return rows }
         if showID == show.id, self.revision == revision { return rows }
         self.revision = revision
         let fresh = show.sortedEpisodes.map { episode -> TrackRow in
@@ -218,6 +218,25 @@ final class PodcastRowsCache: SwiftCrossUI.ObservableObject {
         if showID == show.id, fresh == rows { return rows }
         showID = show.id
         rows = fresh
+        return rows
+    }
+
+    /// All subscriptions in publication order, cached until their content changes.
+    @MainActor
+    func recentRows(shows: [PodcastShow], revision: Int) -> [TrackRow] {
+        if showID == nil, self.revision == revision { return rows }
+        self.revision = revision
+        showID = nil
+        let episodes = shows.flatMap { show in show.episodes.map { (show, $0) } }
+            .sorted { ($0.1.publishedAt ?? .distantPast) > ($1.1.publishedAt ?? .distantPast) }
+        rows = episodes.map { show, episode in
+            let year = episode.publishedAt.map { String(Calendar(identifier: .gregorian).component(.year, from: $0)) } ?? ""
+            return TrackRow(id: episode.id.uuidString,
+                            title: (episode.played ? "" : "● ") + episode.title + (episode.isDownloaded ? "" : "  (not downloaded)"),
+                            artist: show.author ?? show.title, album: show.title,
+                            number: (episode.episodeNumber ?? 0) > 0 ? "\(episode.episodeNumber!)" : "",
+                            year: year, duration: Self.duration(episode.durationMs ?? 0))
+        }
         return rows
     }
 

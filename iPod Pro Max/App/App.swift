@@ -1010,7 +1010,7 @@ struct ContentView: View {
                                 onRemoveFolder: { await removeSource(id: $0) })
                                 .background(WindowBackground())
                         }
-                        if selection == .podcasts && addingPodcast {
+                        if selection.media == .podcasts && addingPodcast {
                             PodcastAddPanel(onSubscribed: { selectedShowID = $0; addingPodcast = false }, onClose: { addingPodcast = false })
                                 .background(WindowBackground())
                         }
@@ -1125,7 +1125,7 @@ struct ContentView: View {
                     Button("Remove Favorite") { setFavorite(false) }.disabled(selectedSongIDs.isEmpty || playlistSaving).titleBarControl()
                 }
                 SearchField(prompt: "Search songs, artists, albums…", text: $search)
-            } else if selection == .podcasts {
+            } else if selection.media == .podcasts {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
                 SearchField(prompt: "Search episodes", text: $search)
@@ -1161,7 +1161,7 @@ struct ContentView: View {
         switch selection {
         case .music: return mode != .byArtist && !library.allRows.isEmpty
         case .favorites: return !library.favoriteRows.isEmpty
-        case .podcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
+        case .podcasts, .recentPodcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
         case .audiobooks: return !audiobookRows.isEmpty
         case .recentMusic: return selectedAlbumID != nil
         case .albums: return selectedAlbumID != nil
@@ -1197,10 +1197,12 @@ struct ContentView: View {
             return filtered(library.videoRowsByCategory[.musicVideo] ?? [])
         case .videoPlaylist(let id):
             return filtered(library.rowsByVideoPlaylist[id] ?? [])
-        case .podcasts where addingPodcast:
+        case .podcasts where addingPodcast, .recentPodcasts where addingPodcast:
             return nil
         case .podcasts:
             return filtered(podcastRows.rows(for: currentShow, revision: PodcastController.shared.contentRevision))
+        case .recentPodcasts:
+            return filtered(podcastRows.recentRows(shows: PodcastController.shared.shows, revision: PodcastController.shared.contentRevision))
         case .audiobooks:
             return filtered(audiobookRows)
         default:
@@ -1217,7 +1219,8 @@ struct ContentView: View {
         case .music where mode == .byArtist && artistSelection.group(library, selected: selectedArtists) == nil:
             return EmptyState(icon: "music.mic", title: "Select an Artist",
                               message: "Pick an artist in the list to see their songs.")
-        case .podcasts where PodcastController.shared.shows.isEmpty && !addingPodcast:
+        case .podcasts where PodcastController.shared.shows.isEmpty && !addingPodcast,
+             .recentPodcasts where PodcastController.shared.shows.isEmpty && !addingPodcast:
             return EmptyState(icon: "antenna.radiowaves.left.and.right", title: "No Podcasts Yet",
                               message: "Subscribe by searching Apple Podcasts or pasting a feed, OHdio or YouTube link with +. Episodes are downloaded here and copied to the iPod's Podcasts menu when you drag them onto it.")
         case .audiobooks where audiobookRows.isEmpty:
@@ -1240,7 +1243,7 @@ struct ContentView: View {
                               message: "Music you add to your library will appear here.")
         case .recentMusic, .albums, .favorites:
             return nil
-        case .music, .playlist, .podcasts, .audiobooks, .photos, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
+        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).
