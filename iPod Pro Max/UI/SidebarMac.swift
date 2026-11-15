@@ -53,14 +53,16 @@
             outline.pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryDeepDrag)
             outline.floatsGroupRows = false
             outline.rowSizeStyle = .default
+            outline.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
+            column.resizingMask = .autoresizingMask
             outline.addTableColumn(column)
             outline.outlineTableColumn = column
             outline.dataSource = context.coordinator
             outline.delegate = context.coordinator
             outline.registerForDraggedTypes([.string])
 
-            let scroll = NSScrollView()
+            let scroll = PinnedScrollView()
             scroll.documentView = outline
             scroll.drawsBackground = false
             // Nothing opaque or light between the list and the dark glass behind it.
@@ -150,6 +152,20 @@
             return nodes
         }
 
+        /// Scroll view that keeps its pinned width during sidebar open/close animations so
+        /// `NSSplitViewResizingDelegate.carry` cannot stretch it when the pane nears full width.
+        final class PinnedScrollView: NSScrollView {
+            var allowsFrameWidthMutation = false
+
+            override func setFrameSize(_ newSize: NSSize) {
+                guard allowsFrameWidthMutation || !MacChrome.shared.isAnimatingSidebar else {
+                    super.setFrameSize(NSSize(width: frame.width, height: newSize.height))
+                    return
+                }
+                super.setFrameSize(newSize)
+            }
+        }
+
         /// Holds the list, filling it. The sidebar's glass card is drawn behind it by the column.
         final class SlidingContainer: NSView {
             override init(frame: NSRect) {
@@ -174,7 +190,23 @@
 
             override func resizeSubviews(withOldSize oldSize: NSSize) {
                 let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
-                subviews.first?.frame = NSRect(x: bounds.width - width, y: 0, width: width, height: bounds.height)
+                guard let scroll = subviews.first else { return }
+                let target = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+                if scroll.frame != target {
+                    let pinned = scroll as? PinnedScrollView
+                    pinned?.allowsFrameWidthMutation = true
+                    scroll.frame = target
+                    pinned?.allowsFrameWidthMutation = false
+                    scroll.layoutSubtreeIfNeeded()
+                    if let outline = (scroll as? NSScrollView)?.documentView as? NSOutlineView {
+                        outline.sizeLastColumnToFit()
+                        outline.tile()
+                        outline.layoutSubtreeIfNeeded()
+                        outline.enumerateAvailableRowViews { rowView, _ in
+                            rowView.needsDisplay = true
+                        }
+                    }
+                }
             }
         }
 
@@ -218,6 +250,32 @@
             override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
                 super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
                 needsDisplay = true
+                alignInsertionIndicator()
+            }
+
+            override func layout() {
+                super.layout()
+                alignInsertionIndicator()
+            }
+
+            override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
+                super.updateInsertionPointStateAndRestartTimer(restartFlag)
+                alignInsertionIndicator()
+            }
+
+            private func alignInsertionIndicator() {
+                for subview in subviews where NSStringFromClass(type(of: subview)).contains("InsertionIndicator") {
+                    var f = subview.frame
+                    let pad = max(0, (f.width - 2.0) / 2.0)
+                    if f.minX <= textContainerInset.width + 0.5 {
+                        f.origin.x = 0.5 - pad
+                    } else if f.maxX >= bounds.maxX - textContainerInset.width - 0.5 {
+                        f.origin.x = max(0.5 - pad, bounds.maxX - 2.5 - pad)
+                    }
+                    if f != subview.frame {
+                        subview.frame = f
+                    }
+                }
             }
 
             override func drawBackground(in rect: NSRect) {
@@ -307,6 +365,8 @@
                 scroll.hasVerticalScroller = false
                 scroll.hasHorizontalScroller = false
                 scroll.autohidesScrollers = true
+                scroll.scrollerStyle = .overlay
+                scroll.verticalScroller?.controlSize = .small
                 scroll.autoresizingMask = [.width, .height]
 
                 let textView = RenameTextView(frame: .zero)
@@ -314,7 +374,7 @@
                 textView.font = font
                 textView.drawsBackground = false
                 textView.textColor = .labelColor
-                textView.insertionPointColor = .labelColor
+                textView.insertionPointColor = .controlAccentColor
                 textView.selectedTextAttributes = [
                     .backgroundColor: NSColor.clear,
                     .foregroundColor: NSColor.labelColor,
@@ -333,7 +393,7 @@
 
                 scroll.documentView = textView
                 innerBox.addSubview(scroll)
-                innerBox.addSubview(borderOverlay, positioned: .above, relativeTo: scroll)
+                innerBox.addSubview(borderOverlay, positioned: .below, relativeTo: scroll)
                 box.addSubview(innerBox)
 
                 renameBox = box
@@ -364,7 +424,10 @@
 
                 textContainer.containerSize = NSSize(width: max(10, maxScrollWidth - 4), height: .greatestFiniteMagnitude)
                 layoutManager.ensureLayout(for: textContainer)
-                let used = layoutManager.usedRect(for: textContainer)
+                let glyphCount = layoutManager.numberOfGlyphs
+                let used = glyphCount > 0
+                    ? layoutManager.boundingRect(forGlyphRange: NSRange(location: 0, length: glyphCount), in: textContainer)
+                    : .zero
                 let font = textView.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
                 let lineHeight = ceil(layoutManager.defaultLineHeight(for: font))
                 let maxScrollHeight = lineHeight * 3
@@ -373,6 +436,8 @@
                 let contentH = max(lineHeight, ceil(used.height))
                 let scrollH = min(maxScrollHeight, contentH)
                 scroll.hasVerticalScroller = contentH > maxScrollHeight
+                scroll.scrollerStyle = .overlay
+                scroll.verticalScroller?.controlSize = .mini
 
                 let originX = labelTextInOutline.minX - 3
                 let originY = labelTextInOutline.minY - 3
@@ -421,7 +486,9 @@
                 finishInlineEdit(commit: true)
             }
 
-            private func finishInlineEdit(commit: Bool) {
+            var isEditingInline: Bool { renameBox != nil }
+
+            func finishInlineEdit(commit: Bool) {
                 guard let box = renameBox, let textView = renameTextView, let textField else { return }
                 let edited = textView.string
                 renameBox = nil
@@ -448,15 +515,18 @@
                 addTrackingArea(area)
                 headerTracking = area
             }
-            override func mouseEntered(with event: NSEvent) { fadePlus(to: 1) }
+            override func mouseEntered(with event: NSEvent) {
+                guard !MacChrome.shared.isAnimatingSidebar else { return }
+                fadePlus(to: 1)
+            }
             override func mouseExited(with event: NSEvent) {
                 guard !keepPlusVisible else { return }
                 fadePlus(to: 0)
             }
-            func fadePlus(to alpha: CGFloat) {
+            func fadePlus(to alpha: CGFloat, duration: TimeInterval? = nil) {
                 guard let plus = plusButton, !plus.isHidden else { return }
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = alpha == 0 ? 0.3 : 0.2
+                    context.duration = duration ?? (alpha == 0 ? 0.3 : 0.2)
                     context.timingFunction = CAMediaTimingFunction(name: alpha == 0 ? .easeIn : .easeOut)
                     plus.animator().alphaValue = alpha
                 }
@@ -570,7 +640,7 @@
             @objc private func menuNewPlaylistFolder() { onCreatePlaylist(true) }
 
             @MainActor func refreshFavoriteIcon() {
-                let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star.fill"
+                let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"
                 for section in sections {
                     for child in section.children where child.item == .favorites {
                         child.icon = iconName
@@ -685,6 +755,28 @@
                 (item as? Node)?.isGroup ?? false
             }
 
+            func outlineViewItemWillCollapse(_ notification: Notification) {
+                endInlineEditAndDeselect(in: notification.object as? NSOutlineView)
+            }
+
+            func outlineViewItemWillExpand(_ notification: Notification) {
+                endInlineEditAndDeselect(in: notification.object as? NSOutlineView)
+            }
+
+            private func endInlineEditAndDeselect(in outline: NSOutlineView?) {
+                guard let outline else { return }
+                var ended = false
+                outline.enumerateAvailableRowViews { rowView, _ in
+                    if let cell = rowView.view(atColumn: 0) as? SidebarCell, cell.isEditingInline {
+                        cell.finishInlineEdit(commit: true)
+                        ended = true
+                    }
+                }
+                if ended {
+                    outline.window?.makeFirstResponder(outline)
+                }
+            }
+
             /// Room for the big section name; a sub-section's native caption takes less.
             func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
                 guard let node = item as? Node, node.isGroup else { return max(outlineView.rowHeight, SidebarMetrics.rowHeight) }
@@ -744,7 +836,10 @@
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
                 let dimmed = !node.isGroup && node.item == nil
-                if !node.isGroup { cell.textField?.textColor = dimmed ? .secondaryLabelColor : nil }
+                if !node.isGroup {
+                    cell.textField?.textColor = dimmed ? .secondaryLabelColor : nil
+                    cell.textField?.lineBreakMode = MacChrome.shared.isAnimatingSidebar ? .byClipping : .byTruncatingTail
+                }
                 (cell as? SidebarCell)?.dimmed = dimmed
                 (cell as? SidebarCell)?.updateTint()
                 return cell
@@ -779,11 +874,24 @@
                 let cell = SidebarCell()
                 cell.identifier = id
                 let text = NSTextField(labelWithString: "")
-                text.lineBreakMode = .byTruncatingTail
+                text.lineBreakMode = group ? .byClipping : .byTruncatingTail
+                text.usesSingleLineMode = true
+                text.maximumNumberOfLines = 1
+                text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 text.translatesAutoresizingMaskIntoConstraints = false
                 cell.addSubview(text)
                 cell.textField = text
-                var constraints = [text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)]
+                // Whatever ties a title to the row's right edge gives way first. While the sidebar slides open
+                // or shut the row gets narrower than its icon and title together: with every constraint
+                // required, Auto Layout broke the icon's width instead (22 pt down to 3), and the glyph,
+                // centered in that frame, drifted left. The title is what shrinks; the icon never moves.
+                func yielding(_ constraint: NSLayoutConstraint) -> NSLayoutConstraint {
+                    constraint.priority = NSLayoutConstraint.Priority(999)
+                    return constraint
+                }
+                var constraints: [NSLayoutConstraint] = group && !main
+                    ? [text.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -2)]
+                    : [text.centerYAnchor.constraint(equalTo: cell.centerYAnchor)]
                 if ejectable {
                     let eject = EjectButton()
                     eject.translatesAutoresizingMaskIntoConstraints = false
@@ -795,12 +903,12 @@
                         eject.heightAnchor.constraint(equalToConstant: M.ejectSize),
                         eject.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                         eject.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -M.ejectTrailing),
-                        text.trailingAnchor.constraint(lessThanOrEqualTo: eject.leadingAnchor, constant: -2),
+                        yielding(text.trailingAnchor.constraint(lessThanOrEqualTo: eject.leadingAnchor, constant: -2)),
                     ]
                 } else if !group {
-                    constraints.append(text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8))
+                    constraints.append(yielding(text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2)))
                 } else {
-                    constraints.append(text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4))
+                    constraints.append(yielding(text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4)))
                 }
                 if group && !main {
                     // A sub-section's caption lines up with the rows' icons, as in the Finder.
@@ -818,7 +926,7 @@
                     constraints += [
                         plus.widthAnchor.constraint(equalToConstant: 22),
                         plus.heightAnchor.constraint(equalToConstant: 22),
-                        plus.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        plus.centerYAnchor.constraint(equalTo: text.centerYAnchor),
                         plus.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
                     ]
                 } else if group {
@@ -826,7 +934,9 @@
                     let label = NSTextField(labelWithString: "")
                     label.font = .systemFont(ofSize: SidebarMetrics.titleFontSize, weight: .bold)
                     label.textColor = .white
-                    label.lineBreakMode = .byTruncatingTail
+                    label.lineBreakMode = .byClipping
+                    label.usesSingleLineMode = true
+                    label.maximumNumberOfLines = 1
                     label.translatesAutoresizingMaskIntoConstraints = false
                     cell.addSubview(label)
                     cell.headerLabel = label
@@ -851,11 +961,13 @@
                         // The first title is centered on the rail's top icon (the iPod's): measured, the
                         // text sat 2.75 pt lower than it.
                         label.centerYAnchor.constraint(equalTo: cell.centerYAnchor, constant: -SidebarMetrics.headerLift),
-                        label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -24),
+                        yielding(label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -24)),
                     ]
                 } else {
                     let image = FlatImageView()
                     image.translatesAutoresizingMaskIntoConstraints = false
+                    image.setContentCompressionResistancePriority(.required, for: .horizontal)
+                    image.setContentHuggingPriority(.required, for: .horizontal)
                     cell.addSubview(image)
                     cell.imageView = image
                     // Fixed-width icon column, so every title starts at the same x.
@@ -1059,6 +1171,30 @@
 
             let slotRects = siblingRows.map { rect(ofRow: $0) }
             let rowViews = siblingRows.map { rowView(atRow: $0, makeIfNecessary: true) }
+            let blockRowViews: [[NSTableRowView]] = groupNode.children.map { child in
+                var rows: [Int] = []
+                let r = row(forItem: child)
+                if r >= 0 { rows.append(r) }
+                if child.isFolder && isItemExpanded(child) {
+                    for sub in child.children {
+                        let sr = row(forItem: sub)
+                        if sr >= 0 { rows.append(sr) }
+                    }
+                }
+                return rows.compactMap { rowView(atRow: $0, makeIfNecessary: true) }
+            }
+            let blockHeights: [CGFloat] = groupNode.children.map { child in
+                var h: CGFloat = 0
+                let r = row(forItem: child)
+                if r >= 0 { h += rect(ofRow: r).height }
+                if child.isFolder && isItemExpanded(child) {
+                    for sub in child.children {
+                        let sr = row(forItem: sub)
+                        if sr >= 0 { h += rect(ofRow: sr).height }
+                    }
+                }
+                return h
+            }
             let startRect = slotRects[startIndex]
             guard let draggedRowView = rowViews[startIndex] else { return }
 
@@ -1097,7 +1233,7 @@
             var isValidTarget = true
             var cancelled = false
             let groupTop = slotRects.first!.minY
-            let groupBottom = slotRects.last!.maxY
+            let groupBottom = groupTop + blockHeights.reduce(0, +)
             let rowH = startRect.height
 
             let draggedPlaylistID: String? = {
@@ -1132,6 +1268,7 @@
                     if draggedAnyPlaylistID != nil,
                        let hitDevice = MediaRailDropBridge.shared.deviceAt(windowPoint: next.locationInWindow) {
                         hoveredDeviceID = hitDevice
+                        NSCursor.dragCopy.set()
                         MediaRailDropBridge.shared.setHighlighted(true)
                         hoveredFolderRow?.isMusicDropTarget = false
                         hoveredFolderRow = nil
@@ -1143,11 +1280,12 @@
                         if currentIndex != startIndex {
                             slots = Array(0..<siblingRows.count)
                             currentIndex = startIndex
-                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, blockRowViews: blockRowViews, blockHeights: blockHeights, groupTop: groupTop)
                         }
                         continue
                     } else if hoveredDeviceID != nil {
                         hoveredDeviceID = nil
+                        NSCursor.arrow.set()
                         MediaRailDropBridge.shared.setHighlighted(false)
                     }
 
@@ -1208,7 +1346,7 @@
                         if currentIndex != startIndex {
                             slots = Array(0..<siblingRows.count)
                             currentIndex = startIndex
-                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, blockRowViews: blockRowViews, blockHeights: blockHeights, groupTop: groupTop)
                         }
                         continue
                     }
@@ -1224,27 +1362,37 @@
                         if currentIndex != startIndex {
                             slots = Array(0..<siblingRows.count)
                             currentIndex = startIndex
-                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, blockRowViews: blockRowViews, blockHeights: blockHeights, groupTop: groupTop)
                         }
                         continue
                     }
                     targetFolderInsert = nil
 
-                    let insideGroupY = pointer.y >= groupTop - rowH * 0.5 && pointer.y <= groupBottom + rowH * 0.5
+                    let insideGroupY = !groupNode.isFolder
+                        ? pointer.y >= groupTop - rowH * 0.5
+                        : (pointer.y >= groupTop - rowH * 0.5 && pointer.y <= groupBottom + rowH * 0.5)
                     if insideX && insideGroupY {
                         isValidTarget = true
                         moveToTopLevelIndex = nil
                         insertionLine.isHidden = true
                         let midY = pointer.y - grabOffsetY + rowH * 0.5
-                        let targetIndex = slotRects.indices.min {
-                            abs(midY - slotRects[$0].midY) < abs(midY - slotRects[$1].midY)
+                        var slotMids: [CGFloat] = []
+                        slotMids.reserveCapacity(slots.count)
+                        var sy = groupTop
+                        for originalIndex in slots {
+                            let h = blockHeights[originalIndex]
+                            slotMids.append(sy + h * 0.5)
+                            sy += h
+                        }
+                        let targetIndex = slots.indices.min {
+                            abs(midY - slotMids[$0]) < abs(midY - slotMids[$1])
                         } ?? currentIndex
                         let targetIsFolder = draggedPlaylistID != nil && groupNode.children[slots[targetIndex]].isFolder
                         if targetIndex != currentIndex, !targetIsFolder {
                             let moved = slots.remove(at: currentIndex)
                             slots.insert(moved, at: targetIndex)
                             currentIndex = targetIndex
-                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, blockRowViews: blockRowViews, blockHeights: blockHeights, groupTop: groupTop)
                         }
                     } else {
                         isValidTarget = false
@@ -1288,7 +1436,7 @@
                         if currentIndex != startIndex {
                             slots = Array(0..<siblingRows.count)
                             currentIndex = startIndex
-                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, blockRowViews: blockRowViews, blockHeights: blockHeights, groupTop: groupTop)
                         }
                     }
                 } else if next.type == .leftMouseUp {
@@ -1298,12 +1446,21 @@
 
             insertionLine.isHidden = true
             hoveredFolderRow?.isMusicDropTarget = false
+            NSCursor.arrow.set()
             MediaRailDropBridge.shared.setHighlighted(false)
             if (cancelled || !isValidTarget) && currentIndex != startIndex {
                 slots = Array(0..<siblingRows.count)
                 currentIndex = startIndex
-                for (slotIndex, originalIndex) in slots.enumerated() where originalIndex != startIndex {
-                    rowViews[originalIndex]?.frame.origin.y = slotRects[slotIndex].minY
+                var y = groupTop
+                for originalIndex in slots {
+                    if originalIndex == startIndex {
+                        y += blockHeights[originalIndex]
+                        continue
+                    }
+                    for rv in blockRowViews[originalIndex] {
+                        rv.frame.origin.y = y
+                        y += rv.frame.height
+                    }
                 }
             }
 
@@ -1351,12 +1508,20 @@
             super.keyDown(with: event)
         }
 
-        private func animateSiblingRows(slots: [Int], draggedSlotValue: Int, rowViews: [NSTableRowView?], slotRects: [NSRect]) {
+        private func animateSiblingRows(slots: [Int], draggedSlotValue: Int, blockRowViews: [[NSTableRowView]], blockHeights: [CGFloat], groupTop: CGFloat) {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                for (slotIndex, originalIndex) in slots.enumerated() where originalIndex != draggedSlotValue {
-                    rowViews[originalIndex]?.animator().frame.origin.y = slotRects[slotIndex].minY
+                var y = groupTop
+                for originalIndex in slots {
+                    if originalIndex == draggedSlotValue {
+                        y += blockHeights[originalIndex]
+                        continue
+                    }
+                    for rv in blockRowViews[originalIndex] {
+                        rv.animator().frame.origin.y = y
+                        y += rv.frame.height
+                    }
                 }
             }
         }

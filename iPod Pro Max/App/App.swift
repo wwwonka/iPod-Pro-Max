@@ -130,6 +130,7 @@ struct ContentView: View {
             } }
             AppCommands.addPhotosFolder = { Task { await addPhotosFolder() } }
             AppCommands.openSettings = { openWindow(id: "settings") }
+            AppCommands.createPlaylist = { isFolder in createNewPlaylist(isFolder: isFolder) }
             AppCommands.addSource = { kind, folder in Task { await addSource(kind: kind, folder: folder) } }
             AppCommands.removeSource = { id in Task { await removeSource(id: id) } }
             #if canImport(AppKitBackend)
@@ -148,6 +149,13 @@ struct ContentView: View {
                 logQueue.sync {}
                 exit(passed ? 0 : 1)
             }
+            #if canImport(AppKitBackend)
+            // The sidebar's state machine alone (open, close, drag, restore), against the real split view.
+            if ProcessInfo.processInfo.environment["IPPM_CHECK_SIDEBAR"] != nil {
+                await checkNativeSidebarPersistence()
+                exit(0)
+            }
+            #endif
             if ProcessInfo.processInfo.environment["IPPM_CHECK_INTERACTIONS"] != nil {
                 #if canImport(AppKitBackend)
                 await checkNativeMusicInteractions()
@@ -578,7 +586,7 @@ struct ContentView: View {
     }
 
     private func createNewPlaylist(isFolder: Bool) {
-        let base = isFolder ? "New Playlist Folder" : "New Playlist"
+        let base = isFolder ? "New Folder" : "New Playlist"
         let existing = Set((library?.playlists ?? []).map(\.name))
         var name = base
         var n = 2
@@ -587,6 +595,7 @@ struct ContentView: View {
             n += 1
         }
         let created = LibraryPlaylist(name: name, isFolder: isFolder)
+        library?.playlists.append(Playlist(id: created.id.uuidString, name: created.name, trackIDs: [], isFolder: created.isFolder, parentID: nil))
         updatePlaylists { $0.append(created) }
         selection = .playlist(created.id.uuidString)
         editingPlaylistID = created.id.uuidString
@@ -910,8 +919,21 @@ struct ContentView: View {
         let selected = Set(ids)
         ListAppearance.shared.beginFavoriteWrite(ids, favorite: favorite)
         enqueueLibraryWrite("favorites") { cache in
+            var pathsByID: [UUID: String] = [:]
             for index in cache.tracks.indices where selected.contains(cache.tracks[index].id.uuidString) && cache.tracks[index].mediaKind == .song {
                 cache.tracks[index].isFavorite = favorite
+                pathsByID[cache.tracks[index].id] = cache.tracks[index].path
+            }
+            if favorite {
+                var refs = cache.favoriteReferences ?? []
+                var existing = Set(refs.map(\.id))
+                for idString in ids {
+                    guard let uuid = UUID(uuidString: idString),
+                          let path = pathsByID[uuid],
+                          existing.insert(uuid).inserted else { continue }
+                    refs.append(PortableFavoriteReference(id: uuid, path: path))
+                }
+                cache.favoriteReferences = refs
             }
         }
     }
@@ -1061,7 +1083,7 @@ struct ContentView: View {
                     }
                 }
                 let store = loaded.store
-                let width = settings?.sidebarWidth
+                let width = settings?.sidebarWidth ?? sidebarWidth
                 let open = settings?.sidebarOpen ?? true
                 sidebarOpen = open
                 #if canImport(AppKitBackend)
@@ -1152,7 +1174,7 @@ struct ContentView: View {
                 PanelAnchor().frame(width: 0, height: 0)
                 #endif
                 HStack(spacing: 0) {
-                    if selection == .music && mode == .byArtist {
+                    if selection == .music && mode == .byArtist && !library.artists.isEmpty {
                         ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtists)
                             .frame(width: 250)
                         Divider()
@@ -1361,13 +1383,7 @@ struct ContentView: View {
                 if selection == .albums && selectedAlbumID != nil {
                     Button("All Albums") { selectedAlbumID = nil }.titleBarControl()
                 }
-                if selection == .favorites {
-                    Button("Remove Favorite") { setFavorite(false) }.disabled(selectedSongIDs.isEmpty || playlistSaving).titleBarControl()
-                } else if selection == .music && mode != .byArtist {
-                    Button("Favorite") { setFavorite(true) }.disabled(selectedSongIDs.isEmpty || playlistSaving).titleBarControl()
-                    Button("Remove Favorite") { setFavorite(false) }.disabled(selectedSongIDs.isEmpty || playlistSaving).titleBarControl()
-                }
-                SearchField(prompt: "Search songs, artists, albums…", text: $search)
+                SearchField(prompt: "Search", text: $search)
             } else if selection.media == .podcasts {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
@@ -1676,6 +1692,7 @@ struct EmptyState: View {
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 400)
+                .padding(.bottom, 66)
             Spacer()
         }
         .frame(maxWidth: .infinity)

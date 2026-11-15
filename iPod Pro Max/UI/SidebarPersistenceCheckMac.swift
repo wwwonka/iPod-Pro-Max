@@ -163,6 +163,60 @@ func checkNativeSidebarPersistence() async {
         verifyWidth(earlySplit, 337, "early user width must override the older saved width")
         earlyWindow.close()
 
+        // Dragging the divider, with the events AppKit's own tracking loop reads: it stops at 128 pt,
+        // snaps shut past 64 pt and stays shut for the rest of the gesture, the content takes the whole
+        // width, and reopening restores the width from before the drag.
+        let dragSplit = backend.createSplitView(leadingChild: NSView(), trailingChild: NSView()) as! NSCustomSplitView
+        backend.setSidebarWidthBounds(ofSplitView: dragSplit, minimum: 0, maximum: 400)
+        let dragWindow = window(dragSplit)
+        let dragChrome = MacChrome.sidebarCheckChrome(window: dragWindow)
+        let dragToolbar = NSToolbar(identifier: "sidebar-drag-check")
+        let dragToggle = dragChrome.toolbar(dragToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
+        var dragChoices: [Bool] = []
+        var dragWidths: [Double] = []
+        dragChrome.onSidebarChange = { dragChoices.append($0) }
+        dragChrome.setSidebarAvailable(true)
+        dragChrome.restoreSidebar(open: true, width: 300) { dragWidths.append($0) }
+        dragWindow.layoutIfNeeded()
+        verifyWidth(dragSplit, 300, "width before the drags")
+        func dragDivider(through positions: [CGFloat]) {
+            func event(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
+                let point = dragSplit.convert(NSPoint(x: x, y: dragSplit.bounds.midY), to: nil)
+                return NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: dragWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            for x in positions { NSApp.postEvent(event(.leftMouseDragged, x), atStart: false) }
+            NSApp.postEvent(event(.leftMouseUp, positions.last ?? 0), atStart: false)
+            dragSplit.mouseDown(with: event(.leftMouseDown, dragSplit.subviews[0].frame.maxX + 0.5))
+        }
+        dragDivider(through: [280, 250])
+        verifyWidth(dragSplit, 250, "a plain drag resizes the sidebar")
+        precondition(dragWidths == [250], "a plain drag is saved once, when it ends")
+        dragDivider(through: [200, 100, 70])
+        precondition(dragSplit.isSidebarOpen, "the sidebar stays open down to half the narrowest width")
+        verifyWidth(dragSplit, 128, "dragging stops at the narrowest width")
+        dragDivider(through: [250])
+        verifyWidth(dragSplit, 250, "dragged back out")
+        dragWidths = []
+        // Past 64 pt it closes (the hidden divider keeps its 1 pt, as when the toolbar closes the sidebar); the pointer coming back (90, 200) and the release must not reopen it.
+        dragDivider(through: [200, 100, 60, 90, 200])
+        precondition(!dragSplit.isSidebarOpen, "dragged past 64 pt, the sidebar snaps shut and stays shut")
+        precondition(!dragChrome.isSidebarVisible && !dragSplit.dividerDragEnabled, "the chrome knows at once")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        dragWindow.layoutIfNeeded()
+        precondition(!dragSplit.isSidebarOpen && backend.sidebarWidth(ofSplitView: dragSplit) == 0, "closed for SwiftCrossUI's layout too")
+        precondition(abs(dragSplit.subviews[1].frame.width - dragSplit.bounds.width) < 1.5 && dragSplit.subviews[1].frame.minX < 1.5, "the content takes the whole width: got \(dragSplit.subviews[1].frame) in \(dragSplit.bounds.width)")
+        precondition(dragChoices == [true, false], "the app is told once that the sidebar closed: \(dragChoices)")
+        precondition(dragWidths == [250], "the width from before the drag is the one kept: \(dragWidths)")
+        dragWindow.setContentSize(NSSize(width: 1100, height: 700))
+        dragWindow.layoutIfNeeded()
+        precondition(!dragSplit.isSidebarOpen && abs(dragSplit.subviews[1].frame.width - dragSplit.bounds.width) < 1.5, "a window resize keeps it closed and the content full width")
+        precondition(NSApp.sendAction(dragToggle.action!, to: dragToggle.target, from: dragToggle))
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        precondition(dragSplit.isSidebarOpen && dragSplit.dividerDragEnabled, "the toolbar reopens a sidebar closed by a drag")
+        verifyWidth(dragSplit, 250, "reopening restores the width from before the drag")
+        dragWindow.close()
+        fputs("[check] sidebar drag-to-collapse passed\n", stderr)
+
         // Exercise the actual preference writer against a disposable simulated iPod. Close and
         // flush immediately (before the debounce), then create a fresh chrome from the saved JSON.
         let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("sidebar-preferences-" + UUID().uuidString, isDirectory: true)

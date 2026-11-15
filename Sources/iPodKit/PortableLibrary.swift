@@ -78,15 +78,32 @@ public struct PortableLibraryCache: Codable, Equatable, Sendable {
         offlineTracks = try values.decodeIfPresent([LibraryTrack].self, forKey: .offlineTracks)
     }
 
-    /// Merge visible choices without discarding favorites whose media is unavailable.
+    /// Merge visible choices without discarding favorites whose media is unavailable,
+    /// preserving the order in which favorites were added.
     public mutating func reconcileFavoriteReferences() {
-        var references = Dictionary((favoriteReferences ?? []).map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
-        let favorites = Set(tracks.lazy.filter { $0.isFavorite == true }.map(\.id))
+        var pathsByID: [UUID: String] = [:]
+        pathsByID.reserveCapacity(tracks.count)
+        var allTrackIDs: Set<UUID> = []
+        allTrackIDs.reserveCapacity(tracks.count)
         for track in tracks {
-            if favorites.contains(track.id) { references[track.id] = PortableFavoriteReference(id: track.id, path: track.path) }
-            else { references.removeValue(forKey: track.id) }
+            allTrackIDs.insert(track.id)
+            if track.isFavorite == true { pathsByID[track.id] = track.path }
         }
-        favoriteReferences = references.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        var ordered: [PortableFavoriteReference] = []
+        var seen: Set<UUID> = []
+        for existing in favoriteReferences ?? [] {
+            guard seen.insert(existing.id).inserted else { continue }
+            if let path = pathsByID[existing.id] {
+                ordered.append(PortableFavoriteReference(id: existing.id, path: path))
+            } else if !allTrackIDs.contains(existing.id) {
+                ordered.append(existing)
+            }
+        }
+        for track in tracks where track.isFavorite == true && !seen.contains(track.id) {
+            seen.insert(track.id)
+            ordered.append(PortableFavoriteReference(id: track.id, path: track.path))
+        }
+        favoriteReferences = ordered
     }
 
     /// Keep offline references in step when a remembered source changes location.

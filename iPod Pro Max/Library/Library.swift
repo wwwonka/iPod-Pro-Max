@@ -29,9 +29,14 @@ struct Playlist: Decodable, Identifiable, Equatable {
     var parentID: String? = nil
 }
 
+private struct LibraryFavoriteRef: Decodable {
+    var id: String
+}
+
 private struct LibraryDocument: Decodable {
     var tracks: [Track]
     var playlists: [Playlist]?
+    var favoriteReferences: [LibraryFavoriteRef]?
 }
 
 /// Preformatted row for `Table`, whose columns only take `String` key paths.
@@ -245,7 +250,13 @@ struct Library {
                        albumsByArtist: albums, artworkFolder: nil,
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
-        library.favoriteRows = all.filter(\.isFavorite)
+        if let refs = document.favoriteReferences, !refs.isEmpty {
+            let refIDs = Set(refs.map(\.id))
+            library.favoriteRows = refs.compactMap { byID[$0.id] }.filter(\.isFavorite)
+                + all.filter { $0.isFavorite && !refIDs.contains($0.id) }
+        } else {
+            library.favoriteRows = all.filter(\.isFavorite)
+        }
         // Newest day first; within a day, the library's own order (artist, album, disc, track), so
         // an album imported in one go stays together whatever order its files were read in.
         let calendar = Calendar.current

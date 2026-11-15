@@ -31,6 +31,22 @@ Le code vit dans `Tools/Build/Patches/appkit-backend.patch` (appliqué par `Tool
 
 Mesure faite par `IPPM_BENCH_SIDEBAR=1 IPPM_BENCH_LAYOUT=1`, juste avant l'affichage de chaque image : 0 image sur 560 avec une couche (conteneur, défilement, liste, ligne) hors de la largeur du panneau, côté sidebar comme côté contenu. 28 layouts, médiane 7,0 ms, p90 9,0 ms, max 12,1 ms (budget 16,7 ms à 60 Hz). Non mesuré : Songs avec la vraie bibliothèque de 5 299 pistes.
 
+## Glisser jusqu'à fermer (15 novembre 2026)
+
+`SidebarSplitDelegateProxy` (`WindowChromeMac.swift`) se place devant le délégué de SwiftCrossUI, sans toucher au patch : le séparateur s'arrête à 128 pt, et glissé sous 64 pt (la moitié) AppKit replie le panneau (`canCollapseSubview`). Ce qu'on a mesuré avec des événements de souris simulés :
+
+- AppKit rouvre un panneau replié dès que le pointeur repasse la moitié du minimum, et le décide avant de consulter le délégué : ni `constrainSplitPosition` (il reçoit une position déjà bornée) ni un minimum plus grand ne l'en empêchent. La seule chose qui tient : terminer le geste. Au repli, le proxy poste un `leftMouseUp` en tête de file, au bord gauche du split ; la boucle de suivi d'AppKit s'arrête là, la suite du geste physique ne déplace plus rien.
+- AppKit masque le panneau replié mais lui laisse son cadre (128 pt). `finishSidebarCollapsedByDrag` le remet dans l'état exact que laisse le bouton de la barre d'outils (`setSidebarOpenAtOnce(false)` : largeur 0, masqué, largeur de sidebar SwiftCrossUI à 0), puis rend à `applySidebarWidth` la largeur d'avant le glisser, celle que la réouverture restaure.
+- L'ordre compte dans `splitViewDidResizeSubviews` : `MacChrome` passe à « fermé » avant que le délégué de SwiftCrossUI ne lance son layout. Ce layout met à jour la vue de la sidebar (`updateNSView` → `setSidebarAvailable` → `reconcileNativeSidebar`), qui remet le split dans l'état que `MacChrome` croit vrai : encore « ouvert » à cet instant, il rouvrait en silence le panneau qu'AppKit venait de replier (espace vide, puis sidebar revenue au relâchement). Invisible sur un split nu, sans layout SwiftCrossUI : à vérifier dans la vraie app.
+- Le proxy doit relayer `shouldAdjustSizeOfSubview` : sans lui, SwiftCrossUI ne sait plus qu'AppKit redimensionne et la sidebar s'élargit avec la fenêtre.
+- SwiftCrossUI lève ses bornes pendant ses propres ouvertures et fermetures ; le proxy le détecte en demandant le minimum pour une valeur sonde (−4096), rendue telle quelle dans ce cas.
+
+Vérification : `IPPM_CHECK_SIDEBAR=1` lance `checkNativeSidebarPersistence` seul (glisser simple, arrêt à 128 pt, fermeture sous 64 pt, pointeur qui revient, redimensionnement de fenêtre, réouverture à la largeur d'avant).
+
+## Icônes immobiles pendant le glissement
+
+Mesuré image par image pendant deux fermetures, deux ouvertures et aux largeurs 128 à 250 pt : l'origine des icônes ne bougeait pas, mais leur largeur tombait de 22 à 3 pt dès que la cellule passait sous 36 pt environ. Toutes les contraintes de la cellule étaient requises ; Auto Layout cassait celle de la largeur de l'icône, et le glyphe, centré dans ce cadre, glissait vers la gauche. Les contraintes qui attachent un titre au bord droit de la ligne sont maintenant à la priorité 999 (`makeCell`, `SidebarMac.swift`) : c'est le titre qui cède. Après correction, 51 relevés : icône à x = 62, largeur 22, titre à x = 88, sans exception.
+
 ## Limites et suite
 
 - Pendant le glisser, un élément à largeur fixe, ni aussi large que son parent ni collé à son bord droit (un bouton centré), ne se replace qu'au layout suivant.

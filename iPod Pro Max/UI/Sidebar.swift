@@ -120,7 +120,7 @@ enum SidebarItem: Hashable {
         case .recentMusic: "clock"
         case .artists: "microphone.dynamic.on.stand"
         case .albums: "square.stack"
-        case .favorites: "star.fill"
+        case .favorites: "star"
         case .podcasts: "podcasts"
         case .recentPodcasts: "clock"
         case .audiobooks: "book"
@@ -206,7 +206,7 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
     }
     let musicRows = [SidebarItem.recentMusic, .artists, .albums, .favorites, .music].map {
         // The rail shows Apple Music's own icon for Music; the list names the section's songs.
-        let favoriteSymbol = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star.fill"
+        let favoriteSymbol = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"
         let icon = $0 == .music ? "music.note" : ($0 == .favorites ? favoriteSymbol : $0.icon)
         return SidebarSection.Row(title: $0.title, icon: icon, item: $0)
     }
@@ -251,7 +251,7 @@ enum SidebarMetrics {
     /// The library's big title (macOS): 17 pt was a little small.
     static let titleFontSize = 19.0
     /// A sub-section's native caption (Playlists): its row, and where its text starts.
-    static let subHeaderHeight = 22.0
+    static let subHeaderHeight = 18.0
     static let subHeaderTextX = 6.0
     /// How far a section's big title (macOS) is raised from its row's center, to line up with the
     /// rail's top icon.

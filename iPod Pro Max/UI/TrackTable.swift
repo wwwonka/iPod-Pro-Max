@@ -266,15 +266,24 @@ extension Array {
             /// - Parameter keepSelection: the same list with new rows (an import batch, a favorite saved,
             ///   a search): the selected songs stay selected. Another list starts with none.
             func setRows(_ rows: [TrackRow], in table: NSTableView, keepSelection: Bool = false) {
+                if sourceRows == rows { return }
                 let selected = keepSelection
                     ? Set(table.selectedRowIndexes.compactMap { self.rows.indices.contains($0) ? self.rows[$0].id : nil }) : []
                 sourceRows = rows
+                if sortColumn != nil {
+                    if !keepSelection {
+                        self.rows = []
+                        table.reloadData()
+                        table.deselectAll(nil)
+                    }
+                    applySort(in: table)
+                    return
+                }
                 self.rows = rows
                 table.reloadData()
                 if selected.isEmpty { table.deselectAll(nil) }
                 else { table.selectRowIndexes(IndexSet(rows.indices.filter { selected.contains(rows[$0].id) }), byExtendingSelection: false) }
-                // Either way a sort still running for the previous rows is dropped.
-                if sortColumn != nil { applySort(in: table) } else { sortRevision += 1 }
+                sortRevision += 1
             }
 
             func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {

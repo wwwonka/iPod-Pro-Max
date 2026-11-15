@@ -7,11 +7,41 @@ import AppKit
 final class AppMenuMac: NSObject, NSMenuItemValidation {
     static let shared = AppMenuMac()
     private var observation: NSKeyValueObservation?
+    private var windowObserver: NSObjectProtocol?
 
     func install() {
         guard observation == nil else { return }
         observation = NSApplication.shared.observe(\.mainMenu, options: [.initial, .new]) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.addSettingsItem() }
+            MainActor.assumeIsolated { self?.updateMenus() }
+        }
+        windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.addFileMenuItems()
+                self?.addViewMenu()
+            }
+        }
+    }
+
+    private func updateMenus() {
+        addSettingsItem()
+        addFileMenuItems()
+        addViewMenu()
+    }
+
+    private func addFileMenuItems() {
+        guard let mainMenu = NSApp.mainMenu,
+              let fileMenu = mainMenu.items.first(where: { $0.title == "File" || $0.submenu?.title == "File" })?.submenu,
+              !fileMenu.items.contains(where: { $0.action == #selector(newPlaylist(_:)) }) else { return }
+        let playlistItem = NSMenuItem(title: "New Playlist", action: #selector(newPlaylist(_:)), keyEquivalent: "n")
+        playlistItem.keyEquivalentModifierMask = [.command]
+        playlistItem.target = self
+        let folderItem = NSMenuItem(title: "New Folder", action: #selector(newPlaylistFolder(_:)), keyEquivalent: "N")
+        folderItem.keyEquivalentModifierMask = [.command, .shift]
+        folderItem.target = self
+        fileMenu.insertItem(playlistItem, at: 0)
+        fileMenu.insertItem(folderItem, at: 1)
+        if fileMenu.items.count > 2 {
+            fileMenu.insertItem(.separator(), at: 2)
         }
     }
 
@@ -31,10 +61,40 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         menu.insertItem(item, at: about + 2)
     }
 
+    private func addViewMenu() {
+        guard let mainMenu = NSApp.mainMenu,
+              let viewMenu = mainMenu.items.first(where: { $0.title == "View" || $0.submenu?.title == "View" })?.submenu,
+              !viewMenu.items.contains(where: { $0.action == #selector(toggleSidebar(_:)) }) else { return }
+        let sidebarItem = NSMenuItem(
+            title: MacChrome.shared.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar",
+            action: #selector(toggleSidebar(_:)),
+            keyEquivalent: "s"
+        )
+        sidebarItem.keyEquivalentModifierMask = [.command, .control]
+        sidebarItem.target = self
+        viewMenu.insertItem(sidebarItem, at: 0)
+        if viewMenu.items.count > 1 {
+            viewMenu.insertItem(.separator(), at: 1)
+        }
+    }
+
     @objc private func openSettings(_ sender: Any?) { AppCommands.openSettings?() }
+    @objc private func toggleSidebar(_ sender: Any?) { MacChrome.shared.toggleSidebar() }
+    @objc private func newPlaylist(_ sender: Any?) { AppCommands.createPlaylist?(false) }
+    @objc private func newPlaylistFolder(_ sender: Any?) { AppCommands.createPlaylist?(true) }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(openSettings(_:)) ? AppCommands.openSettings != nil : true
+        if item.action == #selector(openSettings(_:)) {
+            return AppCommands.openSettings != nil
+        }
+        if item.action == #selector(newPlaylist(_:)) || item.action == #selector(newPlaylistFolder(_:)) {
+            return AppCommands.createPlaylist != nil
+        }
+        if item.action == #selector(toggleSidebar(_:)) {
+            item.title = MacChrome.shared.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+            return MacChrome.shared.isSidebarAvailable
+        }
+        return true
     }
 }
 #endif

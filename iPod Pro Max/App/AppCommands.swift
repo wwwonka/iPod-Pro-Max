@@ -7,6 +7,7 @@ enum AppCommands {
     static var addAudiobooksFolder: (() -> Void)?
     static var addPhotosFolder: (() -> Void)?
     static var openSettings: (() -> Void)?
+    static var createPlaylist: ((_ isFolder: Bool) -> Void)?
     /// Records a folder (kind = `SourceKind.rawValue`) chosen in the Settings window, then refreshes the
     /// library. The choosing happens in Settings; the main window is only asked to do the work.
     static var addSource: ((_ kind: String, _ folder: URL) -> Void)?

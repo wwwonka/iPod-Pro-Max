@@ -70,7 +70,11 @@
         /// Only one short-lived retry can be pending, even if multiple views update together.
         private var sidebarRetry: DispatchWorkItem?
         private weak var observedSidebarSplit: NSCustomSplitView?
+        private var splitDelegateProxy: SidebarSplitDelegateProxy?
         private var sidebarFrameObserver: NSObjectProtocol?
+        private var persistedSidebarWidth: CGFloat = CGFloat(sidebarWidth)
+        var isSidebarVisible: Bool { sidebarOpen }
+        var isSidebarAvailable: Bool { sidebarAvailable }
         /// The sidebar is SwiftCrossUI's own NSSplitView, which owns its geometry (IPPM_LEGACY_SPLIT=1 brings the old overlay back).
         static let nativeSplitMode = ProcessInfo.processInfo.environment["IPPM_LEGACY_SPLIT"] == nil
         private var benchStarted = false
@@ -91,7 +95,9 @@
         var isSliding: Bool { false }
         var isLiveResizing: Bool { window?.inLiveResize == true }
         /// The sidebar's rows always fill their panel: nothing is pinned during the slide.
-        var pinnedSidebarContentWidth: Double? { nil }
+        var pinnedSidebarContentWidth: Double? {
+            isAnimatingSidebar ? Double(persistedSidebarWidth) : nil
+        }
         /// What already lies left of the main view, for the title's clearance.
         var currentSidebarWidth: Double { mediaRailWidth }
 
@@ -435,10 +441,11 @@
             item.toolTip = "Hide or show the sidebar"
             item.isBordered = true
             item.target = self
-            item.action = #selector(toggleSidebar)
+            item.action = #selector(toggleSidebarFromToolbar)
             if #available(macOS 15.0, *) { item.isHidden = !sidebarAvailable }
             item.isEnabled = sidebarAvailable && !Self.nativeSplitMode
             toggleItem = item
+            installToolbarButtonFastClickMonitor()
             if Self.nativeSplitMode { reconcileNativeSidebar() }
             return item
         }
@@ -701,6 +708,10 @@
         /// Pages with nothing to navigate (an iPod's page, for now) have no sidebar and no toggle.
         private var sidebarAvailable = true
         private weak var toggleItem: NSToolbarItem?
+        private(set) var isAnimatingSidebar = false
+        private var sidebarAnimationGeneration = 0
+        private weak var sidebarOutlineView: NSOutlineView?
+        private var toolbarMouseDownMonitor: Any?
 
         private var wantsSidebar = true
 
@@ -786,17 +797,28 @@
                 observedSidebarSplit = split
                 split.postsFrameChangedNotifications = true
                 sidebarFrameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: split, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.reconcileNativeSidebar() }
+                    MainActor.assumeIsolated {
+                        guard let self, self.pendingSidebarWidth != nil || self.sidebarRetry != nil else { return }
+                        self.reconcileNativeSidebar()
+                    }
                 }
                 split.onDragEnd = { [weak self] width in
                     MainActor.assumeIsolated {
                         guard let self else { return }
+                        self.splitDelegateProxy?.widthBeforeDrag = nil
+                        self.splitDelegateProxy?.inDefaultDetent = false
                         let value = Double(width.rounded())
+                        self.persistedSidebarWidth = CGFloat(value)
                         if !self.sidebarPreferencesRestored { self.sidebarWidthBeforeRestore = value }
                         self.onSidebarWidth?(Int(value))
                         self.onPersistSidebarWidth?(value)
                     }
                 }
+            }
+            if split.delegate !== splitDelegateProxy, let original = split.delegate {
+                let proxy = SidebarSplitDelegateProxy(target: original, chrome: self)
+                splitDelegateProxy = proxy
+                split.delegate = proxy
             }
             guard split.frame.width > 500, split.subviews.count > 1 else {
                 toggleItem?.isEnabled = false
@@ -807,7 +829,9 @@
             sidebarRetry = nil
             if let width = pendingSidebarWidth {
                 pendingSidebarWidth = nil
-                split.applySidebarWidth(CGFloat(min(max(width, sidebarWidthRange.lowerBound), sidebarWidthRange.upperBound)))
+                let clamped = CGFloat(min(max(width, Self.narrowest), sidebarWidthRange.upperBound))
+                persistedSidebarWidth = clamped
+                split.applySidebarWidth(clamped)
             }
             split.dividerDragEnabled = sidebarAvailable && sidebarOpen
             split.dividerTopInset = CGFloat(titleBarHeight)
@@ -815,11 +839,52 @@
             toggleItem?.isEnabled = sidebarAvailable
         }
 
+        /// The divider was dragged past half the narrowest width and AppKit collapsed the pane: the
+        /// sidebar is closed from this very moment, so nothing in the same gesture can reopen it unless
+        /// the user drags back right past 64 px before releasing.
+        fileprivate func sidebarDidCollapseByDrag(in split: NSCustomSplitView) {
+            guard sidebarOpen else { return }
+            if !sidebarPreferencesRestored { sidebarChangedBeforeRestore = true }
+            sidebarOpen = false
+        }
+
+        /// The user dragged back right past 64 px before releasing: mark the sidebar open again.
+        fileprivate func sidebarDidReopenByDrag(in split: NSCustomSplitView) {
+            guard !sidebarOpen else { return }
+            sidebarOpen = true
+            split.dividerDragEnabled = true
+            onSidebarChange?(true)
+        }
+
+        /// Once AppKit is out of its resize pass: the pane is left exactly as the toolbar button leaves
+        /// it (hidden at width 0, SwiftCrossUI's sidebar width 0), the width from before the drag is
+        /// what reopening restores, and the app is told.
+        fileprivate func finishSidebarCollapsedByDrag(in split: NSCustomSplitView, restoringWidth width: CGFloat?) {
+            guard !sidebarOpen, let pane = split.subviews.first else { return }
+            split.dividerDragEnabled = false
+            // AppKit hides a collapsed pane but keeps its frame, and SwiftCrossUI's delegate may have
+            // read the width before the pane was hidden: both would leave the sidebar's room empty.
+            if pane.isHidden { pane.isHidden = false }
+            split.setSidebarOpenAtOnce(false)
+            if let width, width >= CGFloat(Self.narrowest) {
+                persistedSidebarWidth = width
+                split.applySidebarWidth(width)
+                let value = Double(width.rounded())
+                if !sidebarPreferencesRestored { sidebarWidthBeforeRestore = value }
+                onSidebarWidth?(Int(value))
+                onPersistSidebarWidth?(value)
+            }
+            onSidebarChange?(false)
+        }
+
         func setSidebarAvailable(_ available: Bool, attempt: Int = 0) {
             if Self.nativeSplitMode {
                 wantsSidebar = available
                 sidebarAvailable = available
-                if #available(macOS 15.0, *) { toggleItem?.isHidden = !available; scheduleTitleAreaRelayout() }
+                if #available(macOS 15.0, *) {
+                    toggleItem?.isHidden = !available
+                    scheduleTitleAreaRelayout()
+                }
                 reconcileNativeSidebar()
                 return
             }
@@ -846,13 +911,123 @@
             toggleItem?.isEnabled = available
         }
 
+        private func findSidebarOutlineView(in root: NSView) -> NSOutlineView? {
+            if let cached = sidebarOutlineView, cached.isDescendant(of: root) { return cached }
+            var stack = [root]
+            while let view = stack.popLast() {
+                if let outline = view as? NSOutlineView {
+                    sidebarOutlineView = outline
+                    return outline
+                }
+                stack.append(contentsOf: view.subviews)
+            }
+            return nil
+        }
+
+        fileprivate func setSidebarAnimationActive(_ active: Bool, in split: NSCustomSplitView?) {
+            guard isAnimatingSidebar != active else { return }
+            isAnimatingSidebar = active
+            split?.dividerDragEnabled = !active && sidebarOpen
+            if active, let anchor = sidebarAnchor {
+                anchor.resizeSubviews(withOldSize: anchor.bounds.size)
+            }
+            if !active {
+                while NSCursor.current == .resizeLeftRight { NSCursor.pop() }
+                NSCursor.arrow.set()
+                window?.resetCursorRects()
+            }
+            guard let pane = split?.subviews.first, let outline = findSidebarOutlineView(in: pane) else { return }
+            let mode: NSLineBreakMode = active ? .byClipping : .byTruncatingTail
+            let mouseInWindow = pane.window?.mouseLocationOutsideOfEventStream
+            outline.enumerateAvailableRowViews { rowView, _ in
+                guard let cell = rowView.view(atColumn: 0) as? NSTableCellView else { return }
+                let id = cell.identifier?.rawValue
+                if id == "DataCell" || id == "DeviceCell" {
+                    cell.textField?.lineBreakMode = mode
+                } else if id == "HeaderCell" || id == "SubHeaderCell", let sidebarCell = cell as? Sidebar.SidebarCell {
+                    if active {
+                        sidebarCell.fadePlus(to: 0, duration: 0.08)
+                    } else if !pane.isHidden, let mouseInWindow {
+                        let visibleRect = sidebarCell.convert(sidebarCell.visibleRect, to: nil)
+                        if !visibleRect.isEmpty, visibleRect.contains(mouseInWindow) {
+                            sidebarCell.fadePlus(to: 1)
+                        }
+                    }
+                }
+            }
+        }
+
+        private func isToggleToolbarHit(_ hit: NSView) -> Bool {
+            let selector = #selector(toggleSidebarFromToolbar)
+            var cursor: NSView? = hit
+            while let view = cursor {
+                if let control = view as? NSControl,
+                   control.action == selector,
+                   control.target === self,
+                   control.isEnabled {
+                    return true
+                }
+                if view.className.contains("NSToolbarView") || view === window?.contentView {
+                    break
+                }
+                cursor = view.superview
+            }
+            return false
+        }
+
+        private func installToolbarButtonFastClickMonitor() {
+            guard toolbarMouseDownMonitor == nil else { return }
+            toolbarMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+                let consumed = MainActor.assumeIsolated { () -> Bool in
+                    guard let self, Self.nativeSplitMode,
+                          self.sidebarAvailable,
+                          let window = self.window, event.window === window,
+                          let root = window.contentView?.superview,
+                          let hit = root.hitTest(event.locationInWindow),
+                          self.isToggleToolbarHit(hit) else { return false }
+                    self.toggleSidebar()
+                    return true
+                }
+                return consumed ? nil : event
+            }
+        }
+
+        @objc private func toggleSidebarFromToolbar() {
+            toggleSidebar()
+        }
+
         @objc func toggleSidebar() {
             if Self.nativeSplitMode {
                 guard sidebarAvailable, let split = nativeSplit(), split.frame.width > 500, split.subviews.count > 1 else { return }
                 if !sidebarPreferencesRestored { sidebarChangedBeforeRestore = true }
                 sidebarOpen.toggle()
+                if sidebarOpen, let pane = split.subviews.first {
+                    // `applySidebarWidth` snaps the divider immediately if `isSidebarOpen` (`!pane.isHidden`)
+                    // is true; temporarily hiding the pane updates `openWidth` without jump-cutting a
+                    // running close animation.
+                    let wasHidden = pane.isHidden
+                    if !wasHidden { pane.isHidden = true }
+                    split.applySidebarWidth(persistedSidebarWidth)
+                    if !wasHidden { pane.isHidden = false }
+                }
+                if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    sidebarAnimationGeneration += 1
+                    let generation = sidebarAnimationGeneration
+                    setSidebarAnimationActive(true, in: split)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self, weak split] in
+                        MainActor.assumeIsolated {
+                            guard let self, self.sidebarAnimationGeneration == generation else { return }
+                            self.setSidebarAnimationActive(false, in: split)
+                        }
+                    }
+                }
                 split.setSidebarOpen(sidebarOpen, animated: true)
-                split.dividerDragEnabled = sidebarOpen
+                if isAnimatingSidebar {
+                    while NSCursor.current == .resizeLeftRight { NSCursor.pop() }
+                    NSCursor.arrow.set()
+                }
+                split.subviews.first?.layoutSubtreeIfNeeded()
+                split.dividerDragEnabled = !isAnimatingSidebar && sidebarOpen
                 onSidebarChange?(sidebarOpen)
                 return
             }
@@ -1071,6 +1246,144 @@ final class ContainerMask {
         shape.frame = bounds
         shape.path = path
         CATransaction.commit()
+    }
+}
+
+/// Stands in front of SwiftCrossUI's `NSSplitViewResizingDelegate`: the divider stops at 128 pt, the
+/// sidebar snaps shut for good once dragged past half of that, and reopening restores the width from
+/// before the drag. Everything else is SwiftCrossUI's own behavior, forwarded untouched.
+@MainActor
+private final class SidebarSplitDelegateProxy: NSObject, NSSplitViewDelegate {
+    private static let narrowest: CGFloat = 128
+    private weak var target: NSSplitViewDelegate?
+    private weak var chrome: MacChrome?
+    var widthBeforeDrag: CGFloat?
+    var inDefaultDetent = false
+    private var collapsedSavedWidth: CGFloat?
+    private var mouseUpMonitor: Any?
+
+    init(target: NSSplitViewDelegate, chrome: MacChrome) {
+        self.target = target
+        self.chrome = chrome
+    }
+
+    /// SwiftCrossUI lifts its bounds while it opens or closes the sidebar itself (the slide, or at once
+    /// inside an update): it then returns the proposed minimum as is. Asked with a value no layout
+    /// produces, the answer tells which case this is.
+    private func boundsLifted(in splitView: NSSplitView) -> Bool {
+        guard let target else { return false }
+        let probe: CGFloat = -4096
+        return target.splitView?(splitView, constrainMinCoordinate: probe, ofSubviewAt: 0) == probe
+    }
+
+    /// AppKit is tracking a divider drag (it fetches the events itself, inside `mouseDown`).
+    private func userIsDragging(_ splitView: NSSplitView) -> Bool {
+        guard let type = NSApp.currentEvent?.type, type == .leftMouseDragged || type == .leftMouseDown else { return false }
+        return !boundsLifted(in: splitView)
+    }
+
+    /// Only a drag collapses the pane: AppKit does it at half the minimum width (64 pt).
+    func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
+        subview === splitView.subviews.first && !boundsLifted(in: splitView)
+    }
+
+    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
+        target?.splitView?(splitView, shouldAdjustSizeOfSubview: view) ?? true
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        let base = target?.splitView?(splitView, constrainMinCoordinate: proposedMinimumPosition, ofSubviewAt: dividerIndex) ?? proposedMinimumPosition
+        guard dividerIndex == 0, !boundsLifted(in: splitView) else { return base }
+        return max(Self.narrowest, base)
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        target?.splitView?(splitView, constrainMaxCoordinate: proposedMaximumPosition, ofSubviewAt: dividerIndex) ?? proposedMaximumPosition
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard dividerIndex == 0 else { return proposedPosition }
+        guard userIsDragging(splitView) else { return proposedPosition }
+        if proposedPosition >= 193 && proposedPosition <= 213 {
+            if !inDefaultDetent {
+                inDefaultDetent = true
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            }
+            return CGFloat(sidebarWidth)
+        }
+        inDefaultDetent = false
+        return proposedPosition
+    }
+
+    func splitView(_ splitView: NSSplitView, resizeSubviewsWithOldSize oldSize: NSSize) {
+        target?.splitView?(splitView, resizeSubviewsWithOldSize: oldSize)
+    }
+
+    func splitViewWillResizeSubviews(_ notification: Notification) {
+        if widthBeforeDrag == nil,
+           let split = notification.object as? NSSplitView,
+           let pane = split.subviews.first,
+           !pane.isHidden,
+           pane.frame.width >= Self.narrowest,
+           userIsDragging(split) {
+            chrome?.setSidebarAnimationActive(false, in: split as? NSCustomSplitView)
+            widthBeforeDrag = pane.frame.width
+        }
+        target?.splitViewWillResizeSubviews?(notification)
+    }
+
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard let chrome, chrome.isSidebarAvailable,
+              let split = notification.object as? NSCustomSplitView,
+              let pane = split.subviews.first,
+              !boundsLifted(in: split) else {
+            target?.splitViewDidResizeSubviews?(notification)
+            return
+        }
+
+        if pane.isHidden, chrome.isSidebarVisible {
+            // AppKit has just collapsed the pane under the drag (< 64 px).
+            collapsedSavedWidth = widthBeforeDrag
+            widthBeforeDrag = nil
+            inDefaultDetent = false
+            chrome.sidebarDidCollapseByDrag(in: split)
+            target?.splitViewDidResizeSubviews?(notification)
+            if mouseUpMonitor == nil {
+                mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self, weak split] event in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if let monitor = self.mouseUpMonitor {
+                            NSEvent.removeMonitor(monitor)
+                            self.mouseUpMonitor = nil
+                        }
+                        let saved = self.collapsedSavedWidth
+                        self.collapsedSavedWidth = nil
+                        guard let split, let pane = split.subviews.first, pane.isHidden else { return }
+                        DispatchQueue.main.async { [weak self, weak split] in
+                            MainActor.assumeIsolated {
+                                guard let self, let split else { return }
+                                self.chrome?.finishSidebarCollapsedByDrag(in: split, restoringWidth: saved)
+                            }
+                        }
+                    }
+                    return event
+                }
+            }
+            return
+        }
+
+        if !pane.isHidden, !chrome.isSidebarVisible, collapsedSavedWidth != nil {
+            // User dragged back right past 64 px before releasing: reopen live.
+            widthBeforeDrag = collapsedSavedWidth
+            collapsedSavedWidth = nil
+            if let monitor = mouseUpMonitor {
+                NSEvent.removeMonitor(monitor)
+                mouseUpMonitor = nil
+            }
+            chrome.sidebarDidReopenByDrag(in: split)
+        }
+
+        target?.splitViewDidResizeSubviews?(notification)
     }
 }
 

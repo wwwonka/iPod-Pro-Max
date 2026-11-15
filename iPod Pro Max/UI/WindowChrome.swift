@@ -21,7 +21,7 @@ import SwiftCrossUI
 let appIdentifier = "com.ipodpromax.proto"
 
 /// Width of the open sidebar, at first.
-let sidebarWidth = 230.0
+let sidebarWidth = 203.0
 /// How narrow and how wide dragging the sidebar's edge can make it.
 let sidebarWidthRange = 180.0...400.0
 /// The drawn traffic lights and toggle, measured on macOS: lights 12 pt round every 20 pt from
