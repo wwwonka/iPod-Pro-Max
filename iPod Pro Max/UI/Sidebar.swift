@@ -153,22 +153,48 @@ struct SidebarSection {
         var item: SidebarItem?
         /// iPods: an eject button at the row's right, as in the Finder.
         var ejectable = false
+        var isFolder = false
+        var children: [Row] = []
     }
+}
+
+/// Applies a persisted `SidebarItem.persistentName` order to a section's rows, keeping any new
+/// items at the end and ignoring obsolete identifiers.
+func orderedSidebarRows(_ rows: [SidebarSection.Row], order: [String]?) -> [SidebarSection.Row] {
+    guard let order, !order.isEmpty else { return rows }
+    var byKey: [String: SidebarSection.Row] = [:]
+    var unkeyed: [SidebarSection.Row] = []
+    for row in rows {
+        if let name = row.item?.persistentName { byKey[name] = row }
+        else { unkeyed.append(row) }
+    }
+    var result: [SidebarSection.Row] = []
+    result.reserveCapacity(rows.count)
+    for name in order {
+        if let row = byKey.removeValue(forKey: name) { result.append(row) }
+    }
+    for row in rows {
+        if let name = row.item?.persistentName, byKey[name] != nil { result.append(row) }
+    }
+    result.append(contentsOf: unkeyed)
+    return result
 }
 
 /// The sidebar's sections, the same on every platform.
 @MainActor
-func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist] = [], media: SidebarItem = .music) -> [SidebarSection] {
+func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist] = [], media: SidebarItem = .music, sidebarOrder: [String: [String]] = [:]) -> [SidebarSection] {
     if media == .podcasts {
-        return [SidebarSection(title: "Podcasts", rows: [SidebarItem.recentPodcasts, .podcasts].map {
-            .init(title: $0 == .podcasts ? "All Podcasts" : $0.title, icon: $0.icon, item: $0)
-        })]
+        let rows = [SidebarItem.recentPodcasts, .podcasts].map {
+            SidebarSection.Row(title: $0 == .podcasts ? "All Podcasts" : $0.title, icon: $0.icon, item: $0)
+        }
+        return [SidebarSection(title: "Podcasts", rows: orderedSidebarRows(rows, order: sidebarOrder["Podcasts"]))]
     }
     if media == .videos {
+        let videoRows = [SidebarItem.movies, .tvShows, .musicVideos].map {
+            SidebarSection.Row(title: $0.title, icon: $0.icon, item: $0)
+        }
         return [
-            SidebarSection(title: "Videos", rows: [SidebarItem.movies, .tvShows, .musicVideos].map {
-                .init(title: $0.title, icon: $0.icon, item: $0)
-            }),
+            SidebarSection(title: "Videos", rows: orderedSidebarRows(videoRows, order: sidebarOrder["Videos"])),
             SidebarSection(title: "Video Playlists", rows: videoPlaylists.map {
                 .init(title: $0.name, icon: "film.stack", item: .videoPlaylist($0.id))
             }),
@@ -178,19 +204,37 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
     if media != .music {
         return [SidebarSection(title: media.title, rows: [.init(title: "All \(media.title)", icon: media.icon, item: media)])]
     }
+    let musicRows = [SidebarItem.recentMusic, .artists, .albums, .favorites, .music].map {
+        // The rail shows Apple Music's own icon for Music; the list names the section's songs.
+        let favoriteSymbol = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star.fill"
+        let icon = $0 == .music ? "music.note" : ($0 == .favorites ? favoriteSymbol : $0.icon)
+        return SidebarSection.Row(title: $0.title, icon: icon, item: $0)
+    }
+    let folderIDs = Set(playlists.filter(\.isFolder).map(\.id))
+    let childrenByParent = Dictionary(grouping: playlists.filter { $0.parentID != nil && folderIDs.contains($0.parentID!) }) { $0.parentID! }
+    let topPlaylists = playlists.filter { $0.parentID == nil || !folderIDs.contains($0.parentID!) }
+    let playlistRows: [SidebarSection.Row] = topPlaylists.map { p in
+        let kids = (childrenByParent[p.id] ?? []).map {
+            SidebarSection.Row(title: $0.name, icon: $0.isFolder ? "folder" : "music.note.list", item: .playlist($0.id), isFolder: $0.isFolder)
+        }
+        return SidebarSection.Row(
+            title: p.name,
+            icon: p.isFolder ? "folder" : "music.note.list",
+            item: .playlist(p.id),
+            isFolder: p.isFolder,
+            children: kids
+        )
+    }
     return [
         SidebarSection(
             title: "iPods",
             rows: devices.isEmpty
                 ? [.init(title: "No iPod connected", icon: "ipod", item: nil)]
                 : devices.map { .init(title: ConnectedDeviceTitles.names[$0] ?? "iPod", icon: "ipod", item: .device($0), ejectable: true) }),
-        SidebarSection(title: "Music", rows: [SidebarItem.recentMusic, .artists, .albums, .favorites, .music].map {
-            // The rail shows Apple Music's own icon for Music; the list names the section's songs.
-            .init(title: $0.title, icon: $0 == .music ? "music.quarternote.3" : $0.icon, item: $0)
-        }),
+        SidebarSection(title: "Music", rows: orderedSidebarRows(musicRows, order: sidebarOrder["Music"])),
         SidebarSection(
             title: "Playlists",
-            rows: playlists.map { .init(title: $0.name, icon: "music.note.list", item: .playlist($0.id)) }),
+            rows: orderedSidebarRows(playlistRows, order: sidebarOrder["Playlists"])),
     ]
 }
 
@@ -207,7 +251,7 @@ enum SidebarMetrics {
     /// The library's big title (macOS): 17 pt was a little small.
     static let titleFontSize = 19.0
     /// A sub-section's native caption (Playlists): its row, and where its text starts.
-    static let subHeaderHeight = 30.0
+    static let subHeaderHeight = 22.0
     static let subHeaderTextX = 6.0
     /// How far a section's big title (macOS) is raised from its row's center, to line up with the
     /// rail's top icon.

@@ -85,6 +85,11 @@ let symbolCodepoints: [String: UInt32] = [
     // The traffic lights' glyphs (the font's minus is a long bar: the lights use U+2212).
     "xmark": 0xEBE5,
     "arrow.up.left.and.arrow.down.right": 0xEB46,
+    // The favorite icon, in either style (Settings).
+    "heart": 0xF04B,
+    "heart.fill": 0xF046,
+    "star": 0xF038,
+    "star.fill": 0xF032,
 ]
 
 /// Local-only SF font; fall back to a readable label if this machine doesn't have it.
@@ -108,6 +113,9 @@ private func symbolFallback(_ name: String) -> String {
     case "ipod": "iPod"
     case "person.fill": "Artists"
     case "star.fill": "★"
+    case "star": "☆"
+    case "heart.fill": "♥"
+    case "heart": "♡"
     case "square.stack": "Albums"
     case "clock": "Recent"
     case "antenna.radiowaves.left.and.right": "Podcasts"
@@ -235,7 +243,8 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         guard localSymbolFontAvailable, let codepoint = symbolCodepoints[name], let scalar = Unicode.Scalar(codepoint) else {
             return "<span size='8192'>\(symbolFallback(name))</span>"
         }
-        let foreground = tint.flatMap { symbolRGB($0, dark: dark) }.map { rgb in
+        // Typed: left to inference, the interpolation below printed `Optional(…)` and Pango rejected the markup.
+        let foreground: String = tint.flatMap { symbolRGB($0, dark: dark) }.map { rgb in
             " foreground='#" + [rgb.r, rgb.g, rgb.b].map { ($0 < 16 ? "0" : "") + String($0, radix: 16) }.joined() + "'"
         } ?? ""
         return "<span font_family='SF-Symbols' size='\(Int(pointSize * 1024))'\(foreground)>\(Character(scalar))</span>"

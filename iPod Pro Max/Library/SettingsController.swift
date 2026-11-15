@@ -38,12 +38,22 @@ final class SettingsController {
             }.value
             guard !Task.isCancelled else { return }
             syncArtwork = settings?.syncArtwork ?? true
+            ListAppearance.shared.load(settings, store: store)
             sources = hosts?.hosts.first { $0.id == store.hostID }?.sources.map { Source(id: $0.id, kind: $0.kind.rawValue, path: $0.path) } ?? []
             onChange()
         }
     }
 
     var hasLibrary: Bool { store != nil }
+
+    /// The icon of favorites, shared with every list through `ListAppearance`.
+    var favoriteIcon: FavoriteIcon { ListAppearance.shared.favoriteIcon }
+
+    func setFavoriteIcon(_ icon: FavoriteIcon) {
+        guard icon != favoriteIcon else { return }
+        ListAppearance.shared.setFavoriteIcon(icon)
+        onChange()
+    }
 
     func setSyncArtwork(_ value: Bool) {
         guard let store, value != syncArtwork else { return }

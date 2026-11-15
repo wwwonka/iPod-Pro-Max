@@ -16,9 +16,19 @@
         @Binding var library: Library?
         @Binding var selection: SidebarItem
         @Binding var busyDevices: Set<String>
+        var sidebarOrder: [String: [String]] = [:]
+        var editingPlaylistID: String? = nil
         var onEject: (SidebarItem) -> Void = { _ in }
         /// The "+" at the main section's header: adds to that library (a folder, a podcast…).
         var onAdd: (SidebarItem) -> Void = { _ in }
+        var onReorder: (String, [SidebarItem]) -> Void = { _, _ in }
+        var onAddMusicFolder: () -> Void = {}
+        var onCreatePlaylist: (Bool) -> Void = { _ in }
+        var onRenamePlaylist: (String, String) -> Void = { _, _ in }
+        var onDeletePlaylist: (String) -> Void = { _ in }
+        var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
+        var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
+        var onClearEditing: () -> Void = {}
 
         private var playlists: [Playlist] { library?.playlists ?? [] }
         private var videoPlaylists: [Playlist] { library?.videoPlaylists ?? [] }
@@ -27,6 +37,11 @@
 
         func makeNSView(context: Context) -> NSView {
             let outline = MusicDropOutlineView()
+            outline.coordinator = context.coordinator
+            context.coordinator.outline = outline
+            ListAppearance.shared.observe(context.coordinator) { [weak coordinator = context.coordinator] in
+                coordinator?.refreshFavoriteIcon()
+            }
             if #available(macOS 11, *) { outline.style = .sourceList }
             outline.headerView = nil
             // The outline view's own drop frame (a rounded rectangle around the whole row, larger than
@@ -35,6 +50,7 @@
             // The system draws a source list's selection itself and never calls the rows' `drawSelection`: the
             // rows draw it (neutral gray, or the accent color under a drag) so one shape is ever on screen.
             outline.selectionHighlightStyle = .none
+            outline.pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryDeepDrag)
             outline.floatsGroupRows = false
             outline.rowSizeStyle = .default
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -69,19 +85,44 @@
             if case .device = selection { MacChrome.shared.setSidebarAvailable(false) } else { MacChrome.shared.setSidebarAvailable(true) }
             coordinator.onEject = onEject
             coordinator.onAdd = onAdd
+            coordinator.onReorder = onReorder
+            coordinator.onAddMusicFolder = onAddMusicFolder
+            coordinator.onCreatePlaylist = onCreatePlaylist
+            coordinator.onRenamePlaylist = onRenamePlaylist
+            coordinator.onDeletePlaylist = onDeletePlaylist
+            coordinator.onMovePlaylistToFolder = onMovePlaylistToFolder
+            coordinator.onSendPlaylistToDevice = onSendPlaylistToDevice
             // An iPod's page keeps the list of the section the user came from.
             if let media = selection.media { coordinator.media = media }
             let deviceKey: [String] = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") }
-            let playlistKey: [String] = (playlists + videoPlaylists).map { $0.id + $0.name }
-            let key: [String] = deviceKey + ["|"] + playlistKey + ["|", coordinator.media.title]
-            if key != coordinator.key {
+            let playlistKey: [String] = (playlists + videoPlaylists).map { $0.id + $0.name + ($0.isFolder ? "F" : "P") + ($0.parentID ?? "") }
+            let orderKey: [String] = sidebarOrder.keys.sorted().flatMap { ["#", $0] + (sidebarOrder[$0] ?? []) }
+            let key: [String] = deviceKey + ["|"] + playlistKey + ["|", coordinator.media.title] + orderKey
+            if key != coordinator.key && !coordinator.isReordering {
                 coordinator.key = key
-                coordinator.sections = Self.sections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: coordinator.media)
-                outline.reloadData()
-                outline.expandItem(nil, expandChildren: true)
+                if coordinator.skipNextReload {
+                    coordinator.skipNextReload = false
+                } else {
+                    coordinator.sections = Self.sections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: coordinator.media, sidebarOrder: sidebarOrder)
+                    outline.reloadData()
+                    outline.expandItem(nil, expandChildren: true)
+                }
             }
             coordinator.select(selection, in: outline)
             coordinator.updateActivity(busyDevices, in: outline)
+            if let editID = editingPlaylistID,
+               let node = coordinator.findNode(for: .playlist(editID)) {
+                onClearEditing()
+                DispatchQueue.main.async { [weak outline] in
+                    guard let outline else { return }
+                    let row = outline.row(forItem: node)
+                    guard row >= 0 else { return }
+                    outline.scrollRowToVisible(row)
+                    if let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? SidebarCell {
+                        cell.beginInlineEdit()
+                    }
+                }
+            }
         }
 
         func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> ViewSize {
@@ -90,10 +131,20 @@
 
         /// Group rows are what NSOutlineView collapses: on hover they show a chevron at the right,
         /// and the section slides closed or open.
-        private static func sections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist], media: SidebarItem) -> [Node] {
+        private static func makeNode(_ row: SidebarSection.Row) -> Node {
+            Node(
+                title: row.title,
+                icon: row.icon,
+                item: row.item,
+                ejectable: row.ejectable,
+                isFolder: row.isFolder,
+                children: row.children.map(makeNode)
+            )
+        }
+        private static func sections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist], media: SidebarItem, sidebarOrder: [String: [String]]) -> [Node] {
             // The iPods live at the rail's bottom, not in this list.
-            let nodes = sidebarSections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: media).filter { $0.title != "iPods" }.map { section in
-                Node(title: section.title, children: section.rows.map { Node(title: $0.title, icon: $0.icon, item: $0.item, ejectable: $0.ejectable) })
+            let nodes = sidebarSections(devices: devices, playlists: playlists, videoPlaylists: videoPlaylists, media: media, sidebarOrder: sidebarOrder).filter { $0.title != "iPods" }.map { section in
+                Node(title: section.title, children: section.rows.map(makeNode))
             }
             nodes.first?.isMain = true
             return nodes
@@ -129,18 +180,20 @@
 
         final class Node: NSObject {
             let title: String
-            let icon: String?
+            var icon: String?
             let item: SidebarItem?
             let ejectable: Bool
-            let children: [Node]
+            let isFolder: Bool
+            var children: [Node]
             /// The library's own section, at the top: it can't be collapsed, and has a "+" instead.
             var isMain = false
 
-            init(title: String, icon: String? = nil, item: SidebarItem? = nil, ejectable: Bool = false, children: [Node] = []) {
+            init(title: String, icon: String? = nil, item: SidebarItem? = nil, ejectable: Bool = false, isFolder: Bool = false, children: [Node] = []) {
                 self.title = title
                 self.icon = icon
                 self.item = item
                 self.ejectable = ejectable
+                self.isFolder = isFolder
                 self.children = children
             }
 
@@ -154,8 +207,57 @@
 
         /// Icons in the accent color, white on the selected row, gray when dimmed: what SwiftUI's
         /// sidebar `Label` does.
-        final class SidebarCell: NSTableCellView {
+        private final class PassthroughView: NSView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        }
+
+        private final class RenameTextView: NSTextView {
+            private let localUndoManager = UndoManager()
+            override var undoManager: UndoManager? { localUndoManager }
+
+            override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
+                super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+                needsDisplay = true
+            }
+
+            override func drawBackground(in rect: NSRect) {
+                super.drawBackground(in: rect)
+                let sel = selectedRange()
+                let len = (string as NSString).length
+                guard len > 0, sel.length > 0 else { return }
+
+                NSColor.selectedTextBackgroundColor.setFill()
+                if sel.length == len {
+                    bounds.fill()
+                    return
+                }
+
+                guard let lm = layoutManager, let tc = textContainer else { return }
+                let glyphRange = lm.glyphRange(forCharacterRange: sel, actualCharacterRange: nil)
+                let origin = textContainerOrigin
+                let insetX = textContainerInset.width
+                lm.enumerateEnclosingRects(
+                    forGlyphRange: glyphRange,
+                    withinSelectedGlyphRange: glyphRange,
+                    in: tc
+                ) { enclosingRect, _ in
+                    var r = enclosingRect.offsetBy(dx: origin.x, dy: origin.y)
+                    if r.minX <= origin.x + 0.5 {
+                        let delta = r.minX
+                        r.origin.x = 0
+                        r.size.width += delta
+                    }
+                    if r.maxX >= self.bounds.maxX - insetX - 0.5 {
+                        r.size.width = self.bounds.maxX - r.minX
+                    }
+                    r.fill()
+                }
+            }
+        }
+
+        final class SidebarCell: NSTableCellView, NSTextViewDelegate {
             var dimmed = false { didSet { updateTint() } }
+            var forceBlackIcon = false { didSet { updateTint() } }
             var customIcon: NSImage? { didSet { updateTint() } }
             /// iPod rows only.
             var ejectButton: EjectButton?
@@ -164,8 +266,177 @@
             var headerLabel: NSTextField?
             /// The main section's "+".
             var plusButton: NSButton?
+            var keepPlusVisible = false
             var onPlus: () -> Void = {}
+            var onRenameCommit: ((String) -> Void)?
+            private var preEditTitle = ""
+            private var renameBox: NSView?
+            private var renameScrollView: NSScrollView?
+            private var renameTextView: NSTextView?
             @objc func plusClicked(_ sender: NSButton) { onPlus() }
+
+            func beginInlineEdit() {
+                guard let textField, let outline = enclosingOutlineView, renameBox == nil else { return }
+                preEditTitle = textField.stringValue
+                let font = textField.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+
+                let box = NSView(frame: .zero)
+                box.wantsLayer = true
+                box.layer?.cornerRadius = 5
+                box.layer?.borderWidth = 0
+                box.layer?.backgroundColor = NSColor.keyboardFocusIndicatorColor.withAlphaComponent(0.5).cgColor
+
+                let innerBox = NSView(frame: .zero)
+                innerBox.wantsLayer = true
+                innerBox.layer?.cornerRadius = 0
+                let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                innerBox.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+                innerBox.autoresizingMask = [.width, .height]
+
+                let borderOverlay = PassthroughView(frame: .zero)
+                borderOverlay.wantsLayer = true
+                borderOverlay.layer?.cornerRadius = 0
+                borderOverlay.layer?.borderWidth = 1.0 / max(1.0, outline.window?.backingScaleFactor ?? 2.0)
+                borderOverlay.layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.22) : NSColor.black.withAlphaComponent(0.15)).cgColor
+                borderOverlay.layer?.backgroundColor = NSColor.clear.cgColor
+                borderOverlay.autoresizingMask = [.width, .height]
+
+                let scroll = NSScrollView(frame: .zero)
+                scroll.drawsBackground = false
+                scroll.borderType = .noBorder
+                scroll.hasVerticalScroller = false
+                scroll.hasHorizontalScroller = false
+                scroll.autohidesScrollers = true
+                scroll.autoresizingMask = [.width, .height]
+
+                let textView = RenameTextView(frame: .zero)
+                textView.string = preEditTitle
+                textView.font = font
+                textView.drawsBackground = false
+                textView.textColor = .labelColor
+                textView.insertionPointColor = .labelColor
+                textView.selectedTextAttributes = [
+                    .backgroundColor: NSColor.clear,
+                    .foregroundColor: NSColor.labelColor,
+                ]
+                textView.isRichText = false
+                textView.importsGraphics = false
+                textView.allowsUndo = true
+                textView.isEditable = true
+                textView.isSelectable = true
+                textView.isVerticallyResizable = true
+                textView.isHorizontallyResizable = false
+                textView.textContainerInset = NSSize(width: 2, height: 0)
+                textView.textContainer?.lineFragmentPadding = 0
+                textView.textContainer?.widthTracksTextView = false
+                textView.delegate = self
+
+                scroll.documentView = textView
+                innerBox.addSubview(scroll)
+                innerBox.addSubview(borderOverlay, positioned: .above, relativeTo: scroll)
+                box.addSubview(innerBox)
+
+                renameBox = box
+                renameScrollView = scroll
+                renameTextView = textView
+
+                textField.isHidden = true
+                outline.addSubview(box, positioned: .above, relativeTo: nil)
+                resizeRenameBox(scrollToSelection: false)
+                outline.window?.makeKey()
+                outline.window?.makeFirstResponder(textView)
+                textView.selectAll(nil)
+                textView.scroll(.zero)
+            }
+
+            private func resizeRenameBox(scrollToSelection: Bool = true) {
+                guard let box = renameBox,
+                      let scroll = renameScrollView,
+                      let textView = renameTextView,
+                      let textField,
+                      let outline = enclosingOutlineView,
+                      let layoutManager = textView.layoutManager,
+                      let textContainer = textView.textContainer else { return }
+
+                let labelTitleRect = textField.cell?.titleRect(forBounds: textField.bounds) ?? textField.bounds
+                let labelTextInOutline = outline.convert(textField.convert(labelTitleRect, to: self), from: self)
+                let maxScrollWidth = max(44, outline.bounds.maxX - labelTextInOutline.minX - 20)
+
+                textContainer.containerSize = NSSize(width: max(10, maxScrollWidth - 4), height: .greatestFiniteMagnitude)
+                layoutManager.ensureLayout(for: textContainer)
+                let used = layoutManager.usedRect(for: textContainer)
+                let font = textView.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+                let lineHeight = ceil(layoutManager.defaultLineHeight(for: font))
+                let maxScrollHeight = lineHeight * 3
+
+                let scrollW = min(maxScrollWidth, max(6, ceil(used.width) + 4))
+                let contentH = max(lineHeight, ceil(used.height))
+                let scrollH = min(maxScrollHeight, contentH)
+                scroll.hasVerticalScroller = contentH > maxScrollHeight
+
+                let originX = labelTextInOutline.minX - 3
+                let originY = labelTextInOutline.minY - 3
+                box.frame = NSRect(x: originX, y: originY, width: scrollW + 6, height: scrollH + 6)
+                if let inner = box.subviews.first {
+                    inner.frame = box.bounds.insetBy(dx: 3, dy: 3)
+                    scroll.frame = inner.bounds
+                    inner.subviews.last?.frame = inner.bounds
+                }
+                textView.frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: max(scrollH, contentH))
+                if scrollToSelection {
+                    textView.scrollRangeToVisible(textView.selectedRange())
+                }
+            }
+
+            func textDidChange(_ notification: Notification) {
+                resizeRenameBox()
+            }
+
+            func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+                if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                    let outline = enclosingOutlineView
+                    finishInlineEdit(commit: true)
+                    if let outline { outline.window?.makeFirstResponder(outline) }
+                    return true
+                }
+                if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                    let outline = enclosingOutlineView
+                    finishInlineEdit(commit: false)
+                    if let outline { outline.window?.makeFirstResponder(outline) }
+                    return true
+                }
+                return false
+            }
+
+            private var enclosingOutlineView: NSOutlineView? {
+                var v: NSView? = superview
+                while let current = v {
+                    if let outline = current as? NSOutlineView { return outline }
+                    v = current.superview
+                }
+                return nil
+            }
+
+            func textDidEndEditing(_ notification: Notification) {
+                finishInlineEdit(commit: true)
+            }
+
+            private func finishInlineEdit(commit: Bool) {
+                guard let box = renameBox, let textView = renameTextView, let textField else { return }
+                let edited = textView.string
+                renameBox = nil
+                renameScrollView = nil
+                renameTextView = nil
+                box.removeFromSuperview()
+                textField.isHidden = false
+                let trimmed = edited.trimmingCharacters(in: .whitespacesAndNewlines)
+                if commit && !trimmed.isEmpty {
+                    textField.stringValue = trimmed
+                    onRenameCommit?(trimmed)
+                } else {
+                    textField.stringValue = preEditTitle
+                }
+            }
 
             // The "+" shows while the pointer is on the section's header, fading in and out.
             private var headerTracking: NSTrackingArea?
@@ -178,8 +449,11 @@
                 headerTracking = area
             }
             override func mouseEntered(with event: NSEvent) { fadePlus(to: 1) }
-            override func mouseExited(with event: NSEvent) { fadePlus(to: 0) }
-            private func fadePlus(to alpha: CGFloat) {
+            override func mouseExited(with event: NSEvent) {
+                guard !keepPlusVisible else { return }
+                fadePlus(to: 0)
+            }
+            func fadePlus(to alpha: CGFloat) {
                 guard let plus = plusButton, !plus.isHidden else { return }
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = alpha == 0 ? 0.3 : 0.2
@@ -199,7 +473,8 @@
 
             func updateTint() {
                 let color: NSColor =
-                    dimmed ? .secondaryLabelColor
+                    forceBlackIcon ? .black
+                    : dimmed ? .secondaryLabelColor
                     : backgroundStyle == .emphasized ? .alternateSelectedControlTextColor
                     : .controlAccentColor
                 imageView?.contentTintColor = color
@@ -239,9 +514,133 @@
             var onSelect: (SidebarItem) -> Void = { _ in }
             var onEject: (SidebarItem) -> Void = { _ in }
             var onAdd: (SidebarItem) -> Void = { _ in }
+            var onReorder: (String, [SidebarItem]) -> Void = { _, _ in }
+            var onAddMusicFolder: () -> Void = {}
+            var onCreatePlaylist: (Bool) -> Void = { _ in }
+            var onRenamePlaylist: (String, String) -> Void = { _, _ in }
+            var onDeletePlaylist: (String) -> Void = { _ in }
+            var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
+        var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
+            var isReordering = false
+            var skipNextReload = false
+            weak var outline: NSOutlineView?
             /// Libraries that have something to add.
             private static let addable: Set<SidebarItem> = [.music, .podcasts, .audiobooks, .videos]
-            private var isSyncingSelection = false
+            var isSyncingSelection = false
+
+            func findNode(for target: SidebarItem) -> Node? {
+                func search(_ nodes: [Node]) -> Node? {
+                    for n in nodes {
+                        if n.item == target { return n }
+                        if let found = search(n.children) { return found }
+                    }
+                    return nil
+                }
+                return search(sections)
+            }
+
+            @MainActor func showPlaylistsMenu(from button: NSButton, in cell: SidebarCell, includeAddMusicFolder: Bool) {
+                cell.keepPlusVisible = true
+                let menu = NSMenu()
+                if includeAddMusicFolder {
+                    let addFolder = NSMenuItem(title: "Add New Music local folder", action: #selector(menuAddMusicFolder), keyEquivalent: "")
+                    addFolder.target = self
+                    menu.addItem(addFolder)
+                    menu.addItem(.separator())
+                }
+                let newPlaylist = NSMenuItem(title: "New Playlist", action: #selector(menuNewPlaylist), keyEquivalent: "")
+                newPlaylist.target = self
+                let newFolder = NSMenuItem(title: "New Playlist Folder", action: #selector(menuNewPlaylistFolder), keyEquivalent: "")
+                newFolder.target = self
+                menu.addItem(newPlaylist)
+                menu.addItem(newFolder)
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
+                cell.keepPlusVisible = false
+                if let window = cell.window {
+                    let pt = cell.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+                    if !cell.bounds.contains(pt) {
+                        cell.fadePlus(to: 0)
+                    }
+                } else {
+                    cell.fadePlus(to: 0)
+                }
+            }
+            @objc private func menuAddMusicFolder() { onAddMusicFolder() }
+            @objc private func menuNewPlaylist() { onCreatePlaylist(false) }
+            @objc private func menuNewPlaylistFolder() { onCreatePlaylist(true) }
+
+            @MainActor func refreshFavoriteIcon() {
+                let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star.fill"
+                for section in sections {
+                    for child in section.children where child.item == .favorites {
+                        child.icon = iconName
+                    }
+                }
+                guard let outline else { return }
+                for row in 0..<outline.numberOfRows {
+                    guard let node = outline.item(atRow: row) as? Node, node.item == .favorites,
+                          let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell else { continue }
+                    let image = systemSymbol(iconName)
+                    cell.customIcon = nil
+                    cell.imageView?.image = image
+                    cell.updateTint()
+                    cell.needsDisplay = true
+                }
+                outline.needsDisplay = true
+            }
+
+            func commitReorder(group: Node, in outline: NSOutlineView) {
+                let items = group.children.compactMap(\.item)
+                let selected = outline.selectedRow >= 0 ? (outline.item(atRow: outline.selectedRow) as? Node)?.item : nil
+                outline.reloadData()
+                outline.expandItem(nil, expandChildren: true)
+                if let selected { select(selected, in: outline) }
+                onReorder(group.isFolder ? "Playlists" : group.title, items)
+            }
+
+            /// Updates `sections` and reloads `outline` synchronously on drop so folder moves feel instant.
+            func applyLocalFolderMove(playlistID: String, toFolder folderID: String?, atIndex insertIndex: Int?, in outline: NSOutlineView) {
+                guard let playlistsSection = sections.first(where: { $0.title == "Playlists" }) else { return }
+                let prevSelected = outline.selectedRow >= 0 ? (outline.item(atRow: outline.selectedRow) as? Node)?.item : nil
+                var movedNode: Node?
+                if let topIdx = playlistsSection.children.firstIndex(where: {
+                    if case .playlist(let id) = $0.item { return id == playlistID }
+                    return false
+                }) {
+                    movedNode = playlistsSection.children.remove(at: topIdx)
+                } else {
+                    for folder in playlistsSection.children where folder.isFolder {
+                        if let subIdx = folder.children.firstIndex(where: {
+                            if case .playlist(let id) = $0.item { return id == playlistID }
+                            return false
+                        }) {
+                            movedNode = folder.children.remove(at: subIdx)
+                            break
+                        }
+                    }
+                }
+                guard let movedNode else { return }
+                NSAnimationContext.beginGrouping()
+                NSAnimationContext.current.duration = 0
+                if let folderID, let targetFolder = playlistsSection.children.first(where: {
+                    if case .playlist(let id) = $0.item, $0.isFolder { return id == folderID }
+                    return false
+                }) {
+                    let idx = insertIndex.map { max(0, min(targetFolder.children.count, $0)) } ?? targetFolder.children.count
+                    targetFolder.children.insert(movedNode, at: idx)
+                    outline.reloadData()
+                    outline.expandItem(targetFolder)
+                } else {
+                    let idx = insertIndex.map { max(0, min(playlistsSection.children.count, $0)) } ?? playlistsSection.children.count
+                    playlistsSection.children.insert(movedNode, at: idx)
+                    outline.reloadData()
+                }
+                if let prevSelected {
+                    select(prevSelected, in: outline)
+                }
+                NSAnimationContext.endGrouping()
+                skipNextReload = true
+            }
 
             // Drops are decided by `MusicDropOutlineView` itself (it answers the drag events, see there): the
             // table's own validate/accept path is what draws the frame we don't want.
@@ -269,7 +668,8 @@
             }
 
             func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-                (item as? Node)?.isGroup ?? false
+                guard let node = item as? Node else { return false }
+                return node.isGroup || node.isFolder
             }
 
             /// The library's own section stays open, with no disclosure arrow.
@@ -308,11 +708,32 @@
                 }
                 cell.textField?.stringValue = node.isMain ? "" : node.title
                 if node.isMain { (cell as? SidebarCell)?.headerLabel?.stringValue = node.title }
-                if let plus = (cell as? SidebarCell)?.plusButton {
-                    plus.isHidden = !(node.isMain && Self.addable.contains(media))
-                    (cell as? SidebarCell)?.resetPlus()
-                    let target = media
-                    (cell as? SidebarCell)?.onPlus = { [weak self] in self?.onAdd(target) }
+                if let plus = (cell as? SidebarCell)?.plusButton, let sidebarCell = cell as? SidebarCell {
+                    let showMainPlus = node.isMain && Self.addable.contains(media)
+                    let showPlaylistsPlus = node.isGroup && !node.isMain && node.title == "Playlists"
+                    plus.isHidden = !(showMainPlus || showPlaylistsPlus)
+                    sidebarCell.resetPlus()
+                    if showPlaylistsPlus {
+                        sidebarCell.onPlus = { [weak self, weak plus, weak sidebarCell] in
+                            guard let self, let plus, let sidebarCell else { return }
+                            self.showPlaylistsMenu(from: plus, in: sidebarCell, includeAddMusicFolder: false)
+                        }
+                    } else if node.isMain && media == .music {
+                        sidebarCell.onPlus = { [weak self, weak plus, weak sidebarCell] in
+                            guard let self, let plus, let sidebarCell else { return }
+                            self.showPlaylistsMenu(from: plus, in: sidebarCell, includeAddMusicFolder: true)
+                        }
+                    } else {
+                        let target = media
+                        sidebarCell.onPlus = { [weak self] in self?.onAdd(target) }
+                    }
+                }
+                if case .playlist(let id) = node.item {
+                    (cell as? SidebarCell)?.onRenameCommit = { [weak self] name in
+                        self?.onRenamePlaylist(id, name)
+                    }
+                } else {
+                    (cell as? SidebarCell)?.onRenameCommit = nil
                 }
                 if let icon = node.icon {
                     let image = systemSymbol(icon)
@@ -330,14 +751,23 @@
             }
 
             func outlineViewSelectionDidChange(_ notification: Notification) {
+                if let outline = notification.object as? NSOutlineView {
+                    outline.window?.invalidateCursorRects(for: outline)
+                }
                 guard !isSyncingSelection, let outline = notification.object as? NSOutlineView,
                       let item = (outline.item(atRow: outline.selectedRow) as? Node)?.item
                 else { return }
                 onSelect(item)
             }
 
+            var suppressedSelectionItem: SidebarItem?
+
             func select(_ selection: SidebarItem, in outline: NSOutlineView) {
-                let row = outline.row(forItem: sections.lazy.flatMap(\.children).first { $0.item == selection })
+                if let suppressed = suppressedSelectionItem {
+                    if selection == suppressed { return }
+                    suppressedSelectionItem = nil
+                }
+                let row = findNode(for: selection).map { outline.row(forItem: $0) } ?? -1
                 guard row >= 0, row != outline.selectedRow else { return }
                 isSyncingSelection = true
                 outline.selectRowIndexes([row], byExtendingSelection: false)
@@ -367,12 +797,30 @@
                         eject.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -M.ejectTrailing),
                         text.trailingAnchor.constraint(lessThanOrEqualTo: eject.leadingAnchor, constant: -2),
                     ]
+                } else if !group {
+                    constraints.append(text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8))
                 } else {
                     constraints.append(text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4))
                 }
                 if group && !main {
                     // A sub-section's caption lines up with the rows' icons, as in the Finder.
                     constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: SidebarMetrics.subHeaderTextX))
+                    let plus = NSButton(image: systemSymbol("plus.circle", description: "Add Playlist", pointSize: 14) ?? NSImage(), target: nil, action: nil)
+                    plus.isBordered = false
+                    plus.contentTintColor = .secondaryLabelColor
+                    plus.toolTip = "Add Playlist or Music Folder"
+                    plus.isHidden = true
+                    plus.target = cell
+                    plus.action = #selector(SidebarCell.plusClicked(_:))
+                    plus.translatesAutoresizingMaskIntoConstraints = false
+                    cell.addSubview(plus)
+                    cell.plusButton = plus
+                    constraints += [
+                        plus.widthAnchor.constraint(equalToConstant: 22),
+                        plus.heightAnchor.constraint(equalToConstant: 22),
+                        plus.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                        plus.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                    ]
                 } else if group {
                     constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2))
                     let label = NSTextField(labelWithString: "")
@@ -425,10 +873,501 @@
         }
     }
 
+    private final class DropInsertionLineView: NSView {
+        var circleX: CGFloat = 10 { didSet { if oldValue != circleX { needsDisplay = true } } }
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func draw(_ dirtyRect: NSRect) {
+            let accent = NSColor.controlAccentColor
+            let circleDiameter: CGFloat = 7
+            let midY = bounds.midY
+            let circleRect = NSRect(x: circleX, y: midY - circleDiameter / 2, width: circleDiameter, height: circleDiameter)
+            let linePath = NSBezierPath()
+            linePath.lineWidth = 2
+            linePath.move(to: NSPoint(x: circleRect.maxX, y: midY))
+            linePath.line(to: NSPoint(x: bounds.maxX - 8, y: midY))
+            accent.setStroke()
+            linePath.stroke()
+
+            let circlePath = NSBezierPath(ovalIn: circleRect)
+            circlePath.lineWidth = 1.8
+            NSColor.windowBackgroundColor.setFill()
+            circlePath.fill()
+            accent.setStroke()
+            circlePath.stroke()
+        }
+    }
+
     /// Own the visual target explicitly: source-list AppKit feedback does not reliably set
     /// NSTableRowView.isTargetForDropOperation when custom rows draw a neutral selection.
     final class MusicDropOutlineView: NSOutlineView {
+        weak var coordinator: Sidebar.Coordinator?
         private var dropRow: Int?
+        private var contextTargetID: String?
+        private var contextTargetRow: Int?
+        private var pendingEditWork: DispatchWorkItem?
+        private lazy var insertionLine: DropInsertionLineView = {
+            let view = DropInsertionLineView(frame: .zero)
+            view.isHidden = true
+            addSubview(view, positioned: .above, relativeTo: nil)
+            return view
+        }()
+
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let point = convert(event.locationInWindow, from: nil)
+            let clickedRow = row(at: point)
+            guard clickedRow >= 0,
+                  let node = item(atRow: clickedRow) as? Sidebar.Node,
+                  case .playlist(let id) = node.item else {
+                return super.menu(for: event)
+            }
+            contextTargetID = id
+            contextTargetRow = clickedRow
+            let menu = NSMenu()
+            let rename = NSMenuItem(title: "Rename", action: #selector(contextRenamePlaylist), keyEquivalent: "")
+            rename.target = self
+            let delete = NSMenuItem(title: "Delete", action: #selector(contextDeletePlaylist), keyEquivalent: "")
+            delete.target = self
+            menu.addItem(rename)
+            menu.addItem(delete)
+            return menu
+        }
+
+        @objc private func contextRenamePlaylist() {
+            guard let row = contextTargetRow else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let cell = self.view(atColumn: 0, row: row, makeIfNecessary: true) as? Sidebar.SidebarCell else { return }
+                cell.beginInlineEdit()
+            }
+        }
+
+        @objc private func contextDeletePlaylist() {
+            guard let id = contextTargetID else { return }
+            coordinator?.onDeletePlaylist(id)
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            pendingEditWork?.cancel()
+            pendingEditWork = nil
+            let startPoint = convert(event.locationInWindow, from: nil)
+            var clickedRow = row(at: startPoint)
+            if clickedRow >= 0,
+               let responder = window?.firstResponder as? NSTextView,
+               let clickedRowView = rowView(atRow: clickedRow, makeIfNecessary: false),
+               responder.isDescendant(of: clickedRowView) {
+                super.mouseDown(with: event)
+                return
+            }
+            guard clickedRow >= 0,
+                  let node = item(atRow: clickedRow) as? Sidebar.Node,
+                  !node.isGroup,
+                  node.item != nil,
+                  let groupNode = parent(forItem: node) as? Sidebar.Node,
+                  let window else {
+                super.mouseDown(with: event)
+                return
+            }
+
+            let canDrag = groupNode.children.count > 1 || groupNode.isFolder || {
+                if case .playlist = node.item { return true }
+                return false
+            }()
+            window.makeFirstResponder(self)
+
+            let wasAlreadySelected = (clickedRow == selectedRow)
+            let prevSelectedRow = (!wasAlreadySelected && selectedRow >= 0) ? (rowView(atRow: selectedRow, makeIfNecessary: false) as? NeutralSidebarRow) : nil
+            let pressedRow = !wasAlreadySelected ? (rowView(atRow: clickedRow, makeIfNecessary: false) as? NeutralSidebarRow) : nil
+
+            // Wait for either a click release, force-click pressure, or a drag past the movement threshold.
+            var dragStarted = false
+            var didForceClick = false
+            while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .pressure]) {
+                if next.type == .pressure {
+                    if !wasAlreadySelected && !didForceClick && next.stage >= 2 {
+                        didForceClick = true
+                        pressedRow?.isPressed = true
+                        prevSelectedRow?.suppressSelection = true
+                    }
+                    continue
+                }
+                let currentPoint = convert(next.locationInWindow, from: nil)
+                if next.type == .leftMouseUp {
+                    if wasAlreadySelected,
+                       next.clickCount == 1,
+                       case .playlist = node.item,
+                       let cell = view(atColumn: 0, row: clickedRow, makeIfNecessary: false) as? Sidebar.SidebarCell,
+                       let textField = cell.textField {
+                        let textPt = cell.convert(currentPoint, from: self)
+                        if textField.frame.insetBy(dx: -2, dy: -4).contains(textPt) {
+                            pressedRow?.isPressed = false
+                            prevSelectedRow?.suppressSelection = false
+                            let work = DispatchWorkItem { [weak cell] in
+                                cell?.beginInlineEdit()
+                            }
+                            pendingEditWork = work
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+                            window.makeFirstResponder(self)
+                            return
+                        }
+                    }
+                    if let coordinator, coordinator.outlineView(self, shouldSelectItem: node) {
+                        coordinator.suppressedSelectionItem = nil
+                        selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
+                    }
+                    pressedRow?.isPressed = false
+                    prevSelectedRow?.suppressSelection = false
+                    window.makeFirstResponder(self)
+                    return
+                }
+                if !didForceClick && hypot(currentPoint.x - startPoint.x, currentPoint.y - startPoint.y) >= 4 {
+                    dragStarted = true
+                    break
+                }
+            }
+            pressedRow?.isPressed = false
+            prevSelectedRow?.suppressSelection = false
+            guard dragStarted, canDrag else { return }
+
+            if wasAlreadySelected, let item = node.item {
+                coordinator?.suppressedSelectionItem = item
+                coordinator?.isSyncingSelection = true
+                deselectAll(nil)
+                coordinator?.isSyncingSelection = false
+            }
+
+            let wasExpandedFolder = node.isFolder && isItemExpanded(node)
+            if wasExpandedFolder {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.18
+                    context.allowsImplicitAnimation = true
+                    self.animator().collapseItem(node)
+                }
+                let refreshed = row(forItem: node)
+                if refreshed >= 0 { clickedRow = refreshed }
+            }
+
+            let siblingRows = groupNode.children.compactMap { child -> Int? in
+                let r = row(forItem: child)
+                return r >= 0 ? r : nil
+            }
+            guard siblingRows.count == groupNode.children.count,
+                  let startIndex = siblingRows.firstIndex(of: clickedRow) else { return }
+
+            let slotRects = siblingRows.map { rect(ofRow: $0) }
+            let rowViews = siblingRows.map { rowView(atRow: $0, makeIfNecessary: true) }
+            let startRect = slotRects[startIndex]
+            guard let draggedRowView = rowViews[startIndex] else { return }
+
+            let neutralRow = draggedRowView as? NeutralSidebarRow
+            let draggedCell = draggedRowView.view(atColumn: 0) as? Sidebar.SidebarCell
+            neutralRow?.suppressSelection = true
+            draggedCell?.forceBlackIcon = true
+            draggedRowView.layoutSubtreeIfNeeded()
+            draggedRowView.displayIfNeeded()
+
+            guard let snapshot = rowSnapshot(draggedRowView, rect: startRect) else {
+                draggedCell?.forceBlackIcon = false
+                neutralRow?.suppressSelection = false
+                return
+            }
+
+            let hostView = window.contentView ?? self
+            let startInHost = convert(startRect, to: hostView)
+            let startPointInHost = hostView.convert(event.locationInWindow, from: nil)
+            let floating = NSImageView(frame: startInHost)
+            floating.image = snapshot
+            floating.alphaValue = 0.85
+            floating.wantsLayer = true
+            floating.layer?.shadowColor = NSColor.black.cgColor
+            floating.layer?.shadowOpacity = 0.25
+            floating.layer?.shadowRadius = 6
+            floating.layer?.shadowOffset = CGSize(width: 0, height: -2)
+            hostView.addSubview(floating, positioned: .above, relativeTo: nil)
+            draggedRowView.alphaValue = 0
+
+            coordinator?.isReordering = true
+            let grabOffsetX = startPointInHost.x - startInHost.minX
+            let grabOffsetY = startPointInHost.y - startInHost.minY
+            var slots = Array(0..<siblingRows.count)
+            var currentIndex = startIndex
+            var isValidTarget = true
+            var cancelled = false
+            let groupTop = slotRects.first!.minY
+            let groupBottom = slotRects.last!.maxY
+            let rowH = startRect.height
+
+            let draggedPlaylistID: String? = {
+                if case .playlist(let id) = node.item, !node.isFolder { return id }
+                return nil
+            }()
+            let draggedAnyPlaylistID: String? = {
+                if case .playlist(let id) = node.item { return id }
+                return nil
+            }()
+            var hoveredFolderID: String?
+            var hoveredFolderRow: NeutralSidebarRow?
+            var targetFolderInsert: (folderID: String, index: Int)?
+            var moveToTopLevelIndex: Int?
+            var hoveredDeviceID: String?
+
+            while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown, .pressure]) {
+                if next.type == .pressure { continue }
+                if next.type == .keyDown {
+                    if next.keyCode == 53 { // Escape
+                        cancelled = true
+                        break
+                    }
+                    continue
+                }
+                if next.type == .leftMouseDragged {
+                    autoscroll(with: next)
+                    let pointer = convert(next.locationInWindow, from: nil)
+                    let pointerInHost = hostView.convert(next.locationInWindow, from: nil)
+                    floating.frame.origin = NSPoint(x: pointerInHost.x - grabOffsetX, y: pointerInHost.y - grabOffsetY)
+
+                    if draggedAnyPlaylistID != nil,
+                       let hitDevice = MediaRailDropBridge.shared.deviceAt(windowPoint: next.locationInWindow) {
+                        hoveredDeviceID = hitDevice
+                        MediaRailDropBridge.shared.setHighlighted(true)
+                        hoveredFolderRow?.isMusicDropTarget = false
+                        hoveredFolderRow = nil
+                        hoveredFolderID = nil
+                        targetFolderInsert = nil
+                        moveToTopLevelIndex = nil
+                        isValidTarget = false
+                        insertionLine.isHidden = true
+                        if currentIndex != startIndex {
+                            slots = Array(0..<siblingRows.count)
+                            currentIndex = startIndex
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                        }
+                        continue
+                    } else if hoveredDeviceID != nil {
+                        hoveredDeviceID = nil
+                        MediaRailDropBridge.shared.setHighlighted(false)
+                    }
+
+                    let dx = abs(pointer.x - startPoint.x)
+                    let dy = abs(pointer.y - startPoint.y)
+                    let horizontalIntent = dx > 28 && dx > dy * 1.5
+                    let insideX = !horizontalIntent && pointer.x >= bounds.minX && pointer.x <= bounds.maxX
+
+                    var newFolderID: String?
+                    var newFolderRow: NeutralSidebarRow?
+                    var newFolderInsert: (folderID: String, index: Int, y: CGFloat, circleX: CGFloat)?
+                    if insideX, draggedPlaylistID != nil {
+                        let hitRow = row(at: NSPoint(x: bounds.midX, y: pointer.y))
+                        if hitRow >= 0, let targetNode = item(atRow: hitRow) as? Sidebar.Node {
+                            if targetNode !== node,
+                               targetNode.isFolder,
+                               case .playlist(let fID) = targetNode.item {
+                                newFolderID = fID
+                                newFolderRow = rowView(atRow: hitRow, makeIfNecessary: false) as? NeutralSidebarRow
+                            } else if let folderParent = parent(forItem: targetNode) as? Sidebar.Node,
+                                      folderParent.isFolder,
+                                      folderParent !== groupNode,
+                                      case .playlist(let fID) = folderParent.item {
+                                var boundaries: [(index: Int, y: CGFloat)] = []
+                                var childCircleX: CGFloat = 10 + indentationPerLevel
+                                for (idx, sub) in folderParent.children.enumerated() {
+                                    let sr = row(forItem: sub)
+                                    if sr >= 0 {
+                                        let rc = rect(ofRow: sr)
+                                        if boundaries.isEmpty {
+                                            boundaries.append((0, rc.minY))
+                                            if let childCell = view(atColumn: 0, row: sr, makeIfNecessary: false) as? Sidebar.SidebarCell,
+                                               let iv = childCell.imageView {
+                                                childCircleX = convert(iv.bounds, from: iv).minX - 2
+                                            }
+                                        }
+                                        boundaries.append((idx + 1, rc.maxY))
+                                    }
+                                }
+                                if let best = boundaries.min(by: { abs($0.y - pointer.y) < abs($1.y - pointer.y) }) {
+                                    newFolderInsert = (fID, best.index, best.y, childCircleX)
+                                }
+                            }
+                        }
+                    }
+                    if hoveredFolderRow !== newFolderRow {
+                        hoveredFolderRow?.isMusicDropTarget = false
+                        newFolderRow?.isMusicDropTarget = true
+                        hoveredFolderRow = newFolderRow
+                    }
+                    hoveredFolderID = newFolderID
+
+                    if newFolderID != nil {
+                        targetFolderInsert = nil
+                        isValidTarget = false
+                        moveToTopLevelIndex = nil
+                        insertionLine.isHidden = true
+                        if currentIndex != startIndex {
+                            slots = Array(0..<siblingRows.count)
+                            currentIndex = startIndex
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                        }
+                        continue
+                    }
+
+                    if let insert = newFolderInsert {
+                        targetFolderInsert = (insert.folderID, insert.index)
+                        isValidTarget = false
+                        moveToTopLevelIndex = nil
+                        insertionLine.circleX = insert.circleX
+                        insertionLine.frame = NSRect(x: 0, y: insert.y - 4, width: bounds.width, height: 8)
+                        insertionLine.isHidden = false
+                        addSubview(insertionLine, positioned: .above, relativeTo: nil)
+                        if currentIndex != startIndex {
+                            slots = Array(0..<siblingRows.count)
+                            currentIndex = startIndex
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                        }
+                        continue
+                    }
+                    targetFolderInsert = nil
+
+                    let insideGroupY = pointer.y >= groupTop - rowH * 0.5 && pointer.y <= groupBottom + rowH * 0.5
+                    if insideX && insideGroupY {
+                        isValidTarget = true
+                        moveToTopLevelIndex = nil
+                        insertionLine.isHidden = true
+                        let midY = pointer.y - grabOffsetY + rowH * 0.5
+                        let targetIndex = slotRects.indices.min {
+                            abs(midY - slotRects[$0].midY) < abs(midY - slotRects[$1].midY)
+                        } ?? currentIndex
+                        let targetIsFolder = draggedPlaylistID != nil && groupNode.children[slots[targetIndex]].isFolder
+                        if targetIndex != currentIndex, !targetIsFolder {
+                            let moved = slots.remove(at: currentIndex)
+                            slots.insert(moved, at: targetIndex)
+                            currentIndex = targetIndex
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                        }
+                    } else {
+                        isValidTarget = false
+                        if insideX && groupNode.isFolder && draggedPlaylistID != nil,
+                           let playlistsSection = coordinator?.sections.first(where: { $0.title == "Playlists" }) {
+                            let sectionRow = row(forItem: playlistsSection)
+                            let sectionMinY = sectionRow >= 0 ? rect(ofRow: sectionRow).minY : 0
+                            if pointer.y >= sectionMinY {
+                                let topNodes = playlistsSection.children
+                                var boundaries: [(index: Int, y: CGFloat)] = []
+                                for (idx, child) in topNodes.enumerated() {
+                                    let r = row(forItem: child)
+                                    if r >= 0 {
+                                        let rc = rect(ofRow: r)
+                                        if boundaries.isEmpty { boundaries.append((0, rc.minY)) }
+                                        var maxY = rc.maxY
+                                        if child.isFolder {
+                                            for sub in child.children {
+                                                let sr = row(forItem: sub)
+                                                if sr >= 0 { maxY = max(maxY, rect(ofRow: sr).maxY) }
+                                            }
+                                        }
+                                        boundaries.append((idx + 1, maxY))
+                                    }
+                                }
+                                let best = boundaries.min(by: { abs($0.y - pointer.y) < abs($1.y - pointer.y) })
+                                let insertY = best?.y ?? groupBottom
+                                moveToTopLevelIndex = best?.index ?? topNodes.count
+                                insertionLine.circleX = 10
+                                insertionLine.frame = NSRect(x: 0, y: insertY - 4, width: bounds.width, height: 8)
+                                insertionLine.isHidden = false
+                                addSubview(insertionLine, positioned: .above, relativeTo: nil)
+                            } else {
+                                moveToTopLevelIndex = nil
+                                insertionLine.isHidden = true
+                            }
+                        } else {
+                            moveToTopLevelIndex = nil
+                            insertionLine.isHidden = true
+                        }
+                        if currentIndex != startIndex {
+                            slots = Array(0..<siblingRows.count)
+                            currentIndex = startIndex
+                            animateSiblingRows(slots: slots, draggedSlotValue: startIndex, rowViews: rowViews, slotRects: slotRects)
+                        }
+                    }
+                } else if next.type == .leftMouseUp {
+                    break
+                }
+            }
+
+            insertionLine.isHidden = true
+            hoveredFolderRow?.isMusicDropTarget = false
+            MediaRailDropBridge.shared.setHighlighted(false)
+            if (cancelled || !isValidTarget) && currentIndex != startIndex {
+                slots = Array(0..<siblingRows.count)
+                currentIndex = startIndex
+                for (slotIndex, originalIndex) in slots.enumerated() where originalIndex != startIndex {
+                    rowViews[originalIndex]?.frame.origin.y = slotRects[slotIndex].minY
+                }
+            }
+
+            let finalIndex = (!cancelled && isValidTarget) ? currentIndex : startIndex
+            let didFolderMove = !cancelled && draggedPlaylistID != nil && (hoveredFolderID != nil || targetFolderInsert != nil || moveToTopLevelIndex != nil)
+            floating.removeFromSuperview()
+            draggedCell?.forceBlackIcon = false
+            neutralRow?.suppressSelection = false
+            if !didFolderMove {
+                draggedRowView.alphaValue = 1
+            }
+            coordinator?.isReordering = false
+            if let draggedAnyPlaylistID, let hoveredDeviceID, !cancelled {
+                coordinator?.onSendPlaylistToDevice(draggedAnyPlaylistID, hoveredDeviceID)
+            } else if !cancelled, let draggedPlaylistID, let hoveredFolderID {
+                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: hoveredFolderID, atIndex: nil, in: self)
+                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, hoveredFolderID, nil)
+            } else if !cancelled, let draggedPlaylistID, let insert = targetFolderInsert {
+                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: insert.folderID, atIndex: insert.index, in: self)
+                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, insert.folderID, insert.index)
+            } else if !cancelled, let draggedPlaylistID, let topIdx = moveToTopLevelIndex {
+                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: nil, atIndex: topIdx, in: self)
+                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, nil, topIdx)
+            } else if finalIndex != startIndex {
+                let movedNode = groupNode.children.remove(at: startIndex)
+                groupNode.children.insert(movedNode, at: finalIndex)
+                coordinator?.commitReorder(group: groupNode, in: self)
+            }
+            if wasExpandedFolder {
+                NSAnimationContext.beginGrouping()
+                NSAnimationContext.current.duration = 0
+                expandItem(node)
+                NSAnimationContext.endGrouping()
+            }
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if (event.keyCode == 36 || event.keyCode == 76), selectedRow >= 0,
+               let node = item(atRow: selectedRow) as? Sidebar.Node,
+               case .playlist = node.item,
+               let cell = view(atColumn: 0, row: selectedRow, makeIfNecessary: false) as? Sidebar.SidebarCell {
+                cell.beginInlineEdit()
+                return
+            }
+            super.keyDown(with: event)
+        }
+
+        private func animateSiblingRows(slots: [Int], draggedSlotValue: Int, rowViews: [NSTableRowView?], slotRects: [NSRect]) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                for (slotIndex, originalIndex) in slots.enumerated() where originalIndex != draggedSlotValue {
+                    rowViews[originalIndex]?.animator().frame.origin.y = slotRects[slotIndex].minY
+                }
+            }
+        }
+
+        private func rowSnapshot(_ rowView: NSTableRowView, rect: NSRect) -> NSImage? {
+            guard let rep = rowView.bitmapImageRepForCachingDisplay(in: rowView.bounds) else { return nil }
+            rowView.cacheDisplay(in: rowView.bounds, to: rep)
+            let image = NSImage(size: rect.size)
+            image.addRepresentation(rep)
+            return image
+        }
         func highlightDrop(row: Int?) {
             guard dropRow != row else { return }
             if let old = dropRow, old < numberOfRows {
@@ -472,6 +1411,8 @@
         /// the drop highlight themselves.
         override var wantsUpdateLayer: Bool { false }
         var isMusicDropTarget = false { didSet { refreshFeedback() } }
+        var isPressed = false { didSet { if oldValue != isPressed { refreshFeedback() } } }
+        var suppressSelection = false { didSet { refreshFeedback() } }
         private var dropActive: Bool { isMusicDropTarget || isTargetForDropOperation }
         override var isEmphasized: Bool { get { false } set {} }
         override var isTargetForDropOperation: Bool { didSet { refreshFeedback() } }
@@ -485,7 +1426,7 @@
         override func drawBackground(in dirtyRect: NSRect) {
             super.drawBackground(in: dirtyRect)
             if dropActive { drawHighlight(.controlAccentColor) }
-            else if isSelected {
+            else if isPressed || (isSelected && !suppressSelection) {
                 let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 let color = sidebarSelectionRGBA(dark: dark)
                 drawHighlight(NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255,

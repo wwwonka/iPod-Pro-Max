@@ -23,6 +23,8 @@ private final class LibraryOperations: SwiftCrossUI.ObservableObject {
     let writer = PortableLibraryWriter()
 }
 
+private final class AppearanceObserverToken {}
+
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
     @Environment(\.openWindow) private var openWindow
@@ -60,6 +62,10 @@ struct ContentView: View {
     @State var albumArtworkSize = 172.0
     @State var sidebarPoints = Int(sidebarWidth)
     @State var sectionTabs: [String: String] = [:]
+    @State var sidebarOrder: [String: [String]] = [:]
+    @State var editingPlaylistID: String? = nil
+    @State private var appearanceRevision = 0
+    private let appearanceToken = AppearanceObserverToken()
     @State var selectedAlbumID: String?
     @State var playlistEditorVisible = false
     @State var playlistEditorName = ""
@@ -68,6 +74,7 @@ struct ContentView: View {
     @State var launchedOnDevice = false
 
     var body: some View {
+        let _ = appearanceRevision
         #if canImport(AppKitBackend)
         // Before the layout of this pass, so the sidebar and the page change in the same frame.
         let _: Void = MacChrome.shared.setSidebarAvailable(!isDevicePage)
@@ -111,6 +118,7 @@ struct ContentView: View {
         .followingSystemColorScheme(colorScheme)
 
         .task {
+            ListAppearance.shared.observe(appearanceToken) { appearanceRevision += 1 }
             // With a library open the menu adds a folder (as Settings does); the first one sets it up.
             AppCommands.addMusicFolder = { Task {
                 if portableLibrary == nil { await configureMusic() }
@@ -569,6 +577,109 @@ struct ContentView: View {
         }
     }
 
+    private func createNewPlaylist(isFolder: Bool) {
+        let base = isFolder ? "New Playlist Folder" : "New Playlist"
+        let existing = Set((library?.playlists ?? []).map(\.name))
+        var name = base
+        var n = 2
+        while existing.contains(name) {
+            name = "\(base) \(n)"
+            n += 1
+        }
+        let created = LibraryPlaylist(name: name, isFolder: isFolder)
+        updatePlaylists { $0.append(created) }
+        selection = .playlist(created.id.uuidString)
+        editingPlaylistID = created.id.uuidString
+    }
+
+    private func renamePlaylist(_ id: String, to name: String) {
+        guard let uuid = UUID(uuidString: id) else { return }
+        if let idx = library?.playlists.firstIndex(where: { $0.id == id }) {
+            library?.playlists[idx].name = name
+        }
+        updatePlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == uuid }) else { return }
+            playlists[index].name = name
+        }
+    }
+
+    private func sendPlaylist(_ id: String, toDevice device: String) {
+        guard let playlists = library?.playlists,
+              let target = playlists.first(where: { $0.id == id }) else { return }
+        let trackIDs: [String]
+        if target.isFolder {
+            trackIDs = playlists.filter { $0.parentID == id }.flatMap(\.trackIDs)
+        } else {
+            trackIDs = target.trackIDs
+        }
+        guard !trackIDs.isEmpty else { return }
+        _ = MusicTransfer.shared.onDrop(trackIDs, device)
+    }
+
+    private func movePlaylist(_ id: String, toFolder folderID: String?, atIndex insertIndex: Int? = nil) {
+        guard let uuid = UUID(uuidString: id) else { return }
+        let targetParent = folderID.flatMap(UUID.init(uuidString:))
+        guard targetParent != uuid else { return }
+        if var list = library?.playlists,
+           let oldIdx = list.firstIndex(where: { $0.id == id }),
+           !list[oldIdx].isFolder {
+            var item = list.remove(at: oldIdx)
+            item.parentID = folderID
+            if let insertIndex {
+                let siblingIndices = list.indices.filter { list[$0].parentID == folderID }
+                let dest: Int
+                if insertIndex <= 0 {
+                    dest = siblingIndices.first ?? list.endIndex
+                } else if insertIndex >= siblingIndices.count {
+                    dest = siblingIndices.last.map { $0 + 1 } ?? list.endIndex
+                } else {
+                    dest = siblingIndices[insertIndex]
+                }
+                list.insert(item, at: dest)
+            } else {
+                list.insert(item, at: min(oldIdx, list.endIndex))
+            }
+            library?.playlists = list
+        }
+        updatePlaylists { playlists in
+            guard let oldIdx = playlists.firstIndex(where: { $0.id == uuid }), !playlists[oldIdx].isFolder else { return }
+            var item = playlists.remove(at: oldIdx)
+            item.parentID = targetParent
+            if let insertIndex {
+                let siblingIndices = playlists.indices.filter { playlists[$0].parentID == targetParent }
+                let dest: Int
+                if insertIndex <= 0 {
+                    dest = siblingIndices.first ?? playlists.endIndex
+                } else if insertIndex >= siblingIndices.count {
+                    dest = siblingIndices.last.map { $0 + 1 } ?? playlists.endIndex
+                } else {
+                    dest = siblingIndices[insertIndex]
+                }
+                playlists.insert(item, at: dest)
+            } else {
+                playlists.insert(item, at: min(oldIdx, playlists.endIndex))
+            }
+        }
+    }
+
+    private func reorderPlaylistTracks(_ ids: [String], to targetRow: Int) {
+        guard let playlistID = selectedPlaylistID, let uuid = UUID(uuidString: playlistID) else { return }
+        let moving = ids.compactMap(UUID.init(uuidString:))
+        guard !moving.isEmpty else { return }
+        let movingSet = Set(moving)
+        updatePlaylists { playlists in
+            guard let index = playlists.firstIndex(where: { $0.id == uuid }) else { return }
+            var current = playlists[index].trackIDs
+            let clamped = max(0, min(current.count, targetRow))
+            let beforeCount = current[..<clamped].filter { movingSet.contains($0) }.count
+            let orderedMoving = current.filter { movingSet.contains($0) }
+            current.removeAll { movingSet.contains($0) }
+            let insertAt = max(0, min(current.count, clamped - beforeCount))
+            current.insert(contentsOf: orderedMoving, at: insertAt)
+            playlists[index].trackIDs = current
+        }
+    }
+
     private var selectedPlaylistID: String? {
         if case .playlist(let id) = selection { return id }
         return nil
@@ -657,32 +768,84 @@ struct ContentView: View {
         portableLibrary = saved; library = indexed
         pendingLibrarySave = nil
         applyArtistPhotos()
+        #if canImport(AppKitBackend)
+        configureMetadataEditor()
+        #endif
     }
 
+    #if canImport(AppKitBackend)
+    private func configureMetadataEditor() {
+        MetadataEditorController.shared.configure(
+            artworkFolder: portableLibrary?.store.artwork,
+            trackLookup: { [self] id in
+                portableLibrary?.cache.tracks.first { $0.id == id }
+            },
+            genreProvider: { [self] in
+                guard let tracks = portableLibrary?.cache.tracks else { return [] }
+                return Array(Set(tracks.compactMap { $0.genre?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+            },
+            onSaveTrack: { [self] updatedTrack, customArtworkData, completion in
+                saveTrackMetadata(updatedTrack, customArtworkData: customArtworkData, completion: completion)
+            }
+        )
+    }
+
+    private func saveTrackMetadata(
+        _ updatedTrack: LibraryTrack,
+        customArtworkData: Data?,
+        completion: @escaping @MainActor (Result<Void, Error>) -> Void
+    ) {
+        enqueueLibraryWriteWithStore("metadata", completion: completion) { cache, artworkFolder in
+            var trackToSave = updatedTrack
+            if let customArtworkData,
+               let key = MetadataArtworkSaver.saveCustomArtwork(customArtworkData, into: artworkFolder) {
+                trackToSave.artworkKey = key
+            }
+            if let idx = cache.tracks.firstIndex(where: { $0.id == trackToSave.id }) {
+                cache.tracks[idx] = trackToSave
+            }
+        }
+    }
+    #endif
+
     private func enqueueLibraryWrite(_ label: String, edit: @escaping @Sendable (inout PortableLibraryCache) -> Void) {
+        enqueueLibraryWriteWithStore(label, completion: nil) { cache, _ in edit(&cache) }
+    }
+
+    private func enqueueLibraryWriteWithStore(
+        _ label: String,
+        completion: (@MainActor (Result<Void, Error>) -> Void)?,
+        edit: @escaping @Sendable (inout PortableLibraryCache, URL) -> Void
+    ) {
         let previous = playlistWrite
         pendingLibraryWrites += 1
         playlistSaving = true
         playlistWrite = Task {
             await previous?.value
             await libraryOperations.gate.acquire()
+            var result: Result<Void, Error> = .success(())
             do {
                 try await retryLibrarySaveLocked()
                 guard let loaded = portableLibrary else { throw PortableLoading.LoadingError.noRoot }
                 let saved = await Task.detached(priority: .utility) {
                     var value = loaded
-                    edit(&value.cache)
+                    edit(&value.cache, loaded.store.artwork)
                     value.cache.reconcileFavoriteReferences()
                     return value
                 }.value
                 pendingLibrarySave = saved
                 try await libraryOperations.writer.save(saved.cache, to: saved.store)
                 try await retryLibrarySaveLocked()
-                if label == "favorites" { selectedSongIDs = [] }
-            } catch { transferStatus = "Couldn't save \(label): \(error.localizedDescription)" }
+                if label == "favorites" { ListAppearance.shared.endFavoriteWrite(saved: true) }
+            } catch {
+                if label == "favorites" { ListAppearance.shared.endFavoriteWrite(saved: false) }
+                transferStatus = "Couldn't save \(label): \(error.localizedDescription)"
+                result = .failure(error)
+            }
             pendingLibraryWrites -= 1
             playlistSaving = pendingLibraryWrites > 0
             await libraryOperations.gate.release()
+            completion?(result)
         }
     }
 
@@ -690,9 +853,62 @@ struct ContentView: View {
         enqueueLibraryWrite("playlist") { change(&$0.playlists) }
     }
 
-    private func setFavorite(_ favorite: Bool) {
-        guard !selectedSongIDs.isEmpty else { return }
-        let selected = Set(selectedSongIDs)
+    private func reorderSidebarSection(_ section: String, items: [SidebarItem]) {
+        if section == "Playlists" {
+            let orderedIDs = items.compactMap { item -> UUID? in
+                if case .playlist(let id) = item { return UUID(uuidString: id) }
+                return nil
+            }
+            updatePlaylists { playlists in
+                var byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
+                var reordered: [LibraryPlaylist] = []
+                for id in orderedIDs {
+                    if let playlist = byID.removeValue(forKey: id) { reordered.append(playlist) }
+                }
+                for playlist in playlists where byID[playlist.id] != nil {
+                    reordered.append(playlist)
+                }
+                playlists = reordered
+            }
+        } else if section == "Video Playlists" {
+            let orderedIDs = items.compactMap { item -> UUID? in
+                if case .videoPlaylist(let id) = item { return UUID(uuidString: id) }
+                return nil
+            }
+            updateVideoPlaylists { playlists in
+                var byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
+                var reordered: [LibraryPlaylist] = []
+                for id in orderedIDs {
+                    if let playlist = byID.removeValue(forKey: id) { reordered.append(playlist) }
+                }
+                for playlist in playlists where byID[playlist.id] != nil {
+                    reordered.append(playlist)
+                }
+                playlists = reordered
+            }
+        } else {
+            sidebarOrder[section] = items.compactMap(\.persistentName)
+            if let store = portableLibrary?.store {
+                PortablePreferences.shared.stageSidebarOrder(sidebarOrder, store: store)
+            }
+        }
+    }
+
+    /// The lists whose rows are songs: only those show the favorite icon.
+    private var showsFavoriteIcon: Bool {
+        switch selection {
+        case .music, .favorites, .recentMusic, .albums, .playlist: return true
+        default: return false
+        }
+    }
+
+    /// The icon changes at once (`ListAppearance`); the library is saved and reindexed behind it.
+    /// The selection is left as it is.
+    private func setFavorite(_ favorite: Bool, ids: [String]? = nil) {
+        let ids = ids ?? selectedSongIDs
+        guard !ids.isEmpty else { return }
+        let selected = Set(ids)
+        ListAppearance.shared.beginFavoriteWrite(ids, favorite: favorite)
         enqueueLibraryWrite("favorites") { cache in
             for index in cache.tracks.indices where selected.contains(cache.tracks[index].id.uuidString) && cache.tracks[index].mediaKind == .song {
                 cache.tracks[index].isFavorite = favorite
@@ -801,6 +1017,9 @@ struct ContentView: View {
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
             SettingsController.shared.attach(loaded.store)
+            #if canImport(AppKitBackend)
+            configureMetadataEditor()
+            #endif
             await ArtistPhotoController.shared.load(store: loaded.store)
             applyArtistPhotos()
             if ProcessInfo.processInfo.environment["IPPM_BENCH_VIEWS"] == nil {
@@ -822,6 +1041,7 @@ struct ContentView: View {
                 albumArtworkSize = min(max(settings?.albumArtworkSize ?? 172, 110), 280)
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
                 sectionTabs = settings?.sectionTabs ?? [:]
+                sidebarOrder = settings?.sidebarOrder ?? [:]
                 if let name = settings?.lastTab, let item = SidebarItem(persistentName: name), let key = item.media?.persistentName, sectionTabs[key] == nil {
                     sectionTabs[key] = name
                     PortablePreferences.shared.stageSectionTab(name, section: key, store: loaded.store)
@@ -870,19 +1090,40 @@ struct ContentView: View {
 
     private var sidebarColumn: some View {
         VStack(spacing: 0) {
-            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject,
+            #if canImport(AppKitBackend)
+            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, sidebarOrder: sidebarOrder, editingPlaylistID: editingPlaylistID, onEject: eject,
                 onAdd: { media in
                     switch media {
                     case .music: Task { await configureMusic() }
                     case .podcasts: addingPodcast.toggle()
                     case .audiobooks: Task { await configureAudiobooks() }
                     case .videos:
-                        #if canImport(AppKitBackend)
                         createVideoPlaylist()
-                        #endif
+                    default: break
+                    }
+                },
+                onReorder: { section, items in
+                    reorderSidebarSection(section, items: items)
+                },
+                onAddMusicFolder: { AppCommands.addMusicFolder?() },
+                onCreatePlaylist: { isFolder in createNewPlaylist(isFolder: isFolder) },
+                onRenamePlaylist: { id, name in renamePlaylist(id, to: name) },
+                onDeletePlaylist: { id in deletePlaylist(id) },
+                onMovePlaylistToFolder: { id, folderID, index in movePlaylist(id, toFolder: folderID, atIndex: index) },
+                onSendPlaylistToDevice: { id, device in sendPlaylist(id, toDevice: device) },
+                onClearEditing: { editingPlaylistID = nil })
+            #else
+            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject,
+                onAdd: { media in
+                    switch media {
+                    case .music: Task { await configureMusic() }
+                    case .podcasts: addingPodcast.toggle()
+                    case .audiobooks: Task { await configureAudiobooks() }
+                    case .videos: break
                     default: break
                     }
                 })
+            #endif
         }
         #if canImport(AppKitBackend)
         // Dark glass in the main view's shape: below the top band, flush with the window's bottom.
@@ -922,7 +1163,7 @@ struct ContentView: View {
                         Divider()
                     }
                     VStack(spacing: 0) {
-                    if (selection == .albums || selection == .recentMusic), let id = selectedAlbumID,
+                    if selection == .albums, let id = selectedAlbumID,
                        let album = library.albums.first(where: { $0.id == id }) {
                         MusicAlbumHeader(album: album, artworkFolder: library.artworkFolder,
                             onPlay: { if let first = album.rows.first(where: { $0.path != nil }) {
@@ -950,12 +1191,15 @@ struct ContentView: View {
                                    onAddToPlaylist: selection.media == .videos ? addVideosToPlaylist : addTracksToPlaylist,
                                    currentPlaylistID: selection.media == .videos ? selectedVideoPlaylistID : selectedPlaylistID,
                                    onRemoveFromPlaylist: selection.media == .videos ? removeVideosFromPlaylist : removeTracksFromPlaylist,
+                                   onReorderPlaylist: selection.media == .videos ? nil : { ids, row in reorderPlaylistTracks(ids, to: row) },
                                    onSelectionChange: { ids in
-                                       guard selection == .favorites || selection == .music || selectedPlaylistID != nil else { return }
+                                       guard selection == .favorites || selection == .music || selection == .recentMusic || selectedPlaylistID != nil else { return }
                                        if ids != selectedSongIDs { selectedSongIDs = ids }
-                                   })
-                        if (selection == .albums || selection == .recentMusic) && selectedAlbumID == nil {
-                            AlbumBrowser(albums: selection == .recentMusic ? library.recentAlbums : library.albums, artworkFolder: library.artworkFolder, query: search,
+                                   },
+                                   viewKey: "\(selection)", sortScope: selection == .recentMusic ? "recent" : "",
+                                   onToggleFavorite: showsFavoriteIcon ? { ids, favorite in setFavorite(favorite, ids: ids) } : nil)
+                        if selection == .albums && selectedAlbumID == nil {
+                            AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
                                          onSelect: { selectedAlbumID = $0 }, artworkSize: albumArtworkSize,
                                          onArtworkSize: { size in
                                              #if !canImport(AppKitBackend)
@@ -996,7 +1240,7 @@ struct ContentView: View {
                                 }, query: search.trimmingCharacters(in: .whitespaces), allowsPhotoSelection: group.photoArtist != nil,
                                 onPlay: { row, displayed in
                                     startPlayback(row, displayed: displayed, library: library)
-                                })
+                                }, onToggleFavorite: { ids, favorite in setFavorite(favorite, ids: ids) })
                                 .background(WindowBackground())
                         }
                         if selection == .photos {
@@ -1074,9 +1318,8 @@ struct ContentView: View {
             title = "Favorites"
             subtitle = songCount(library.favoriteRows.count)
         case .recentMusic:
-            let album = library.albums.first { $0.id == selectedAlbumID }
-            title = album?.title ?? "Recently Added"
-            subtitle = album.map { "\($0.artist) · \(songCount($0.rows.count))" } ?? "\(library.recentAlbums.count) albums"
+            title = "Recently Added"
+            subtitle = songCount(library.recentRows.count)
         case .albums:
             let album = library.albums.first { $0.id == selectedAlbumID }
             title = album?.title ?? "Albums"
@@ -1115,8 +1358,8 @@ struct ContentView: View {
             if selection == .music || selection == .recentMusic || selection == .albums || selection == .favorites {
                 ToolbarButton(icon: "plus") { Task { await configureMusic() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
-                if (selection == .albums || selection == .recentMusic) && selectedAlbumID != nil {
-                    Button(selection == .albums ? "All Albums" : "Recently Added") { selectedAlbumID = nil }.titleBarControl()
+                if selection == .albums && selectedAlbumID != nil {
+                    Button("All Albums") { selectedAlbumID = nil }.titleBarControl()
                 }
                 if selection == .favorites {
                     Button("Remove Favorite") { setFavorite(false) }.disabled(selectedSongIDs.isEmpty || playlistSaving).titleBarControl()
@@ -1129,11 +1372,7 @@ struct ContentView: View {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
                 SearchField(prompt: "Search episodes", text: $search)
-            } else if case .playlist(let id) = selection {
-                #if canImport(AppKitBackend)
-                Button("Rename…") { renamePlaylist(id) }.titleBarControl()
-                Button("Delete…") { deletePlaylist(id) }.titleBarControl()
-                #endif
+            } else if case .playlist = selection {
                 SearchField(prompt: "Search playlist", text: $search)
             } else if case .videoPlaylist(let id) = selection {
                 #if canImport(AppKitBackend)
@@ -1163,7 +1402,7 @@ struct ContentView: View {
         case .favorites: return !library.favoriteRows.isEmpty
         case .podcasts, .recentPodcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
         case .audiobooks: return !audiobookRows.isEmpty
-        case .recentMusic: return selectedAlbumID != nil
+        case .recentMusic: return !library.recentRows.isEmpty
         case .albums: return selectedAlbumID != nil
         case .playlist: return true
         case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: return true
@@ -1182,10 +1421,17 @@ struct ContentView: View {
         case .favorites:
             return filtered(library.favoriteRows)
         case .recentMusic:
-            return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
+            // Newest first, as indexed; the table keeps that order until a header is clicked.
+            return filtered(library.recentRows)
         case .albums:
             return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
         case .playlist(let id):
+            if library.playlists.first(where: { $0.id == id })?.isFolder == true {
+                let rows = library.playlists
+                    .filter { $0.parentID == id }
+                    .flatMap { library.rowsByPlaylist[$0.id] ?? [] }
+                return filtered(rows)
+            }
             return filtered(library.rowsByPlaylist[id] ?? [])
         case .videos:
             return filtered(library.videoRows)
@@ -1235,10 +1481,19 @@ struct ContentView: View {
         case .videoPlaylist(let id) where library.rowsByVideoPlaylist[id, default: []].isEmpty:
             return EmptyState(icon: "film.stack", title: "Empty Video Playlist",
                               message: "Add videos from Movies, TV Shows or Music Videos.")
+        case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder == true && !library.playlists.contains(where: { $0.parentID == id }):
+            return EmptyState(icon: "folder", title: "Empty Playlist Folder",
+                              message: "Drag playlists onto this folder in the sidebar to organize them.")
+        case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder != true && library.rowsByPlaylist[id, default: []].isEmpty:
+            return EmptyState(icon: "music.note.list", title: "Empty Playlist",
+                              message: "Drag songs onto this playlist or use Add to Playlist to add music.")
         case .favorites where library.favoriteRows.isEmpty:
-            return EmptyState(icon: "star.fill", title: "No Favorites Yet",
-                              message: "Select songs in Songs and choose Favorite to keep them here.")
-        case .recentMusic where library.albums.isEmpty, .albums where library.albums.isEmpty:
+            return EmptyState(icon: ListAppearance.shared.favoriteIcon.rawValue, title: "No Favorites Yet",
+                              message: "Click the \(ListAppearance.shared.favoriteIcon.rawValue) next to a song to keep it here.")
+        case .recentMusic where library.recentRows.isEmpty:
+            return EmptyState(icon: "clock", title: "Nothing Added Recently",
+                              message: "Songs you add to your library will appear here, newest first.")
+        case .albums where library.albums.isEmpty:
             return EmptyState(icon: "square.stack", title: "No Albums Yet",
                               message: "Music you add to your library will appear here.")
         case .recentMusic, .albums, .favorites:

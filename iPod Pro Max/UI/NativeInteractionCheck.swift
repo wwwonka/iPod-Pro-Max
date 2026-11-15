@@ -9,6 +9,7 @@ func checkNativeMusicInteractions() async {
         fputs("Native check exception: \(exception.name.rawValue): \(exception.reason ?? "")\n", stderr)
     }
     checkNativeAlbumGrid()
+    checkSongListAppearance()
     try! await checkPortableFavoriteRecovery()
     await checkNativeSidebarPersistence()
     let earlier = Date(timeIntervalSince1970: 100)
@@ -305,4 +306,97 @@ func checkNativeMusicInteractions() async {
     func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }
 
+#endif
+
+#if canImport(AppKitBackend)
+/// Recently Added as a list, the clickable favorite icon and the shared columns (MUS-1 to MUS-5).
+@MainActor
+private func checkSongListAppearance() {
+    // Recently Added: newest day first, then the library's order inside a day.
+    let day = Date(timeIntervalSince1970: 1_700_000_000), next = day.addingTimeInterval(3 * 86_400)
+    let indexed = Library.portable(PortableLibraryCache(tracks: [
+        LibraryTrack(path: "/a2", title: "A2", artist: "A", album: "Album", trackNumber: 2, fileExtension: "mp3", dateAdded: next),
+        LibraryTrack(path: "/old", title: "Old", artist: "B", album: "Other", trackNumber: 1, fileExtension: "mp3", dateAdded: day),
+        LibraryTrack(path: "/a1", title: "A1", artist: "A", album: "Album", trackNumber: 1, fileExtension: "mp3", dateAdded: next.addingTimeInterval(40)),
+    ]), source: "check")
+    precondition(indexed.recentRows.map(\.title) == ["A1", "A2", "Old"], "Recently Added: newest day first, album order within a day")
+    precondition(!indexed.recentRows[0].addedText.isEmpty)
+
+    let appearance = ListAppearance.shared
+    let savedIcon = appearance.favoriteIcon, savedHidden = appearance.hiddenColumns
+    defer {
+        appearance.setFavoriteIcon(savedIcon)
+        for column in trackColumns { appearance.setColumn(column.id, hidden: savedHidden.contains(column.id)) }
+    }
+
+    var rows = (0..<3).map {
+        TrackRow(id: "song-\($0)", title: "Track \($0)", artist: "Artist", album: "Album", number: "\($0)", year: "", duration: "1:00", path: "/song\($0).mp3")
+    }
+    rows[0].isFavorite = true
+    let table = MusicTrackTable(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
+    for index in trackColumns.indices { table.addTableColumn(NSTableColumn(identifier: .init("\(index)"))) }
+    table.allowsMultipleSelection = true
+    let list = TrackTable.Coordinator()
+    list.table = table
+    table.coordinator = list
+    table.dataSource = list
+    table.delegate = list
+    list.showsFavorites = true
+    var toggled: (ids: [String], favorite: Bool)?
+    list.onToggleFavorite = { toggled = ($0, $1) }
+    list.setRows(rows, in: table)
+
+    // Favorites: one row, then a mixed selection (all become favorites), then all favorites (removed).
+    list.toggleFavorite(row: 1)
+    precondition(toggled?.ids == ["song-1"] && toggled?.favorite == true)
+    table.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
+    list.toggleFavorite(row: 0)
+    precondition(toggled?.ids == ["song-0", "song-1"] && toggled?.favorite == true, "A mixed selection becomes all favorites")
+    precondition(table.selectedRowIndexes == IndexSet([0, 1]), "Toggling a favorite changed the selection")
+    table.selectRowIndexes(IndexSet([0]), byExtendingSelection: false)
+    list.toggleFavorite(row: 0)
+    precondition(toggled?.ids == ["song-0"] && toggled?.favorite == false)
+    // A favorite shows before it is saved, and goes back when the write fails.
+    appearance.beginFavoriteWrite(["song-2"], favorite: true)
+    precondition(appearance.isFavorite(rows[2]))
+    appearance.endFavoriteWrite(saved: false)
+    precondition(!appearance.isFavorite(rows[2]))
+    // Reindexed rows of the same list keep the selection; another list starts without one.
+    table.selectRowIndexes(IndexSet([1, 2]), byExtendingSelection: false)
+    list.setRows(Array(rows.reversed()), in: table, keepSelection: true)
+    precondition(table.selectedRowIndexes == IndexSet([0, 1]), "Selection must follow the songs through a reload")
+    list.setRows(rows, in: table)
+    precondition(table.selectedRowIndexes.isEmpty)
+
+    // The icon follows Settings.
+    appearance.setFavoriteIcon(.star)
+    precondition(favoriteSymbol(true) == "star.fill" && favoriteSymbol(false) == "star")
+    appearance.setFavoriteIcon(.heart)
+    precondition(favoriteSymbol(true) == "heart.fill" && favoriteSymbol(false) == "heart")
+    let titleCell = list.tableView(table, viewFor: table.tableColumns[1], row: 0) as? CenteredTrackCell
+    precondition(titleCell?.subviews.contains { $0 is FavoriteButton && !$0.isHidden } == true, "Title cells carry the favorite icon")
+    let artistCell = list.tableView(table, viewFor: table.tableColumns[2], row: 0) as? CenteredTrackCell
+    precondition(artistCell?.subviews.contains { $0 is FavoriteButton } == false)
+
+    // Columns: one choice for every list, the title can't be hidden, the menu shows the state.
+    appearance.setColumn("artist", hidden: true)
+    appearance.setColumn("title", hidden: true)
+    appearance.setColumn("dateAdded", hidden: false)
+    list.applyColumns()
+    func column(_ id: String) -> NSTableColumn { table.tableColumns[trackColumns.firstIndex { $0.id == id }!] }
+    precondition(column("artist").isHidden && !column("title").isHidden && !column("dateAdded").isHidden && !column("album").isHidden)
+    let menu = NSMenu()
+    list.menuNeedsUpdate(menu)
+    precondition(menu.items.count == trackColumns.count)
+    let item = { (id: String) in menu.items.first { $0.representedObject as? String == id }! }
+    precondition(item("artist").state == .off && item("album").state == .on)
+    precondition(item("title").state == .on && !item("title").isEnabled && item("album").isEnabled)
+    // Sorted on a column that gets hidden: back to the list's own order.
+    list.tableView(table, didClick: column("album"))
+    precondition(column("album").title.hasSuffix("↑"))
+    appearance.setColumn("album", hidden: true)
+    list.applyColumns()
+    precondition(column("album").isHidden && column("album").title == "Album" && list.rows.map(\.id) == rows.map(\.id))
+    log("PASS: Recently Added order, favorite icon toggles and shared column visibility")
+}
 #endif

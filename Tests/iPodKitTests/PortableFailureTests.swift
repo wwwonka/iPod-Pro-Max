@@ -258,6 +258,11 @@ final class PortableFailureTests: XCTestCase {
         XCTAssertFalse(saved.sidebarOpen); XCTAssertEqual(saved.sectionTabs, choices.sectionTabs); XCTAssertEqual(saved.albumArtworkSize, 220)
         let roundTrip = try decoder.decode(PortableSettings.self, from: JSONEncoder().encode(partial))
         XCTAssertEqual(roundTrip.musicViewMode, partial.musicViewMode)
+        // The favorite icon and the hidden list columns: defaults when absent, kept once chosen.
+        XCTAssertEqual(partial.favoriteIcon, "heart"); XCTAssertNil(partial.hiddenTrackColumns)
+        choices.favoriteIcon = "star"; choices.hiddenTrackColumns = ["artist", "year"]
+        let list = try decoder.decode(PortableSettings.self, from: JSONEncoder().encode(choices))
+        XCTAssertEqual(list.favoriteIcon, "star"); XCTAssertEqual(list.hiddenTrackColumns, ["artist", "year"])
         let hosts = try decoder.decode(KnownHosts.self, from: Data(#"{"hosts":[{"id":"windows","name":"PC"},{"id":"linux"}]}"#.utf8))
         XCTAssertEqual(hosts.version, 1); XCTAssertTrue(hosts.hosts[0].sources.isEmpty); XCTAssertEqual(hosts.hosts[1].name, "linux")
         let cache = try decoder.decode(PortableLibraryCache.self, from: Data(#"{"tracks":[]}"#.utf8))

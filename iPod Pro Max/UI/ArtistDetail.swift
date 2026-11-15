@@ -24,6 +24,8 @@ struct ArtistDetail: View {
     var query: String
     var allowsPhotoSelection = true
     var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+    /// nil hides the favorite icon.
+    var onToggleFavorite: (([String], Bool) -> Void)?
 
     @State private var rowsCache = ArtistRowsCache()
 
@@ -35,9 +37,11 @@ struct ArtistDetail: View {
             Divider()
             #if canImport(AppKitBackend)
                 ArtistTrackList(albums: albums, artworkFolder: artworkFolder, query: query,
-                                devices: devices, busyDevices: Set(devices.filter(isBusy)), onSend: onSend, onPlay: onPlay)
+                                devices: devices, busyDevices: Set(devices.filter(isBusy)), onSend: onSend, onPlay: onPlay,
+                                onToggleFavorite: onToggleFavorite)
             #else
-                TrackTable(rows: rowsCache.rows(albums, query: query), onPlay: onPlay, artworkFolder: artworkFolder)
+                TrackTable(rows: rowsCache.rows(albums, query: query), onPlay: onPlay, artworkFolder: artworkFolder,
+                           viewKey: "artist", onToggleFavorite: onToggleFavorite)
             #endif
         }
     }

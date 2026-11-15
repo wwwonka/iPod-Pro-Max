@@ -25,6 +25,8 @@ struct Playlist: Decodable, Identifiable, Equatable {
     var id: String
     var name: String
     var trackIDs: [String]
+    var isFolder: Bool = false
+    var parentID: String? = nil
 }
 
 private struct LibraryDocument: Decodable {
@@ -103,7 +105,7 @@ struct Library {
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
                   discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded, isFavorite: $0.isFavorite)
         }
-        let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
+        let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString), isFolder: $0.isFolder, parentID: $0.parentID?.uuidString) }
         let videoPlaylists = cache.videoPlaylists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
         library.videoPlaylists = videoPlaylists
@@ -244,10 +246,12 @@ struct Library {
                        playlists: playlists, rowsByPlaylist: byPlaylist,
                        loadMs: 0, indexMs: 0)
         library.favoriteRows = all.filter(\.isFavorite)
-        library.recentRows = all.enumerated().sorted {
-            let a = $0.element.dateAdded ?? .distantPast, b = $1.element.dateAdded ?? .distantPast
-            return a == b ? $0.offset < $1.offset : a > b
-        }.map(\.element)
+        // Newest day first; within a day, the library's own order (artist, album, disc, track), so
+        // an album imported in one go stays together whatever order its files were read in.
+        let calendar = Calendar.current
+        let days: [Date] = all.map { row in row.dateAdded.map { calendar.startOfDay(for: $0) } ?? .distantPast }
+        let recentOrder: [Int] = all.indices.sorted { a, b in days[a] == days[b] ? a < b : days[a] > days[b] }
+        library.recentRows = recentOrder.map { all[$0] }
         library.albums = albums.keys.sorted().flatMap { artist in
             (albums[artist] ?? []).map { album in
                 var album = album
@@ -276,7 +280,7 @@ struct Library {
         }
         let albums = order.map { name -> AlbumInfo in
             let songs = byAlbum[name] ?? []
-            let year = songs.compactMap(\.year).first { $0 > 0 }
+            let year = songs.compactMap(\.year).filter { $0 > 0 }.min()
             return AlbumInfo(
                 id: name, title: name.isEmpty ? "Unknown Album" : name, year: year.map(String.init) ?? "",
                 genre: songs.compactMap(\.genre).first { !$0.isEmpty },

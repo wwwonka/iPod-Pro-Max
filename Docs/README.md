@@ -45,6 +45,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Fenêtre des préférences]] : ⌘,, verre de la fenêtre principale, onglets natifs, dossiers de la bibliothèque et cohérence
 - [[Captures d'écran en développement]] : variables de capture, mesures sur image, et ce qu'une capture ne montre pas
 - [[Sidebar translucide sous Linux]] : verre (compositeur), teinte du fond d'écran (GNOME) ou opaque, sans rien installer
+- [[Section Musique et interactions natives macOS]] : dossiers/ordre de playlists, éditeur de métadonnées, `ListAppearance`, Force Click et renommage en ligne façon Finder
 
 ## Distribution
 - [[Lancement portatif par OS]] : lanceur « shadow copy », Gatekeeper, FAT32

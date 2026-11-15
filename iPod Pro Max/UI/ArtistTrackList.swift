@@ -16,10 +16,17 @@ struct ArtistTrackList: NSViewRepresentable {
     var busyDevices: Set<String>
     var onSend: ([String], String) -> Void
     var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+    /// nil hides the favorite icon.
+    var onToggleFavorite: (([String], Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
         let table = NSTableView()
+        context.coordinator.table = table
+        // The favorite icon or a pending favorite changed: redraw the visible songs only.
+        ListAppearance.shared.observe(context.coordinator) { [weak coordinator = context.coordinator] in
+            coordinator?.reloadVisibleSongs()
+        }
         table.headerView = nil
         table.rowHeight = 28
         table.allowsMultipleSelection = true
@@ -42,11 +49,14 @@ struct ArtistTrackList: NSViewRepresentable {
         let c = context.coordinator
         c.onSend = onSend
         c.onPlay = onPlay
+        c.onToggleFavorite = onToggleFavorite
         let changedRows = !c.albums.sameStorage(as: albums) || c.artworkFolder != artworkFolder || c.query != query
         let changedButtons = c.devices != devices || c.busyDevices != busyDevices
         guard changedRows || changedButtons else { return }
         c.devices = devices
         c.busyDevices = busyDevices
+        // Read before the rows are rebuilt: the selected songs stay selected (a favorite was saved).
+        let selected = (scroll.documentView as? NSTableView).map { Set(c.selectedSongIDs($0)) } ?? []
         if changedRows {
             c.albums = albums
             c.artworkFolder = artworkFolder
@@ -58,9 +68,9 @@ struct ArtistTrackList: NSViewRepresentable {
             }
         }
         if let table = scroll.documentView as? NSTableView {
-            let selection = table.selectedRowIndexes
             table.reloadData()
-            if !changedRows { table.selectRowIndexes(selection, byExtendingSelection: false) }
+            let kept = IndexSet(c.entries.indices.filter { if case .song(let song) = c.entries[$0] { selected.contains(song.id) } else { false } })
+            if kept.isEmpty { table.deselectAll(nil) } else { table.selectRowIndexes(kept, byExtendingSelection: false) }
         }
     }
 
@@ -75,10 +85,50 @@ struct ArtistTrackList: NSViewRepresentable {
         var busyDevices: Set<String> = []
         var onSend: ([String], String) -> Void = { _, _ in }
         var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var onToggleFavorite: (([String], Bool) -> Void)?
+        weak var table: NSTableView?
         private var loading: Set<URL> = []
+
+        func selectedSongIDs(_ table: NSTableView) -> [String] {
+            table.selectedRowIndexes.compactMap { index in
+                guard entries.indices.contains(index), case .song(let song) = entries[index] else { return nil }
+                return song.id
+            }
+        }
+
+        /// The clicked song, or the whole selection when it is part of it; a mixed selection
+        /// becomes all favorites. The selection itself doesn't change.
+        func toggleFavorite(row: Int) {
+            guard let table, let onToggleFavorite, entries.indices.contains(row), case .song = entries[row] else { return }
+            let songs = (table.selectedRowIndexes.contains(row) ? table.selectedRowIndexes : IndexSet(integer: row)).compactMap { index -> TrackRow? in
+                guard entries.indices.contains(index), case .song(let song) = entries[index] else { return nil }
+                return song
+            }
+            onToggleFavorite(songs.map(\.id), songs.contains { !ListAppearance.shared.isFavorite($0) })
+        }
+
+        func reloadVisibleSongs() {
+            guard let table else { return }
+            let visible = table.rows(in: table.visibleRect)
+            for index in visible.location..<NSMaxRange(visible) where entries.indices.contains(index) {
+                guard case .song(let song) = entries[index],
+                      let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? SongCell else { continue }
+                showFavorite(song, in: cell)
+            }
+        }
+
+        private func showFavorite(_ song: TrackRow, in cell: SongCell) {
+            cell.favorite.isHidden = onToggleFavorite == nil || song.path == nil
+            guard !cell.favorite.isHidden else { return }
+            cell.favorite.show(ListAppearance.shared.isFavorite(song)) { [weak self, weak cell] in
+                guard let self, let cell, let table = self.table else { return }
+                self.toggleFavorite(row: table.row(for: cell))
+            }
+        }
 
         @objc func playSelected(_ table: NSTableView) {
             guard entries.indices.contains(table.clickedRow), case .song(let row) = entries[table.clickedRow], row.path != nil else { return }
+            if let event = NSApp.currentEvent, table.hitTest(table.superview?.convert(event.locationInWindow, from: nil) ?? .zero) is FavoriteButton { return }
             onPlay(row, entries.compactMap { if case .song(let song) = $0 { song } else { nil } })
         }
 
@@ -135,8 +185,9 @@ struct ArtistTrackList: NSViewRepresentable {
                 let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? SongCell) ?? SongCell()
                 cell.identifier = id
                 cell.number.stringValue = song.number
-                cell.title.stringValue = song.isFavorite ? "★  " + song.title : song.title
+                cell.title.stringValue = song.title
                 cell.duration.stringValue = song.duration
+                showFavorite(song, in: cell)
                 return cell
             }
         }
@@ -168,9 +219,14 @@ struct ArtistTrackList: NSViewRepresentable {
     let number = NSTextField(labelWithString: "")
     let title = NSTextField(labelWithString: "")
     let duration = NSTextField(labelWithString: "")
+    let favorite = FavoriteButton()
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { favorite.emphasized = backgroundStyle == .emphasized }
+    }
     init() {
         super.init(frame: .zero)
         for field in [number, title, duration] { field.lineBreakMode = .byTruncatingTail; addSubview(field) }
+        addSubview(favorite)
         number.textColor = .secondaryLabelColor
         duration.textColor = .secondaryLabelColor
         number.alignment = .right
@@ -181,7 +237,8 @@ struct ArtistTrackList: NSViewRepresentable {
         super.layout()
         let y = (bounds.height - 18) / 2
         number.frame = NSRect(x: 14, y: y, width: 30, height: 18)
-        title.frame = NSRect(x: 56, y: y, width: max(0, bounds.width - 128), height: 18)
+        title.frame = NSRect(x: 56, y: y, width: max(0, bounds.width - 152), height: 18)
+        favorite.frame = NSRect(x: max(0, bounds.width - 90), y: (bounds.height - 20) / 2, width: 20, height: 20)
         duration.frame = NSRect(x: max(0, bounds.width - 64), y: y, width: 52, height: 18)
     }
 }

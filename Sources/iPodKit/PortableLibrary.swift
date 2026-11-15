@@ -203,8 +203,14 @@ public struct PortableSettings: Codable, Sendable {
     public var sectionTabs: [String: String] = [:]
     public var sidebarOpen = true
     public var albumArtworkSize: Double = 172
+    /// The icon favorites are drawn with: "heart" or "star".
+    public var favoriteIcon = "heart"
+    /// Identifiers of the list columns the user hid, shared by every list view; nil keeps the defaults.
+    public var hiddenTrackColumns: [String]?
+    /// Custom row order per sidebar section title, keyed by `SidebarItem.persistentName`.
+    public var sidebarOrder: [String: [String]] = [:]
     public init() {}
-    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize }
+    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
@@ -215,6 +221,9 @@ public struct PortableSettings: Codable, Sendable {
         sectionTabs = try values.decodeIfPresent([String: String].self, forKey: .sectionTabs) ?? [:]
         sidebarOpen = try values.decodeIfPresent(Bool.self, forKey: .sidebarOpen) ?? true
         albumArtworkSize = try values.decodeIfPresent(Double.self, forKey: .albumArtworkSize) ?? 172
+        favoriteIcon = try values.decodeIfPresent(String.self, forKey: .favoriteIcon) ?? "heart"
+        hiddenTrackColumns = try values.decodeIfPresent([String].self, forKey: .hiddenTrackColumns)
+        sidebarOrder = try values.decodeIfPresent([String: [String]].self, forKey: .sidebarOrder) ?? [:]
     }
 }
 

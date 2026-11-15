@@ -14,6 +14,9 @@ final class PortablePreferences {
         var sidebarOpen: Bool?
         var albumArtworkSize: Double?
         var syncArtwork: Bool?
+        var favoriteIcon: String?
+        var hiddenTrackColumns: [String]?
+        var sidebarOrder: [String: [String]] = [:]
         var revision: Int
     }
     private var pending: Pending?
@@ -42,6 +45,22 @@ final class PortablePreferences {
     func stageSyncArtwork(_ value: Bool, store: PortableLibraryStore) {
         stage(store) { guard $0.syncArtwork != value else { return false }; $0.syncArtwork = value; return true }
     }
+    func stageFavoriteIcon(_ value: String, store: PortableLibraryStore) {
+        stage(store) { guard $0.favoriteIcon != value else { return false }; $0.favoriteIcon = value; return true }
+    }
+    func stageHiddenTrackColumns(_ value: [String], store: PortableLibraryStore) {
+        stage(store) { guard $0.hiddenTrackColumns != value else { return false }; $0.hiddenTrackColumns = value; return true }
+    }
+    func stageSidebarOrder(_ order: [String: [String]], store: PortableLibraryStore) {
+        stage(store) {
+            var changed = false
+            for (section, items) in order where $0.sidebarOrder[section] != items {
+                $0.sidebarOrder[section] = items
+                changed = true
+            }
+            return changed
+        }
+    }
     /// Merges one change into what is waiting to be written; false when nothing changed.
     private func stage(_ store: PortableLibraryStore, _ change: (inout Pending) -> Bool) {
         var value = pending?.store.data.url == store.data.url ? pending! : Pending(store: store, revision: 0)
@@ -59,12 +78,12 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, store: value.store)
+            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, store: PortableLibraryStore) throws {
+        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
@@ -76,6 +95,12 @@ final class PortablePreferences {
             if let sidebarOpen, value.sidebarOpen != sidebarOpen { value.sidebarOpen = sidebarOpen; changed = true }
             if let albumArtworkSize, value.albumArtworkSize != albumArtworkSize { value.albumArtworkSize = albumArtworkSize; changed = true }
             if let syncArtwork, value.syncArtwork != syncArtwork { value.syncArtwork = syncArtwork; changed = true }
+            if let favoriteIcon, value.favoriteIcon != favoriteIcon { value.favoriteIcon = favoriteIcon; changed = true }
+            if let hiddenTrackColumns, value.hiddenTrackColumns != hiddenTrackColumns { value.hiddenTrackColumns = hiddenTrackColumns; changed = true }
+            for (section, items) in sidebarOrder where value.sidebarOrder[section] != items {
+                value.sidebarOrder[section] = items
+                changed = true
+            }
             guard changed else { return }
             try store.data.write(value, to: "settings.json")
         }

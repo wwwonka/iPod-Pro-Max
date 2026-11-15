@@ -23,6 +23,7 @@ enum AppAccent {
 /// The tabs of the Settings window, in the order of the toolbar.
 enum SettingsTab: String, CaseIterable {
     case general = "General"
+    case library = "Library"
     case playback = "Playback"
     case syncing = "Syncing"
     case devices = "Devices"
@@ -32,6 +33,7 @@ enum SettingsTab: String, CaseIterable {
     var symbol: String {
         switch self {
         case .general: "gear"
+        case .library: "folder"
         case .playback: "play.circle"
         case .syncing: "ipod"
         case .devices: "desktopcomputer"
@@ -59,6 +61,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     switch tab {
                     case .general: general
+                    case .library: library
                     case .syncing: syncing
                     case .playback: empty("Playback settings will appear here.")
                     case .devices: empty("Settings for each connected iPod will appear here.")
@@ -117,6 +120,14 @@ struct SettingsView: View {
 
     private var general: some View {
         VStack(alignment: .leading, spacing: 26) {
+            group("Favorites") { favoriteIconRow }
+        }
+    }
+
+    // MARK: Library
+
+    private var library: some View {
+        VStack(alignment: .leading, spacing: 26) {
             if !SettingsController.shared.hasLibrary {
                 Caption("Open an iPod library to see its folders.")
             }
@@ -135,6 +146,28 @@ struct SettingsView: View {
             }
             group("Photos") { folders(kind: "photos", picker: "Choose a Folder of Pictures") }
         }
+    }
+
+    /// Heart or star: each choice shows its icon, the current one is highlighted. Every list
+    /// follows at once.
+    private var favoriteIconRow: some View {
+        let controller = SettingsController.shared
+        return HStack(spacing: 8) {
+            Text("Favorite icon")
+            Spacer()
+            ForEach(FavoriteIcon.allCases, id: \.self) { icon in
+                let selected = icon == controller.favoriteIcon
+                HStack(spacing: 5) {
+                    Symbol(name: icon.filled, size: 16, pointSize: 13, tint: selected ? .accent : .secondary)
+                    Text(icon.title).font(.system(size: 12))
+                        .foregroundColor(selected ? AppAccent.color : MacColor.secondaryText)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 1, opacity: selected ? 0.11 : 0)))
+                .onTapGesture { controller.setFavoriteIcon(icon) }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
     }
 
     /// The folders of one kind: a row each (the path, Remove), then a row ending with Add Folder.

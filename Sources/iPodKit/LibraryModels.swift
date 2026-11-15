@@ -77,6 +77,20 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
     public var dateModified: Date?
     public var artworkKey: String?
     public var syncEnabled: Bool = true
+    public var lyrics: String? = nil
+    public var customLyrics: Bool? = nil
+    public var showComposerInAllViews: Bool? = nil
+    public var sortTitle: String? = nil
+    public var sortAlbum: String? = nil
+    public var sortAlbumArtist: String? = nil
+    public var sortArtist: String? = nil
+    public var sortComposer: String? = nil
+    public var startTimeMs: Int? = nil
+    public var stopTimeMs: Int? = nil
+    public var rememberPlaybackPosition: Bool? = nil
+    public var skipWhenShuffling: Bool? = nil
+    public var volumeAdjustment: Int? = nil
+    public var eqPreset: String? = nil
 
     public var url: URL { URL(fileURLWithPath: path) }
 
@@ -95,7 +109,7 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
 
     public var fileExists: Bool { FileManager.default.fileExists(atPath: path) }
 
-    public init(id: UUID = UUID(), path: String, source: TrackSource = .file, musicPersistentID: String? = nil, kind: MediaKind? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil, videoCategory: VideoCategory? = nil, title: String, artist: String? = nil, album: String? = nil, albumArtist: String? = nil, genre: String? = nil, composer: String? = nil, comment: String? = nil, grouping: String? = nil, year: Int = 0, trackNumber: Int = 0, trackCount: Int = 0, discNumber: Int = 0, discCount: Int = 0, durationMs: Int = 0, bitrate: Int = 0, sampleRate: Int = 44100, fileSize: Int64 = 0, fileExtension: String, isLossless: Bool = false, compilation: Bool = false, bpm: Int = 0, hasLyrics: Bool = false, rating: Int = 0, isFavorite: Bool? = nil, playCount: Int = 0, lastPlayed: Date? = nil, dateAdded: Date = Date(), dateModified: Date? = nil, artworkKey: String? = nil, syncEnabled: Bool = true) {
+    public init(id: UUID = UUID(), path: String, source: TrackSource = .file, musicPersistentID: String? = nil, kind: MediaKind? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil, videoCategory: VideoCategory? = nil, title: String, artist: String? = nil, album: String? = nil, albumArtist: String? = nil, genre: String? = nil, composer: String? = nil, comment: String? = nil, grouping: String? = nil, year: Int = 0, trackNumber: Int = 0, trackCount: Int = 0, discNumber: Int = 0, discCount: Int = 0, durationMs: Int = 0, bitrate: Int = 0, sampleRate: Int = 44100, fileSize: Int64 = 0, fileExtension: String, isLossless: Bool = false, compilation: Bool = false, bpm: Int = 0, hasLyrics: Bool = false, rating: Int = 0, isFavorite: Bool? = nil, playCount: Int = 0, lastPlayed: Date? = nil, dateAdded: Date = Date(), dateModified: Date? = nil, artworkKey: String? = nil, syncEnabled: Bool = true, lyrics: String? = nil, customLyrics: Bool? = nil, showComposerInAllViews: Bool? = nil, sortTitle: String? = nil, sortAlbum: String? = nil, sortAlbumArtist: String? = nil, sortArtist: String? = nil, sortComposer: String? = nil, startTimeMs: Int? = nil, stopTimeMs: Int? = nil, rememberPlaybackPosition: Bool? = nil, skipWhenShuffling: Bool? = nil, volumeAdjustment: Int? = nil, eqPreset: String? = nil) {
         self.id = id
         self.path = path
         self.source = source
@@ -134,6 +148,20 @@ public struct LibraryTrack: Identifiable, Codable, Hashable, Sendable {
         self.dateModified = dateModified
         self.artworkKey = artworkKey
         self.syncEnabled = syncEnabled
+        self.lyrics = lyrics
+        self.customLyrics = customLyrics
+        self.showComposerInAllViews = showComposerInAllViews
+        self.sortTitle = sortTitle
+        self.sortAlbum = sortAlbum
+        self.sortAlbumArtist = sortAlbumArtist
+        self.sortArtist = sortArtist
+        self.sortComposer = sortComposer
+        self.startTimeMs = startTimeMs
+        self.stopTimeMs = stopTimeMs
+        self.rememberPlaybackPosition = rememberPlaybackPosition
+        self.skipWhenShuffling = skipWhenShuffling
+        self.volumeAdjustment = volumeAdjustment
+        self.eqPreset = eqPreset
     }
 }
 
@@ -144,14 +172,34 @@ public struct LibraryPlaylist: Identifiable, Codable, Hashable, Sendable {
     public var syncEnabled: Bool = true
     public var musicPersistentID: String?
     public var dateCreated: Date = Date()
+    public var isFolder: Bool = false
+    public var parentID: UUID? = nil
 
-    public init(id: UUID = UUID(), name: String, trackIDs: [UUID] = [], syncEnabled: Bool = true, musicPersistentID: String? = nil, dateCreated: Date = Date()) {
+    enum CodingKeys: String, CodingKey {
+        case id, name, trackIDs, syncEnabled, musicPersistentID, dateCreated, isFolder, parentID
+    }
+
+    public init(id: UUID = UUID(), name: String, trackIDs: [UUID] = [], syncEnabled: Bool = true, musicPersistentID: String? = nil, dateCreated: Date = Date(), isFolder: Bool = false, parentID: UUID? = nil) {
         self.id = id
         self.name = name
         self.trackIDs = trackIDs
         self.syncEnabled = syncEnabled
         self.musicPersistentID = musicPersistentID
         self.dateCreated = dateCreated
+        self.isFolder = isFolder
+        self.parentID = parentID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        trackIDs = try c.decodeIfPresent([UUID].self, forKey: .trackIDs) ?? []
+        syncEnabled = try c.decodeIfPresent(Bool.self, forKey: .syncEnabled) ?? true
+        musicPersistentID = try c.decodeIfPresent(String.self, forKey: .musicPersistentID)
+        dateCreated = try c.decodeIfPresent(Date.self, forKey: .dateCreated) ?? Date()
+        isFolder = try c.decodeIfPresent(Bool.self, forKey: .isFolder) ?? false
+        parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
     }
 }
 

@@ -195,7 +195,7 @@ final class RailButton: NSButton {
     /// or the other, so the pointer is never over none of them while it crosses the rail (the Dock's
     /// way). The plate itself keeps its size.
     private static let hitPadding = NSSize(width: 6, height: 4)
-    private var hitBounds: NSRect { bounds.insetBy(dx: -Self.hitPadding.width, dy: -Self.hitPadding.height) }
+    var hitBounds: NSRect { bounds.insetBy(dx: -Self.hitPadding.width, dy: -Self.hitPadding.height) }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -789,6 +789,7 @@ final class MediaRailView: NSView {
         super.init(frame: frame)
         registerForDraggedTypes([.string])
         buttons = [makeButton(for: nil)] + railItems.map { makeButton(for: $0) }
+        MediaRailDropBridge.shared.railView = self
         buttons.forEach(addSubview)
         for line in [separator, extrasSeparator] {
             line.wantsLayer = true
@@ -978,6 +979,17 @@ final class MediaRailView: NSView {
         defer { setDropActive(false) }
         guard let id = dropTarget(for: sender) else { return false }
         return TrackDrag.accept(musicDragPayload(in: sender.draggingPasteboard), device: id)
+    }
+
+    func deviceHitAtWindowPoint(_ pointInWindow: NSPoint) -> String? {
+        guard MusicTransfer.shared.acceptingDrops, !devices.isEmpty,
+              let button = buttons.first, !button.isHidden else { return nil }
+        let pt = button.convert(pointInWindow, from: nil)
+        return button.hitBounds.contains(pt) ? devices.first : nil
+    }
+
+    func setExternalDropActive(_ active: Bool) {
+        setDropActive(active)
     }
     // MARK: Reordering the library buttons
 
@@ -1376,3 +1388,19 @@ struct WaveformShape: Shape {
 }
 
 @MainActor enum PlayerArtwork { static var folder: URL? }
+
+#if canImport(AppKitBackend)
+@MainActor
+final class MediaRailDropBridge {
+    static let shared = MediaRailDropBridge()
+    weak var railView: MediaRailView?
+
+    func deviceAt(windowPoint: NSPoint) -> String? {
+        railView?.deviceHitAtWindowPoint(windowPoint)
+    }
+
+    func setHighlighted(_ highlighted: Bool) {
+        railView?.setExternalDropActive(highlighted)
+    }
+}
+#endif
