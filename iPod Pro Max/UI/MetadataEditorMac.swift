@@ -7,6 +7,7 @@ import AudioToolbox
 import CryptoKit
 import UniformTypeIdentifiers
 import iPodKit
+import MediaKit
 
 /// Coordinates opening and saving from the macOS Metadata Editor window (`MUS-21` → `MUS-32`).
 @MainActor
@@ -15,12 +16,12 @@ final class MetadataEditorController {
 
     typealias TrackLookup = @MainActor (UUID) -> LibraryTrack?
     typealias GenreProvider = @MainActor () -> [String]
-    typealias SaveHandler = @MainActor (_ track: LibraryTrack, _ customArtworkData: Data?, _ completion: @escaping @MainActor (Result<Void, Error>) -> Void) -> Void
+    typealias SaveHandler = @MainActor (_ tracks: [LibraryTrack], _ customArtworkData: Data?, _ completion: @escaping @MainActor (Result<Void, Error>) -> Void) -> Void
 
     private var trackLookup: TrackLookup?
     private var genreProvider: GenreProvider?
     private var artworkFolder: URL?
-    private var onSaveTrack: SaveHandler?
+    private var onSaveTracks: SaveHandler?
     private var windowController: MetadataEditorWindowController?
 
     private init() {}
@@ -29,26 +30,31 @@ final class MetadataEditorController {
         artworkFolder: URL?,
         trackLookup: @escaping TrackLookup,
         genreProvider: @escaping GenreProvider,
-        onSaveTrack: @escaping SaveHandler
+        onSaveTracks: @escaping SaveHandler
     ) {
         self.artworkFolder = artworkFolder
         self.trackLookup = trackLookup
         self.genreProvider = genreProvider
-        self.onSaveTrack = onSaveTrack
+        self.onSaveTracks = onSaveTracks
     }
 
     func open(rows: [TrackRow], index: Int) {
-        guard rows.indices.contains(index) else { return }
+        open(rows: rows, indices: [index])
+    }
+
+    func open(rows: [TrackRow], indices: [Int]) {
+        let valid = indices.filter { rows.indices.contains($0) }
+        guard !valid.isEmpty else { return }
         if windowController == nil {
             windowController = MetadataEditorWindowController()
         }
         windowController?.configure(
             rows: rows,
-            index: index,
+            indices: valid,
             artworkFolder: artworkFolder,
             trackLookup: trackLookup,
             genreProvider: genreProvider,
-            onSaveTrack: onSaveTrack
+            onSaveTracks: onSaveTracks
         )
         windowController?.showWindow(nil)
         windowController?.window?.makeKeyAndOrderFront(nil)
@@ -118,12 +124,24 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         }
     }
 
+    private enum EditedField: Hashable {
+        case title, artist, album, albumArtist, composer, showComposer, grouping, genre
+        case year, trackNumber, trackCount, discNumber, discCount, compilation
+        case rating, favorite, bpm, resetPlayCount, comments
+        case artwork, lyrics, customLyrics
+        case mediaKind, startTime, stopTime, rememberPosition, skipShuffling, volumeAdjustment, eqPreset
+        case sortTitle, sortAlbum, sortAlbumArtist, sortArtist, sortComposer
+    }
+
     private var rows: [TrackRow] = []
     private var currentIndex: Int = 0
+    private var multiTracks: [LibraryTrack] = []
+    private var dirtyFields: Set<EditedField> = []
+    private var isMultiEdit: Bool { multiTracks.count > 1 }
     private var artworkFolder: URL?
     private var trackLookup: MetadataEditorController.TrackLookup?
     private var genreProvider: MetadataEditorController.GenreProvider?
-    private var onSaveTrack: MetadataEditorController.SaveHandler?
+    private var onSaveTracks: MetadataEditorController.SaveHandler?
 
     private var draft: MetadataDraft?
     private var selectedTab: Tab = .details
@@ -144,11 +162,16 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     // Bottom bar
     private let prevButton = NSButton()
     private let nextButton = NSButton()
+    private let lookupButton = NSButton(title: "Lookup…", target: nil, action: nil)
     private let addArtworkButton = NSButton(title: "Add Artwork", target: nil, action: nil)
     private let customLyricsCheckbox = NSButton(checkboxWithTitle: "Custom Lyrics", target: nil, action: nil)
+    private let fetchLyricsButton = NSButton(title: "Fetch Lyrics", target: nil, action: nil)
     private let errorLabel = NSTextField(labelWithString: "")
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let okButton = NSButton(title: "OK", target: nil, action: nil)
+    private var lookupTask: Task<Void, Never>?
+    private var lyricsTask: Task<Void, Never>?
+    private var pendingLookupMatches: [MetadataMatch] = []
 
     // Details controls
     private let songField = NSTextField()
@@ -261,20 +284,24 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
 
     func configure(
         rows: [TrackRow],
-        index: Int,
+        indices: [Int],
         artworkFolder: URL?,
         trackLookup: MetadataEditorController.TrackLookup?,
         genreProvider: MetadataEditorController.GenreProvider?,
-        onSaveTrack: MetadataEditorController.SaveHandler?
+        onSaveTracks: MetadataEditorController.SaveHandler?
     ) {
         self.rows = rows
-        self.currentIndex = index
+        self.currentIndex = indices.first ?? 0
         self.artworkFolder = artworkFolder
         self.trackLookup = trackLookup
         self.genreProvider = genreProvider
-        self.onSaveTrack = onSaveTrack
+        self.onSaveTracks = onSaveTracks
         self.cachedGenres = nil
-        loadCurrentTrack()
+        if indices.count > 1 {
+            loadMultipleTracks(indices: indices)
+        } else {
+            loadCurrentTrack()
+        }
     }
 
     // MARK: - UI Construction
@@ -464,6 +491,15 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         nextButton.action = #selector(nextTrackClicked)
         nextButton.translatesAutoresizingMaskIntoConstraints = false
 
+        lookupButton.bezelStyle = .rounded
+        lookupButton.target = self
+        lookupButton.action = #selector(lookupClicked)
+        lookupButton.translatesAutoresizingMaskIntoConstraints = false
+        if #available(macOS 11, *) {
+            lookupButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Lookup")
+            lookupButton.imagePosition = .imageLeading
+        }
+
         addArtworkButton.bezelStyle = .rounded
         addArtworkButton.target = self
         addArtworkButton.action = #selector(addArtworkClicked)
@@ -472,6 +508,11 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         customLyricsCheckbox.target = self
         customLyricsCheckbox.action = #selector(customLyricsToggled)
         customLyricsCheckbox.translatesAutoresizingMaskIntoConstraints = false
+
+        fetchLyricsButton.bezelStyle = .rounded
+        fetchLyricsButton.target = self
+        fetchLyricsButton.action = #selector(fetchLyricsClicked)
+        fetchLyricsButton.translatesAutoresizingMaskIntoConstraints = false
 
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
@@ -493,8 +534,10 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
 
         bar.addSubview(prevButton)
         bar.addSubview(nextButton)
+        bar.addSubview(lookupButton)
         bar.addSubview(addArtworkButton)
         bar.addSubview(customLyricsCheckbox)
+        bar.addSubview(fetchLyricsButton)
         bar.addSubview(errorLabel)
         bar.addSubview(cancelButton)
         bar.addSubview(okButton)
@@ -508,11 +551,17 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
             nextButton.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
             nextButton.widthAnchor.constraint(equalToConstant: 28),
 
-            addArtworkButton.leadingAnchor.constraint(equalTo: nextButton.trailingAnchor, constant: 12),
+            lookupButton.leadingAnchor.constraint(equalTo: nextButton.trailingAnchor, constant: 10),
+            lookupButton.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
+
+            addArtworkButton.leadingAnchor.constraint(equalTo: lookupButton.trailingAnchor, constant: 8),
             addArtworkButton.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
 
-            customLyricsCheckbox.leadingAnchor.constraint(equalTo: nextButton.trailingAnchor, constant: 12),
+            customLyricsCheckbox.leadingAnchor.constraint(equalTo: lookupButton.trailingAnchor, constant: 8),
             customLyricsCheckbox.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
+
+            fetchLyricsButton.leadingAnchor.constraint(equalTo: customLyricsCheckbox.trailingAnchor, constant: 8),
+            fetchLyricsButton.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
 
             okButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
             okButton.centerYAnchor.constraint(equalTo: prevButton.centerYAnchor),
@@ -1005,9 +1054,14 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         guard rows.indices.contains(currentIndex) else { return }
         let row = rows[currentIndex]
         let track = UUID(uuidString: row.id).flatMap { trackLookup?($0) } ?? fallbackTrack(from: row)
+        multiTracks = [track]
+        dirtyFields.removeAll()
         artworkLoadTask?.cancel()
         fileInspectTask?.cancel()
+        lookupTask?.cancel()
+        lyricsTask?.cancel()
         inspectedTrackID = nil
+        resetMultiEditPlaceholders()
 
         let cachedImage = cachedArtworkImage(for: track.artworkKey)
         draft = MetadataDraft(track: track, artworkImage: cachedImage)
@@ -1018,10 +1072,163 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         populateAllFields()
         updateHeader()
         updateNavButtons()
+        updateBottomBarVisibility()
         loadArtworkAsyncIfNeeded(for: track)
         if selectedTab == .file {
             inspectFileTechnicalDetails(for: track)
         }
+    }
+
+    private func loadMultipleTracks(indices: [Int]) {
+        let tracks = indices.compactMap { idx -> LibraryTrack? in
+            guard rows.indices.contains(idx) else { return nil }
+            let row = rows[idx]
+            return UUID(uuidString: row.id).flatMap { trackLookup?($0) } ?? fallbackTrack(from: row)
+        }
+        guard let first = tracks.first else { return }
+        multiTracks = tracks
+        dirtyFields.removeAll()
+        artworkLoadTask?.cancel()
+        fileInspectTask?.cancel()
+        lookupTask?.cancel()
+        lyricsTask?.cancel()
+        inspectedTrackID = nil
+        resetMultiEditPlaceholders()
+
+        let firstArtKey = first.artworkKey
+        let sameArt = tracks.allSatisfy { $0.artworkKey == firstArtKey }
+        let cachedImage = sameArt ? cachedArtworkImage(for: firstArtKey) : nil
+        draft = MetadataDraft(track: first, artworkImage: cachedImage)
+        errorLabel.isHidden = true
+        errorLabel.stringValue = ""
+
+        populateGenres()
+        populateMultiEditFields(tracks: tracks)
+        updateHeader()
+        updateNavButtons()
+        updateBottomBarVisibility()
+        if sameArt {
+            loadArtworkAsyncIfNeeded(for: first)
+        }
+        if selectedTab == .file {
+            switchTab(to: .details)
+        }
+    }
+
+    private func resetMultiEditPlaceholders() {
+        let textFields = [
+            songField, artistField, albumField, albumArtistField, composerField,
+            groupingField, genreCombo, yearField, trackNumField, trackTotalField,
+            discNumField, discTotalField, bpmField,
+            sortNameField, sortNameAsField, sortAlbumField, sortAlbumAsField,
+            sortAlbumArtistField, sortAlbumArtistAsField, sortArtistField, sortArtistAsField,
+            sortComposerField, sortComposerAsField, startTimeField, stopTimeField,
+        ]
+        for field in textFields {
+            field.placeholderString = nil
+        }
+        for box in [showComposerCheckbox, compilationCheckbox, customLyricsCheckbox, startCheckbox, stopCheckbox, rememberPositionCheckbox, skipShufflingCheckbox] {
+            box.allowsMixedState = false
+        }
+    }
+
+    private func sharedValue<T: Equatable>(_ tracks: [LibraryTrack], _ keyPath: (LibraryTrack) -> T) -> T? {
+        guard let first = tracks.first else { return nil }
+        let val = keyPath(first)
+        return tracks.dropFirst().allSatisfy { keyPath($0) == val } ? val : nil
+    }
+
+    private func applyText(_ field: NSTextField, tracks: [LibraryTrack], _ extract: (LibraryTrack) -> String) {
+        if let common = sharedValue(tracks, extract) {
+            field.stringValue = common
+            field.placeholderString = nil
+        } else {
+            field.stringValue = ""
+            field.placeholderString = "Mixed"
+        }
+    }
+
+    private func applyCheckbox(_ box: NSButton, tracks: [LibraryTrack], _ extract: (LibraryTrack) -> Bool) {
+        if let common = sharedValue(tracks, extract) {
+            box.allowsMixedState = false
+            box.state = common ? .on : .off
+        } else {
+            box.allowsMixedState = true
+            box.state = .mixed
+        }
+    }
+
+    private func populateMultiEditFields(tracks: [LibraryTrack]) {
+        applyText(songField, tracks: tracks) { $0.title }
+        applyText(artistField, tracks: tracks) { $0.artist ?? "" }
+        applyText(albumField, tracks: tracks) { $0.album ?? "" }
+        applyText(albumArtistField, tracks: tracks) { $0.albumArtist ?? "" }
+        applyText(composerField, tracks: tracks) { $0.composer ?? "" }
+        applyCheckbox(showComposerCheckbox, tracks: tracks) { $0.showComposerInAllViews ?? false }
+        applyText(groupingField, tracks: tracks) { $0.grouping ?? "" }
+        applyText(genreCombo, tracks: tracks) { $0.genre ?? "" }
+        applyText(yearField, tracks: tracks) { $0.year > 0 ? "\($0.year)" : "" }
+        applyText(trackNumField, tracks: tracks) { $0.trackNumber > 0 ? "\($0.trackNumber)" : "" }
+        applyText(trackTotalField, tracks: tracks) { $0.trackCount > 0 ? "\($0.trackCount)" : "" }
+        applyText(discNumField, tracks: tracks) { $0.discNumber > 0 ? "\($0.discNumber)" : "" }
+        applyText(discTotalField, tracks: tracks) { $0.discCount > 0 ? "\($0.discCount)" : "" }
+        applyCheckbox(compilationCheckbox, tracks: tracks) { $0.compilation }
+        applyText(bpmField, tracks: tracks) { $0.bpm > 0 ? "\($0.bpm)" : "" }
+        commentsTextView.string = sharedValue(tracks) { $0.comment ?? "" } ?? ""
+
+        if let commonRating = sharedValue(tracks, { $0.rating }) {
+            draft?.track.rating = commonRating
+        } else {
+            draft?.track.rating = 0
+        }
+        if let commonFav = sharedValue(tracks, { $0.isFavorite ?? false }) {
+            draft?.track.isFavorite = commonFav
+        } else {
+            draft?.track.isFavorite = false
+        }
+        updateRatingAndFavorite()
+        let totalPlays = tracks.reduce(0) { $0 + $1.playCount }
+        playCountLabel.stringValue = "\(totalPlays) (total)"
+
+        largeArtworkView.image = draft?.customArtworkImage ?? placeholderArtworkImage(size: 260)
+
+        applyCheckbox(customLyricsCheckbox, tracks: tracks) { $0.customLyrics ?? !($0.lyrics ?? "").isEmpty }
+        lyricsTextView.string = sharedValue(tracks) { $0.lyrics ?? "" } ?? ""
+        lyricsTextView.isEditable = (customLyricsCheckbox.state == .on)
+
+        if let commonKind = sharedValue(tracks, { $0.mediaKind }) {
+            switch commonKind {
+            case .song: mediaKindPopup.selectItem(withTitle: "Music")
+            case .audiobook: mediaKindPopup.selectItem(withTitle: "Audiobook")
+            case .video: mediaKindPopup.selectItem(withTitle: "Video")
+            }
+        }
+        applyCheckbox(startCheckbox, tracks: tracks) { $0.startTimeMs != nil }
+        startTimeField.stringValue = ""
+        startTimeField.isEnabled = (startCheckbox.state == .on)
+        applyCheckbox(stopCheckbox, tracks: tracks) { $0.stopTimeMs != nil }
+        stopTimeField.stringValue = ""
+        stopTimeField.isEnabled = (stopCheckbox.state == .on)
+        applyCheckbox(rememberPositionCheckbox, tracks: tracks) { $0.rememberPlaybackPosition ?? false }
+        applyCheckbox(skipShufflingCheckbox, tracks: tracks) { $0.skipWhenShuffling ?? false }
+
+        let vol = sharedValue(tracks) { $0.volumeAdjustment ?? 0 } ?? 0
+        volumeSlider.integerValue = vol
+        volumeValueLabel.stringValue = vol == 0 ? "None" : "\(vol > 0 ? "+" : "")\(vol)%"
+
+        let eq = sharedValue(tracks) { $0.eqPreset ?? "None" } ?? "None"
+        eqPopup.selectItem(withTitle: eqPopup.item(withTitle: eq) != nil ? eq : "None")
+
+        applyText(sortNameField, tracks: tracks) { $0.title }
+        applyText(sortNameAsField, tracks: tracks) { $0.sortTitle ?? "" }
+        applyText(sortAlbumField, tracks: tracks) { $0.album ?? "" }
+        applyText(sortAlbumAsField, tracks: tracks) { $0.sortAlbum ?? "" }
+        applyText(sortAlbumArtistField, tracks: tracks) { $0.albumArtist ?? "" }
+        applyText(sortAlbumArtistAsField, tracks: tracks) { $0.sortAlbumArtist ?? "" }
+        applyText(sortArtistField, tracks: tracks) { $0.artist ?? "" }
+        applyText(sortArtistAsField, tracks: tracks) { $0.sortArtist ?? "" }
+        applyText(sortComposerField, tracks: tracks) { $0.composer ?? "" }
+        applyText(sortComposerAsField, tracks: tracks) { $0.sortComposer ?? "" }
     }
 
     private func cachedArtworkImage(for key: String?) -> NSImage? {
@@ -1148,6 +1355,13 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     }
 
     private func updateHeader() {
+        if isMultiEdit {
+            headerTitleLabel.stringValue = "Multiple Items"
+            headerArtistLabel.stringValue = "\(multiTracks.count) songs"
+            headerAlbumLabel.stringValue = ""
+            headerArtworkView.image = draft?.customArtworkImage ?? placeholderArtworkImage(size: 64)
+            return
+        }
         guard let draft else { return }
         let t = draft.track
         headerTitleLabel.stringValue = t.title.isEmpty ? "Untitled" : t.title
@@ -1157,6 +1371,7 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     }
 
     private func updateSortingPlaceholders() {
+        guard !isMultiEdit else { return }
         sortNameAsField.placeholderString = sortNameField.stringValue
         sortAlbumAsField.placeholderString = sortAlbumField.stringValue
         sortAlbumArtistAsField.placeholderString = sortAlbumArtistField.stringValue
@@ -1198,10 +1413,21 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     }
 
     private func updateNavButtons() {
-        prevButton.isEnabled = !isSaving && currentIndex > 0
-        nextButton.isEnabled = !isSaving && currentIndex + 1 < rows.count
+        prevButton.isHidden = isMultiEdit
+        nextButton.isHidden = isMultiEdit
+        prevButton.isEnabled = !isSaving && !isMultiEdit && currentIndex > 0
+        nextButton.isEnabled = !isSaving && !isMultiEdit && currentIndex + 1 < rows.count
         okButton.isEnabled = !isSaving
         cancelButton.isEnabled = !isSaving
+        lookupButton.isEnabled = !isSaving && !isMultiEdit
+        fetchLyricsButton.isEnabled = !isSaving && !isMultiEdit
+    }
+
+    private func updateBottomBarVisibility() {
+        lookupButton.isHidden = isMultiEdit || ![.details, .artwork, .lyrics].contains(selectedTab)
+        addArtworkButton.isHidden = (selectedTab != .artwork)
+        customLyricsCheckbox.isHidden = (selectedTab != .lyrics)
+        fetchLyricsButton.isHidden = isMultiEdit || (selectedTab != .lyrics)
     }
 
     private func switchTab(to tab: Tab) {
@@ -1231,11 +1457,10 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
             )
         }
 
-        // Context-sensitive bottom-bar controls (MUS-27, MUS-28)
-        addArtworkButton.isHidden = (tab != .artwork)
-        customLyricsCheckbox.isHidden = (tab != .lyrics)
+        // Context-sensitive bottom-bar controls (MUS-27, MUS-28, Lookup)
+        updateBottomBarVisibility()
 
-        if tab == .file, let track = draft?.track, inspectedTrackID != track.id {
+        if tab == .file, !isMultiEdit, let track = draft?.track, inspectedTrackID != track.id {
             inspectFileTechnicalDetails(for: track)
         }
     }
@@ -1275,6 +1500,8 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
 
     @objc private func cancelClicked() {
         fileInspectTask?.cancel()
+        lookupTask?.cancel()
+        lyricsTask?.cancel()
         window?.close()
     }
 
@@ -1284,9 +1511,15 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
             window?.close()
             return
         }
-        let finalTrack = draft.finalizedTrack()
-        let artworkData = draft.customArtworkData
-        guard let onSaveTrack else {
+        let tracksToSave: [LibraryTrack]
+        if isMultiEdit {
+            let sourceDraft = draft.finalizedTrack()
+            tracksToSave = multiTracks.map { applyDirtyFields(from: sourceDraft, draftModel: draft, to: $0) }
+        } else {
+            tracksToSave = [draft.finalizedTrack()]
+        }
+        let artworkData = (!isMultiEdit || dirtyFields.contains(.artwork)) ? draft.customArtworkData : nil
+        guard let onSaveTracks else {
             window?.close()
             return
         }
@@ -1295,18 +1528,179 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         errorLabel.isHidden = true
         updateNavButtons()
 
-        onSaveTrack(finalTrack, artworkData) { [weak self] result in
+        onSaveTracks(tracksToSave, artworkData) { [weak self] result in
             guard let self else { return }
             self.isSaving = false
             self.updateNavButtons()
             switch result {
             case .success:
                 self.fileInspectTask?.cancel()
+                self.lookupTask?.cancel()
+                self.lyricsTask?.cancel()
                 self.window?.close()
             case .failure(let error):
                 self.errorLabel.stringValue = error.localizedDescription
                 self.errorLabel.isHidden = false
             }
+        }
+    }
+
+    private func applyDirtyFields(from source: LibraryTrack, draftModel: MetadataDraft, to target: LibraryTrack) -> LibraryTrack {
+        var t = target
+        for field in dirtyFields {
+            switch field {
+            case .title: t.title = source.title
+            case .artist: t.artist = source.artist
+            case .album: t.album = source.album
+            case .albumArtist: t.albumArtist = source.albumArtist
+            case .composer: t.composer = source.composer
+            case .showComposer: t.showComposerInAllViews = source.showComposerInAllViews
+            case .grouping: t.grouping = source.grouping
+            case .genre: t.genre = source.genre
+            case .year: t.year = source.year
+            case .trackNumber: t.trackNumber = source.trackNumber
+            case .trackCount: t.trackCount = source.trackCount
+            case .discNumber: t.discNumber = source.discNumber
+            case .discCount: t.discCount = source.discCount
+            case .compilation: t.compilation = source.compilation
+            case .rating: t.rating = source.rating
+            case .favorite: t.isFavorite = source.isFavorite
+            case .bpm: t.bpm = source.bpm
+            case .resetPlayCount:
+                t.playCount = 0
+                t.lastPlayed = nil
+            case .comments: t.comment = source.comment
+            case .artwork: break
+            case .lyrics: t.lyrics = source.lyrics
+            case .customLyrics: t.customLyrics = source.customLyrics
+            case .mediaKind: t.kind = source.kind
+            case .startTime:
+                t.startTimeMs = draftModel.hasStartTime ? max(0, min(draftModel.startTimeMs, max(0, t.durationMs))) : nil
+            case .stopTime:
+                if draftModel.hasStopTime {
+                    let minStop = t.startTimeMs ?? 0
+                    t.stopTimeMs = max(minStop, min(draftModel.stopTimeMs, max(minStop, t.durationMs)))
+                } else {
+                    t.stopTimeMs = nil
+                }
+            case .rememberPosition: t.rememberPlaybackPosition = source.rememberPlaybackPosition
+            case .skipShuffling: t.skipWhenShuffling = source.skipWhenShuffling
+            case .volumeAdjustment: t.volumeAdjustment = source.volumeAdjustment
+            case .eqPreset: t.eqPreset = source.eqPreset
+            case .sortTitle: t.sortTitle = source.sortTitle
+            case .sortAlbum: t.sortAlbum = source.sortAlbum
+            case .sortAlbumArtist: t.sortAlbumArtist = source.sortAlbumArtist
+            case .sortArtist: t.sortArtist = source.sortArtist
+            case .sortComposer: t.sortComposer = source.sortComposer
+            }
+        }
+        let trimmedLyrics = t.lyrics?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        t.hasLyrics = (t.customLyrics == true && !trimmedLyrics.isEmpty)
+        t.dateModified = Date()
+        return t
+    }
+
+    @objc private func lookupClicked() {
+        guard !isMultiEdit, let track = draft?.track else { return }
+        lookupTask?.cancel()
+        errorLabel.isHidden = true
+        lookupButton.isEnabled = false
+        lookupButton.title = "Searching…"
+
+        let query = MetadataQuery(
+            title: songField.stringValue,
+            artist: artistField.stringValue.isEmpty ? nil : artistField.stringValue,
+            album: albumField.stringValue.isEmpty ? nil : albumField.stringValue,
+            durationMs: track.durationMs,
+            filePath: track.path
+        )
+
+        lookupTask = Task { @MainActor [weak self] in
+            let matches = await MetadataFinderService.shared.search(query: query)
+            guard !Task.isCancelled, let self else { return }
+            self.lookupButton.isEnabled = true
+            self.lookupButton.title = "Lookup…"
+
+            if matches.isEmpty {
+                self.errorLabel.textColor = .secondaryLabelColor
+                self.errorLabel.stringValue = "No metadata matches found."
+                self.errorLabel.isHidden = false
+                return
+            }
+
+            self.pendingLookupMatches = matches
+            let menu = NSMenu(title: "Metadata Matches")
+            for (idx, match) in matches.prefix(12).enumerated() {
+                let item = NSMenuItem(title: match.summaryLabel, action: #selector(self.lookupMatchSelected(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = idx
+                menu.addItem(item)
+            }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: self.lookupButton.bounds.height + 4), in: self.lookupButton)
+        }
+    }
+
+    @objc private func lookupMatchSelected(_ sender: NSMenuItem) {
+        guard pendingLookupMatches.indices.contains(sender.tag), var d = draft else { return }
+        let match = pendingLookupMatches[sender.tag]
+        d.track.title = match.title
+        if let artist = match.artist, !artist.isEmpty { d.track.artist = artist }
+        if let album = match.album, !album.isEmpty { d.track.album = album }
+        if let albumArtist = match.albumArtist, !albumArtist.isEmpty { d.track.albumArtist = albumArtist }
+        if let year = match.year, year > 0 { d.track.year = year }
+        if let trackNum = match.trackNumber, trackNum > 0 { d.track.trackNumber = trackNum }
+        if let trackCount = match.trackCount, trackCount > 0 { d.track.trackCount = trackCount }
+        if let discNum = match.discNumber, discNum > 0 { d.track.discNumber = discNum }
+        if let discCount = match.discCount, discCount > 0 { d.track.discCount = discCount }
+        if let genre = match.genre, !genre.isEmpty { d.track.genre = genre }
+        draft = d
+        populateAllFields()
+        updateHeader()
+
+        if let artworkURL = match.artworkURL {
+            Task { @MainActor [weak self] in
+                guard let data = await MetadataFinderService.shared.fetchArtworkData(from: artworkURL),
+                      let image = NSImage(data: data),
+                      let self else { return }
+                self.draft?.customArtworkData = data
+                self.draft?.customArtworkImage = image
+                self.largeArtworkView.image = image
+                self.headerArtworkView.image = image
+            }
+        }
+    }
+
+    @objc private func fetchLyricsClicked() {
+        guard !isMultiEdit, let track = draft?.track else { return }
+        lyricsTask?.cancel()
+        errorLabel.isHidden = true
+        fetchLyricsButton.isEnabled = false
+        fetchLyricsButton.title = "Fetching…"
+
+        let query = LyricsQuery(
+            title: songField.stringValue,
+            artist: artistField.stringValue.isEmpty ? nil : artistField.stringValue,
+            album: albumField.stringValue.isEmpty ? nil : albumField.stringValue,
+            durationSeconds: track.durationMs > 0 ? track.durationMs / 1000 : nil
+        )
+
+        lyricsTask = Task { @MainActor [weak self] in
+            let match = await LyricsService.shared.fetchLyrics(query: query)
+            guard !Task.isCancelled, let self else { return }
+            self.fetchLyricsButton.isEnabled = true
+            self.fetchLyricsButton.title = "Fetch Lyrics"
+
+            guard let text = match?.bestText else {
+                self.errorLabel.textColor = .secondaryLabelColor
+                self.errorLabel.stringValue = "No lyrics found."
+                self.errorLabel.isHidden = false
+                return
+            }
+            self.lyricsTextView.string = text
+            self.customLyricsCheckbox.state = .on
+            self.lyricsTextView.isEditable = true
+            self.draft?.track.lyrics = text
+            self.draft?.track.customLyrics = true
         }
     }
 
@@ -1338,6 +1732,7 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
                 let image = NSImage(cgImage: cgImage, size: .zero)
                 self.draft?.customArtworkData = data
                 self.draft?.customArtworkImage = image
+                self.dirtyFields.insert(.artwork)
                 self.largeArtworkView.image = image
                 self.headerArtworkView.image = image
             }
@@ -1347,6 +1742,7 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     @objc private func customLyricsToggled() {
         let enabled = customLyricsCheckbox.state == .on
         draft?.track.customLyrics = enabled
+        dirtyFields.insert(.customLyrics)
         lyricsTextView.isEditable = enabled
         if enabled {
             window?.makeFirstResponder(lyricsTextView)
@@ -1357,6 +1753,7 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         guard var d = draft else { return }
         d.track.rating = (d.track.rating == sender.tag) ? 0 : sender.tag
         draft = d
+        dirtyFields.insert(.rating)
         updateRatingAndFavorite()
     }
 
@@ -1364,11 +1761,13 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         guard var d = draft else { return }
         d.track.isFavorite = !(d.track.isFavorite ?? false)
         draft = d
+        dirtyFields.insert(.favorite)
         updateRatingAndFavorite()
     }
 
     @objc private func resetPlayCountClicked() {
         draft?.resetPlayCount = true
+        dirtyFields.insert(.resetPlayCount)
         updatePlayCountLabel()
     }
 
@@ -1377,8 +1776,14 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     }
 
     @objc private func detailsCheckboxChanged() {
-        draft?.track.showComposerInAllViews = showComposerCheckbox.state == .on
-        draft?.track.compilation = compilationCheckbox.state == .on
+        if showComposerCheckbox.state != .mixed {
+            draft?.track.showComposerInAllViews = showComposerCheckbox.state == .on
+            dirtyFields.insert(.showComposer)
+        }
+        if compilationCheckbox.state != .mixed {
+            draft?.track.compilation = compilationCheckbox.state == .on
+            dirtyFields.insert(.compilation)
+        }
     }
 
     @objc private func optionsChanged() {
@@ -1388,32 +1793,51 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         case "Video": d.track.kind = .video
         default: d.track.kind = .song
         }
-        d.hasStartTime = startCheckbox.state == .on
-        startTimeField.isEnabled = d.hasStartTime
-        d.hasStopTime = stopCheckbox.state == .on
-        stopTimeField.isEnabled = d.hasStopTime
-        d.track.rememberPlaybackPosition = rememberPositionCheckbox.state == .on
-        d.track.skipWhenShuffling = skipShufflingCheckbox.state == .on
+        dirtyFields.insert(.mediaKind)
+        if startCheckbox.state != .mixed {
+            d.hasStartTime = startCheckbox.state == .on
+            startTimeField.isEnabled = d.hasStartTime
+            dirtyFields.insert(.startTime)
+        }
+        if stopCheckbox.state != .mixed {
+            d.hasStopTime = stopCheckbox.state == .on
+            stopTimeField.isEnabled = d.hasStopTime
+            dirtyFields.insert(.stopTime)
+        }
+        if rememberPositionCheckbox.state != .mixed {
+            d.track.rememberPlaybackPosition = rememberPositionCheckbox.state == .on
+            dirtyFields.insert(.rememberPosition)
+        }
+        if skipShufflingCheckbox.state != .mixed {
+            d.track.skipWhenShuffling = skipShufflingCheckbox.state == .on
+            dirtyFields.insert(.skipShuffling)
+        }
         let eq = eqPopup.titleOfSelectedItem ?? "None"
         d.track.eqPreset = (eq == "None") ? nil : eq
+        dirtyFields.insert(.eqPreset)
         draft = d
     }
 
     @objc private func optionsTimeEdited() {
         guard var d = draft else { return }
         let duration = max(0, d.track.durationMs)
-        let parsedStart = Self.parseTimeMs(startTimeField.stringValue) ?? d.startTimeMs
-        d.startTimeMs = max(0, min(parsedStart, duration))
-        let parsedStop = Self.parseTimeMs(stopTimeField.stringValue) ?? d.stopTimeMs
-        d.stopTimeMs = max(d.startTimeMs, min(parsedStop, duration))
+        if let parsedStart = Self.parseTimeMs(startTimeField.stringValue) {
+            d.startTimeMs = max(0, min(parsedStart, duration))
+            dirtyFields.insert(.startTime)
+            startTimeField.stringValue = Self.formatTimeMs(d.startTimeMs, thousandths: false)
+        }
+        if let parsedStop = Self.parseTimeMs(stopTimeField.stringValue) {
+            d.stopTimeMs = max(d.startTimeMs, min(parsedStop, duration))
+            dirtyFields.insert(.stopTime)
+            stopTimeField.stringValue = Self.formatTimeMs(d.stopTimeMs, thousandths: true)
+        }
         draft = d
-        startTimeField.stringValue = Self.formatTimeMs(d.startTimeMs, thousandths: false)
-        stopTimeField.stringValue = Self.formatTimeMs(d.stopTimeMs, thousandths: true)
     }
 
     @objc private func volumeSliderChanged() {
         let vol = volumeSlider.integerValue
         draft?.track.volumeAdjustment = (vol == 0) ? nil : vol
+        dirtyFields.insert(.volumeAdjustment)
         volumeValueLabel.stringValue = vol == 0 ? "None" : "\(vol > 0 ? "+" : "")\(vol)%"
     }
 
@@ -1428,59 +1852,82 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
         case songField:
             d.track.title = songField.stringValue
             sortNameField.stringValue = songField.stringValue
+            dirtyFields.insert(.title)
         case sortNameField:
             d.track.title = sortNameField.stringValue
             songField.stringValue = sortNameField.stringValue
+            dirtyFields.insert(.title)
         case artistField:
             d.track.artist = artistField.stringValue.isEmpty ? nil : artistField.stringValue
             sortArtistField.stringValue = artistField.stringValue
+            dirtyFields.insert(.artist)
         case sortArtistField:
             d.track.artist = sortArtistField.stringValue.isEmpty ? nil : sortArtistField.stringValue
             artistField.stringValue = sortArtistField.stringValue
+            dirtyFields.insert(.artist)
         case albumField:
             d.track.album = albumField.stringValue.isEmpty ? nil : albumField.stringValue
             sortAlbumField.stringValue = albumField.stringValue
+            dirtyFields.insert(.album)
         case sortAlbumField:
             d.track.album = sortAlbumField.stringValue.isEmpty ? nil : sortAlbumField.stringValue
             albumField.stringValue = sortAlbumField.stringValue
+            dirtyFields.insert(.album)
         case albumArtistField:
             d.track.albumArtist = albumArtistField.stringValue.isEmpty ? nil : albumArtistField.stringValue
             sortAlbumArtistField.stringValue = albumArtistField.stringValue
+            dirtyFields.insert(.albumArtist)
         case sortAlbumArtistField:
             d.track.albumArtist = sortAlbumArtistField.stringValue.isEmpty ? nil : sortAlbumArtistField.stringValue
             albumArtistField.stringValue = sortAlbumArtistField.stringValue
+            dirtyFields.insert(.albumArtist)
         case composerField:
             d.track.composer = composerField.stringValue.isEmpty ? nil : composerField.stringValue
             sortComposerField.stringValue = composerField.stringValue
+            dirtyFields.insert(.composer)
         case sortComposerField:
             d.track.composer = sortComposerField.stringValue.isEmpty ? nil : sortComposerField.stringValue
             composerField.stringValue = sortComposerField.stringValue
+            dirtyFields.insert(.composer)
         case groupingField:
             d.track.grouping = groupingField.stringValue.isEmpty ? nil : groupingField.stringValue
+            dirtyFields.insert(.grouping)
         case genreCombo:
             d.track.genre = genreCombo.stringValue.isEmpty ? nil : genreCombo.stringValue
+            dirtyFields.insert(.genre)
         case yearField:
             d.track.year = Int(yearField.stringValue) ?? 0
+            dirtyFields.insert(.year)
         case trackNumField:
             d.track.trackNumber = Int(trackNumField.stringValue) ?? 0
+            dirtyFields.insert(.trackNumber)
         case trackTotalField:
             d.track.trackCount = Int(trackTotalField.stringValue) ?? 0
+            dirtyFields.insert(.trackCount)
         case discNumField:
             d.track.discNumber = Int(discNumField.stringValue) ?? 0
+            dirtyFields.insert(.discNumber)
         case discTotalField:
             d.track.discCount = Int(discTotalField.stringValue) ?? 0
+            dirtyFields.insert(.discCount)
         case bpmField:
             d.track.bpm = Int(bpmField.stringValue) ?? 0
+            dirtyFields.insert(.bpm)
         case sortNameAsField:
             d.track.sortTitle = sortNameAsField.stringValue.isEmpty ? nil : sortNameAsField.stringValue
+            dirtyFields.insert(.sortTitle)
         case sortAlbumAsField:
             d.track.sortAlbum = sortAlbumAsField.stringValue.isEmpty ? nil : sortAlbumAsField.stringValue
+            dirtyFields.insert(.sortAlbum)
         case sortAlbumArtistAsField:
             d.track.sortAlbumArtist = sortAlbumArtistAsField.stringValue.isEmpty ? nil : sortAlbumArtistAsField.stringValue
+            dirtyFields.insert(.sortAlbumArtist)
         case sortArtistAsField:
             d.track.sortArtist = sortArtistAsField.stringValue.isEmpty ? nil : sortArtistAsField.stringValue
+            dirtyFields.insert(.sortArtist)
         case sortComposerAsField:
             d.track.sortComposer = sortComposerAsField.stringValue.isEmpty ? nil : sortComposerAsField.stringValue
+            dirtyFields.insert(.sortComposer)
         default:
             break
         }
@@ -1492,10 +1939,18 @@ private final class MetadataEditorWindowController: NSWindowController, NSWindow
     private func commitTextViewsToDraft() {
         guard var d = draft else { return }
         let comment = commentsTextView.string
-        d.track.comment = comment.isEmpty ? nil : comment
+        if !isMultiEdit || comment != (sharedValue(multiTracks) { $0.comment ?? "" } ?? "") {
+            d.track.comment = comment.isEmpty ? nil : comment
+            dirtyFields.insert(.comments)
+        }
         let lyrics = lyricsTextView.string
-        d.track.lyrics = lyrics.isEmpty ? nil : lyrics
-        d.track.customLyrics = customLyricsCheckbox.state == .on
+        if !isMultiEdit || lyrics != (sharedValue(multiTracks) { $0.lyrics ?? "" } ?? "") {
+            d.track.lyrics = lyrics.isEmpty ? nil : lyrics
+            dirtyFields.insert(.lyrics)
+        }
+        if customLyricsCheckbox.state != .mixed {
+            d.track.customLyrics = customLyricsCheckbox.state == .on
+        }
         draft = d
         optionsTimeEdited()
     }

@@ -38,10 +38,14 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         let folderItem = NSMenuItem(title: "New Folder", action: #selector(newPlaylistFolder(_:)), keyEquivalent: "N")
         folderItem.keyEquivalentModifierMask = [.command, .shift]
         folderItem.target = self
+        let infoItem = NSMenuItem(title: "Track Info", action: #selector(openTrackInfo(_:)), keyEquivalent: "i")
+        infoItem.keyEquivalentModifierMask = [.command]
+        infoItem.target = self
         fileMenu.insertItem(playlistItem, at: 0)
         fileMenu.insertItem(folderItem, at: 1)
-        if fileMenu.items.count > 2 {
-            fileMenu.insertItem(.separator(), at: 2)
+        fileMenu.insertItem(infoItem, at: 2)
+        if fileMenu.items.count > 3 {
+            fileMenu.insertItem(.separator(), at: 3)
         }
     }
 
@@ -79,6 +83,7 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     }
 
     @objc private func openSettings(_ sender: Any?) { AppCommands.openSettings?() }
+    @objc private func openTrackInfo(_ sender: Any?) { AppCommands.openTrackInfo?() }
     @objc private func toggleSidebar(_ sender: Any?) { MacChrome.shared.toggleSidebar() }
     @objc private func newPlaylist(_ sender: Any?) { AppCommands.createPlaylist?(false) }
     @objc private func newPlaylistFolder(_ sender: Any?) { AppCommands.createPlaylist?(true) }
@@ -86,6 +91,9 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(openSettings(_:)) {
             return AppCommands.openSettings != nil
+        }
+        if item.action == #selector(openTrackInfo(_:)) {
+            return AppCommands.canOpenTrackInfo?() ?? false
         }
         if item.action == #selector(newPlaylist(_:)) || item.action == #selector(newPlaylistFolder(_:)) {
             return AppCommands.createPlaylist != nil

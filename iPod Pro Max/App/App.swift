@@ -3,6 +3,7 @@ import DeviceKit
 import Foundation
 import SwiftCrossUI
 import iPodKit
+import MediaKit
 #if canImport(AppKitBackend)
     import AppKit
 #endif
@@ -793,25 +794,42 @@ struct ContentView: View {
                 guard let tracks = portableLibrary?.cache.tracks else { return [] }
                 return Array(Set(tracks.compactMap { $0.genre?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
             },
-            onSaveTrack: { [self] updatedTrack, customArtworkData, completion in
-                saveTrackMetadata(updatedTrack, customArtworkData: customArtworkData, completion: completion)
+            onSaveTracks: { [self] updatedTracks, customArtworkData, completion in
+                saveTracksMetadata(updatedTracks, customArtworkData: customArtworkData, completion: completion)
             }
         )
     }
 
-    private func saveTrackMetadata(
-        _ updatedTrack: LibraryTrack,
+    private func saveTracksMetadata(
+        _ updatedTracks: [LibraryTrack],
         customArtworkData: Data?,
         completion: @escaping @MainActor (Result<Void, Error>) -> Void
     ) {
-        enqueueLibraryWriteWithStore("metadata", completion: completion) { cache, artworkFolder in
-            var trackToSave = updatedTrack
-            if let customArtworkData,
-               let key = MetadataArtworkSaver.saveCustomArtwork(customArtworkData, into: artworkFolder) {
-                trackToSave.artworkKey = key
-            }
-            if let idx = cache.tracks.firstIndex(where: { $0.id == trackToSave.id }) {
-                cache.tracks[idx] = trackToSave
+        Task { @MainActor [self] in
+            do {
+                // Write audio file tags + artwork off the main thread via MediaKit.TagWriter.
+                try await Task.detached(priority: .utility) {
+                    for track in updatedTracks where track.source == .file && FileManager.default.fileExists(atPath: track.path) {
+                        try await TagWriter.writeTags(for: track, customArtworkData: customArtworkData)
+                    }
+                }.value
+
+                enqueueLibraryWriteWithStore("metadata", completion: completion) { cache, artworkFolder in
+                    let savedArtworkKey = customArtworkData.flatMap {
+                        MetadataArtworkSaver.saveCustomArtwork($0, into: artworkFolder)
+                    }
+                    let byID = Dictionary(uniqueKeysWithValues: updatedTracks.map { ($0.id, $0) })
+                    for idx in cache.tracks.indices {
+                        if var updated = byID[cache.tracks[idx].id] {
+                            if let savedArtworkKey {
+                                updated.artworkKey = savedArtworkKey
+                            }
+                            cache.tracks[idx] = updated
+                        }
+                    }
+                }
+            } catch {
+                completion(.failure(error))
             }
         }
     }

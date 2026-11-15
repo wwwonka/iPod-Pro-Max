@@ -176,6 +176,7 @@ extension Array {
             func tableViewSelectionDidChange(_ notification: Notification) {
                 guard let table = notification.object as? NSTableView else { return }
                 onSelectionChange(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil })
+                (table as? MusicTrackTable)?.updateTrackInfoCommand()
             }
             @objc func playSelected(_ sender: NSTableView) {
                 guard isActive, rows.indices.contains(sender.clickedRow), rows[sender.clickedRow].path != nil else { return }
@@ -455,12 +456,33 @@ extension Array {
             let reveal = NSMenuItem(title: "Reveal in Finder", action: #selector(revealSelection), keyEquivalent: "")
             reveal.target = self
             menu.addItem(reveal)
-            if selectedRowIndexes.count == 1 {
-                let info = NSMenuItem(title: "Track Info", action: #selector(showTrackInfo), keyEquivalent: "")
+            if selectedRowIndexes.count >= 1 {
+                let title = selectedRowIndexes.count > 1 ? "Track Info (\(selectedRowIndexes.count) Tracks)" : "Track Info"
+                let info = NSMenuItem(title: title, action: #selector(showTrackInfo), keyEquivalent: "")
                 info.target = self
                 menu.addItem(info)
             }
             return menu
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "i",
+               !selectedRowIndexes.isEmpty {
+                showTrackInfo()
+                return
+            }
+            super.keyDown(with: event)
+        }
+
+        func updateTrackInfoCommand() {
+            AppCommands.canOpenTrackInfo = { [weak self] in
+                guard let self, let coordinator = self.coordinator, coordinator.isActive else { return false }
+                return !self.selectedRowIndexes.isEmpty
+            }
+            AppCommands.openTrackInfo = { [weak self] in
+                self?.showTrackInfo()
+            }
         }
 
         @objc private func playSelection() {
@@ -485,8 +507,14 @@ extension Array {
         }
 
         @objc private func showTrackInfo() {
-            guard let coordinator, coordinator.rows.indices.contains(selectedRow) else { return }
-            MetadataEditorController.shared.open(rows: coordinator.rows, index: selectedRow)
+            guard let coordinator, coordinator.isActive else { return }
+            let indices = selectedRowIndexes.filter { coordinator.rows.indices.contains($0) }.sorted()
+            guard !indices.isEmpty else { return }
+            if indices.count == 1 {
+                MetadataEditorController.shared.open(rows: coordinator.rows, index: indices[0])
+            } else {
+                MetadataEditorController.shared.open(rows: coordinator.rows, indices: indices)
+            }
         }
     }
 
