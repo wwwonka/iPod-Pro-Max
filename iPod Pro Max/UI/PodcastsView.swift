@@ -213,7 +213,10 @@ final class PodcastRowsCache: SwiftCrossUI.ObservableObject {
                             title: (episode.played ? "" : "● ") + episode.title + (episode.isDownloaded ? "" : "  (not downloaded)"),
                             artist: show.author ?? show.title, album: show.title,
                             number: (episode.episodeNumber ?? 0) > 0 ? "\(episode.episodeNumber!)" : "",
-                            year: year, duration: Self.duration(episode.durationMs ?? 0))
+                            year: year, duration: Self.duration(episode.durationMs ?? 0), path: episode.localPath,
+                            playbackTitle: episode.title,
+                            playbackSubtitle: show.title + (episode.publishedAt.map { " — " + DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) } ?? ""),
+                            playbackKind: .podcast, artworkKey: show.artworkKey)
         }
         if showID == show.id, fresh == rows { return rows }
         showID = show.id
@@ -235,7 +238,10 @@ final class PodcastRowsCache: SwiftCrossUI.ObservableObject {
                             title: (episode.played ? "" : "● ") + episode.title + (episode.isDownloaded ? "" : "  (not downloaded)"),
                             artist: show.author ?? show.title, album: show.title,
                             number: (episode.episodeNumber ?? 0) > 0 ? "\(episode.episodeNumber!)" : "",
-                            year: year, duration: Self.duration(episode.durationMs ?? 0))
+                            year: year, duration: Self.duration(episode.durationMs ?? 0), path: episode.localPath,
+                            playbackTitle: episode.title,
+                            playbackSubtitle: show.title + (episode.publishedAt.map { " — " + DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) } ?? ""),
+                            playbackKind: .podcast, artworkKey: show.artworkKey)
         }
         return rows
     }

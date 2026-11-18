@@ -1,0 +1,118 @@
+# LCD du lecteur de barre d’outils
+
+Le conteneur macOS reste un verre natif translucide, creusé par des dégradés internes, affleurant le haut de la fenêtre et laissant 3 points sous le panneau. Le contenu conserve deux lignes, une petite pochette, les temps et une progression. Les commandes reprennent les valeurs du rail et des boutons natifs : attente de 400 ms au survol, fondu entrant de 180 ms et sortant de 160 ms, voile neutre à 6,5 % au survol et 13 % à la pression, glyphes gris secondaires et estompés quand la fenêtre perd le focus. Les trois boutons de transport passent à 86 % pendant l’appui (100 ms), puis retrouvent leur taille normale au relâchement (180 ms). Play/Pause utilise directement les transitions SF Symbols d’AppKit : Magic Replace sous macOS 15 et ultérieur, Replace sous macOS 14. Le système fournit les effets Draw lorsque disponibles sous macOS 26 ; aucun tracé simulé par masque n’est conservé. Réduire les animations donne directement le symbole final.
+
+## État portable
+
+`MediaKit/PlayerLCDModel.swift` définit les modes, le décodage des paroles LRC, les chapitres, le geste de scrub, la sélection des activités et les trames du spectre. Les préférences `playerLCDMode` et `playerShowsRemaining` sont enregistrées dans les réglages portables, avec des valeurs par défaut compatibles avec les anciens fichiers. La sélection de Paroles reste mémorisée même quand le contenu se replie sur Titre.
+
+Au repos, le LCD n’affiche ni nom d’application ni nom du périphérique ; seule l’information d’espace libre reste disponible.
+
+Le scrub garde une position proposée jusqu’au relâchement. Échap, un changement de piste ou une phase de défilement annulée abandonne cette proposition. Les chapitres s’aimantent à 6 points. Les gestes sans scrub possible sont ignorés dans la vue enfant : les renvoyer à AppKit recréerait une boucle avec le parent qui lui transmet le défilement. Le retour à la piste restaure sa vue d’origine, efface la recherche et transmet une demande de sélection/défilement à la table native ou à l’album déplié.
+
+## Cadences et travail de fond
+
+La waveform utilise les pics existants et les événements du moteur, sans nouvelle analyse ni cadence autonome. Les paroles et chapitres sont lus localement sur une tâche utility annulable ; aucun fournisseur de paroles réseau n’est appelé. Une seule échéance de paroles est armée, annulée en pause et quand la fenêtre est masquée.
+
+Le rendu du spectre accepte des trames pré-calculées à 16 bandes par canal, interpole les valeurs et maintient les pics. Le générateur de PLR16 décode la piste avec la waveform dans une seule passe sur Mac, à 44,1 kHz stéréo. Une FFT de 2 048 échantillons fenêtrée Hann produit 16 bandes logarithmiques par canal à 20 Hz. Le cache de PLR17 conserve les trames sur disque ; un format non pris en charge garde la grille éteinte. Lorsqu’elles sont fournies, un CVDisplayLink plafonné à 30 Hz (10 Hz avec Réduire les animations) ne tourne que pendant la lecture, fenêtre visible et mode Spectre affiché. Aucun display link n’est créé pour une grille sans données. Les premières trames sont transmises dès que 200 ms d’audio sont décodées, puis par lots espacés d’au moins 500 ms pendant l’analyse. Un résultat ancien ou plus court ne remplace pas les données les plus récentes. Sur le WAV de contrôle de 2 min, les premières données sont disponibles en 135 ms contre 4,050 s pour le résultat complet dans le build de développement du 17 novembre 2026.
+
+La progression est une vue transparente distincte, toujours au-dessus des métadonnées et indépendante de l’opacité du spectre. Son épaisseur passe de 2 à 4 pt en 180 ms au survol du LCD ; sa largeur de progression reste actualisée directement. Le bouton AirPlay conserve le sélecteur natif AVKit, avec des couleurs publiques par état et une opacité inactive de 30 %, réappliquées sur les événements d’activation de la fenêtre et de l’app.
+
+En mode Spectre, le survol fond le titre et l’artiste au-dessus des barres en 180 ms, puis les retire en 160 ms au départ du pointeur, avec interruption fluide d’une transition en cours. À la pause, les niveaux retombent avec une enveloppe quadratique de 450 ms ; les traits blancs des pics restent dessinés sur la rangée inférieure, puis le display link s’arrête. Une reprise annule cette extinction. Fenêtre masquée ou Réduire les animations : extinction immédiate, sans horloge de transition.
+
+Le mode de prévisualisation Spectrum utilise désormais le véritable fichier audio ; `spectrum-fixture` réserve les données synthétiques aux contrôles de dessin.
+
+Les activités proviennent des imports, transferts/synchronisations (y compris leurs phases de conversion) et téléchargements de podcasts. Les mises à jour restent limitées aux événements existants, environ 500 ms. Une échéance d’une seconde évite d’afficher une progression fugitive ; la fin apparaît trois secondes avec une échéance unique. Les échecs restent jusqu’à acquittement. L’annulation d’une synchronisation demande confirmation ; les autres annulations sont directes. Les sources de fichiers et de livres audio cessent de lancer de nouveaux travaux dès l’annulation et une bibliothèque partiellement scannée n’est pas enregistrée.
+
+## Contrôles reproductibles
+
+- `swift test` couvre modes/replis, timing LRC, scrub borné/aimanté/annulé, sélection des activités, interpolation et pics du spectre, compatibilité des préférences.
+- `IPPM_CHECK_PLAYER=1` contrôle le transport, le volume, les états d’activité et l’expiration de la notification de fin.
+- `IPPM_PLAYER_PREVIEW=title|waveform|lyrics|spectrum|activity` avec `IPPM_PLAYER_FIXTURE=<WAV local>` et `IPPM_SNAPSHOT=<PNG>` permet de vérifier les différents rendus, son coupé et sans modifier la bibliothèque. Le spectre de cette prévisualisation analyse le WAV fourni ; `spectrum-fixture` injecte des trames synthétiques pour les contrôles de dessin.
+- L’analyse reste indépendante du dessin : `IPPM_CHECK_ANALYSIS=<fichier>` mesure le décodage réel, vérifie waveform/spectre et leur réutilisation ; `IPPM_CHECK_AUDIO=<WAV>` vérifie aussi les publications de session sur un moteur réel.
+
+Les lancements ordinaires gardent une fenêtre de niveau normal, visible dans Mission Control. `IPPM_FRONT` ne change plus son niveau ; un niveau flottant ne peut être demandé que lors d’une capture explicite `IPPM_SNAPSHOT`.
+
+## Mesure de disposition
+
+Le 16 novembre 2026, build macOS de développement arm64 : huit changements de largeur entre 820 et 1 600 points sur la fenêtre de contrôle, médiane 5,97 ms et maximum 6,79 ms pour le redimensionnement synchrone avec disposition du contenu. Ce chiffre inclut la fenêtre de test peu remplie, ne mesure pas le rafraîchissement à l’écran et ne remplace pas une mesure sur une bibliothèque volumineuse. Les assertions vérifient également la plage de largeur du LCD et sa marge inférieure.
+
+
+## File À suivre et session média
+
+Le popover À suivre utilise une NSTableView virtualisée. Seules les lignes visibles demandent leur pochette. La file garde la piste en cours, déduplique par identifiant, déplace les entrées déjà présentes et autorise insertions, réordonnancement, retrait, saut et effacement des seules pistes à venir. Le retour depuis le LCD garde la source de chaque insertion, même si plusieurs vues ont alimenté la file. Désactiver l’aléatoire restaure l’ordre d’origine avec les nouvelles insertions après la piste en cours.
+
+Le protocole MediaSession et sa version simulée résident dans MediaKit. PlaybackController ne crée la session qu’à la première lecture. Il publie les événements de piste, durée disponible, lecture/pause, saut, vitesse, disponibilité et arrêt ; les ticks de progression ne publient rien. La position demandée est conservée pendant un seek asynchrone, puis confirmée par le moteur. La session macOS utilise MPNowPlayingInfoCenter et MPRemoteCommandCenter, sans intercepter les touches d’une autre application. Les pochettes sont décodées en arrière-plan. La position publiée lors de leur arrivée est extrapolée pour éviter un retour en arrière.
+
+Les contenus parlés disposent des sauts de 15/30 secondes et des vitesses 0,75× à 2×, mémorisées par type pendant la session. La musique revient à 1×. Le menu du Dock est construit à la demande ; le menu ••• ouvre la bibliothèque, l’éditeur de métadonnées, les favoris disponibles et les vitesses des contenus parlés.
+
+## Cache temporaire
+
+TemporaryMediaCache centralise Spectrum, Waveforms et Scratch sous le dossier temporaire de l’ordinateur, jamais sur l’iPod. Les clés SHA-1 portent sur le chemin, la taille et la date du fichier source ; les noms des fichiers ne divulguent aucun titre ni chemin. Le format v1 du spectre commence par IPSP0001 et contient 32 octets par image, à 20 Hz. La waveform IPWF0001 contient au plus 1 024 Float32 little-endian. Les trames du spectre sont écrites progressivement, puis renommées atomiquement ; une annulation jette le fichier incomplet. Les fichiers de plus de deux heures gardent seulement leur waveform et un marqueur évitant de retenter le spectre.
+
+Un cache mémoire borné reste devant le disque. Ses succès mettent également à jour la date d’utilisation des fichiers pour l’éviction LRU. Le plafond global est de 200 Mio par défaut. Le lancement nettoie Scratch plus ancien que la session, retire les versions obsolètes et applique le plafond. Les réglages Advanced sont portables : conservation/effacement par catégorie, plafond, vidage immédiat et ouverture du dossier. Les tailles sont calculées hors du fil principal, à l’ouverture et après modification/vidage. La fermeture attend l’annulation de l’analyse avant le ménage demandé. Les erreurs de disque restent silencieuses et la piste en cours conserve son résultat en mémoire.
+
+## Mesures du spectre — 16 novembre 2026
+
+Le FFT optimisé a été mesuré séparément du décodage sur PCM synthétique :
+
+| Durée | FFT seul, build optimisé | Trames | Fichier Spectrum |
+|---|---:|---:|---:|
+| 3 min | 0,089 s | 3 600 | 115 208 octets |
+| 10 min | 0,296 s | 12 000 | 384 008 octets |
+| 2 h | 3,772 s | 144 000 | 4 608 008 octets |
+
+Le chemin complet AVFoundation + waveform + FFT + écriture a aussi été mesuré dans le build de développement non optimisé :
+
+| Source | Durée réelle | Analyse complète | Waveform + Spectrum |
+|---|---:|---:|---:|
+| MP3 de la bibliothèque | 179,984 s | 5,112 s | 119 280 octets |
+| MP3 de la bibliothèque | 600,268 s | 16,880 s | 388 272 octets |
+| WAV mono synthétique | 2 h | 197,616 s | 4 612 080 octets |
+
+Ces chiffres de décodage ne représentent pas le build de production optimisé. Les lectures chaudes mesurées avant le dernier ajustement de date LRU prenaient 0,2–0,3 ms. L’ouverture/disposition/effacement d’une file native de 5 000 lignes prenait environ 11–13 ms dans les contrôles ; ce chiffre inclut le harnais de test et ne mesure pas une interaction humaine.
+
+Les 88 tests Swift (5 ignorés), les contrôles ciblés lecteur/audio réel et le contrôle global d’interface passent. La sidebar termine son glissement via le callback du backend, y compris après un repli natif. Les touches média physiques et AirPods ne sont pas validés par les commandes simulées ni par les assertions d’API.
+
+## Charge CPU du lecteur
+
+Mesure du processus complet macOS arm64 en build de développement, WAV silencieux de 2 min en cache, bibliothèque de prévisualisation vide : 15 s de stabilisation, puis différence du temps CPU `ps` sur 5 s. 100 % représente un cœur. Le compteur est arrondi au centième de seconde ; ces fenêtres courtes donnent un ordre de grandeur, pas une garantie.
+
+| Mode | CPU du processus |
+|---|---:|
+| Titre, lecture | 3,78 % |
+| Waveform, lecture | 4,58 % |
+| Paroles, lecture | 3,79 % |
+| Spectre, lecture | 11,17 % |
+| Spectre, pause | 0,00 % |
+| Spectre, fenêtre masquée, audio en lecture | 0,60 % |
+
+La lecture masquée conserve le coût du moteur audio ; le display link et les événements périodiques de progression sont arrêtés. Un relevé séparé de la pause sur 25 s ne consomme que 0,01 s CPU. L’échantillonnage des piles pendant la pause montre le fil principal en attente, sans boucle de rendu active. Les premiers relevés à 8 s de stabilisation ont donné des pointes non reproduites après stabilisation ; ils ne servent pas à conclure sur la consommation au repos. Les mesures optimisées ci-dessous complètent ce relevé de développement.
+
+
+## Validation native finale — 18 novembre 2026
+
+`IPPM_PLAYER_PREVIEW=qa-final IPPM_PLAYER_QA=1 IPPM_PLAYER_FIXTURE=<WAV>` exécute une intégration avec le vrai moteur et la vraie session macOS. Les deux processus lancés avec `-AppleInterfaceStyle Light` et `Dark` passent : métadonnées Now Playing, actions lecture/pause du menu fourni au Dock, vidage du cache disque pendant la lecture sans perdre les données affichées, progression audio, entrée/sortie du plein écran, fermeture/masquage et réouverture sans interrompre la session. `IPPM_QA_APPEARANCE=light|dark` fixe uniquement l’apparence de ce processus. Les contrôles du lecteur passent également avec Réduire les animations activé ; le réglage système d’origine est restauré après vérification.
+
+En plein écran, AppKit héberge les contrôles dans une fenêtre auxiliaire. Leur géométrie suit ce conteneur ; leur activation et les raccourcis suivent la fenêtre principale propriétaire. Le LCD reste visible et la toolbar ne demande pas de masquage automatique.
+
+La disparition surveillée du processus a produit un statut de sortie SIGTERM (15), sans crash correspondant. Cela identifie un arrêt externe, sans prouver quel processus l’a envoyé. Le bundle local de revue utilise maintenant un identifiant et un exécutable propres (`iPodPlayerReview`), afin que l’arrêt global d’un autre build portant le nom habituel ne l’atteigne pas.
+
+Limites : aucun matériel Bluetooth/AirPods disponible. Les actions du menu Dock ont été exécutées via le menu réel du délégué et Now Playing vérifié via les API publiques ; l’ouverture visuelle des panneaux système et les touches média physiques ne sont pas validées.
+
+## Analyse complète optimisée — 18 novembre 2026
+
+Build release macOS arm64, WAV de contrôle synthétiques, AVFoundation + waveform + FFT + écriture. Ces sources ne sont pas les MP3 du tableau de développement ; les chiffres ne mesurent pas une accélération sur ces MP3.
+
+| Durée WAV | Premières trames | Analyse complète | Waveform + Spectrum | Lecture chaude |
+|---|---:|---:|---:|---:|
+| 3 min | 0,127 s | 0,419 s | 119 280 octets | 0,3 ms |
+| 10 min | 0,106 s | 0,583 s | 388 080 octets | 0,2 ms |
+| 2 h | 0,107 s | 5,925 s | 4 612 080 octets | 0,3 ms |
+
+
+Le relevé release du processus complet (15 s de stabilisation, fenêtre de 5 s) donne 4,00 % en Titre, 6,79 % en Waveform et 4,59 % en Spectre, sur le même WAV silencieux de contrôle. Fenêtre masquée en lecture : 0,40 %. Ces mesures courtes varient avec l’occlusion et les interactions ; elles ne constituent pas une comparaison contrôlée avec le tableau de développement. Le premier relevé Paroles a été écarté, car sa fenêtre était occultée.
+
+Les relevés release « pause » sont écartés : un échantillonnage des piles a capturé du suivi de clic dans `ToolbarPlaybackButton.mouseDown`, donc le processus n’était pas au repos. Ils ne prouvent ni un coût nul ni une régression. Le contrôle précédent au repos en build de développement et l’arrêt événementiel du display link restent les éléments disponibles pour ce cas.
+
+Un second relevé Paroles, avec fenêtre visible, 25 s de stabilisation et une fenêtre de mesure de 10 s après échantillonnage des piles, donne 0,40 %. Il utilise une méthode plus longue et reste distinct de la première série.

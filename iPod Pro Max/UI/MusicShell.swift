@@ -307,7 +307,7 @@ final class RailButton: NSButton {
 
     /// The toolbar's plate is a translucent overlay (white in dark mode, black in light), measured
     /// on a native item: 6.5 % under the pointer, 13 % while pressed. The background shows through.
-    private static func overlay(_ alpha: CGFloat) -> NSColor {
+    static func overlay(_ alpha: CGFloat) -> NSColor {
         NSColor(name: nil) { appearance in
             let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             return (dark ? NSColor.white : NSColor.black).withAlphaComponent(alpha)
@@ -1325,7 +1325,7 @@ struct GlassSurface: View {
 /// Kept separate from ContentView so playback updates never change its library inputs.
 struct PlayerDock: View {
     #if canImport(AppKitBackend)
-    var body: some View { NativePlayerDock().frame(height: 100).padding(12) }
+    var body: some View { EmptyView() }
     #else
     @State private var player = PlaybackController.shared
     var body: some View {

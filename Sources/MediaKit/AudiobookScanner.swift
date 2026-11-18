@@ -54,7 +54,7 @@ public enum AudiobookScanner {
         await withTaskGroup(of: (Int, LibraryTrack?).self) { group in
             var next = 0, done = 0
             func addNext() {
-                guard next < jobs.count else { return }
+                guard !Task.isCancelled, next < jobs.count else { return }
                 let n = next, job = jobs[n]
                 let count = books[job.book].files.count
                 let title = books[job.book].title

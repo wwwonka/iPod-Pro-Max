@@ -65,10 +65,10 @@ index c297bea2..6795cd68 100644
 +        resizingDelegate?.beginDrag()
 +        super.mouseDown(with: event)
 +        resizingDelegate?.endDrag()
-+        if isSidebarOpen, let pane = subviews.first { onDragEnd?(pane.frame.width) }
++        if let pane = subviews.first { onDragEnd?(isSidebarOpen ? pane.frame.width : 0) }
 +    }
 +
-+    /// Told the sidebar's width when a drag of its edge ends.
++    /// Final sidebar width after a divider drag, or zero when collapsed.
 +    public var onDragEnd: ((CGFloat) -> Void)?
 +    /// Sets the width the sidebar has when open (now, if it is open).
 +    public func applySidebarWidth(_ width: CGFloat) {

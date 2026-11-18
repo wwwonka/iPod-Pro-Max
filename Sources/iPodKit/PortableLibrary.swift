@@ -220,6 +220,11 @@ public struct PortableSettings: Codable, Sendable {
     public var sectionTabs: [String: String] = [:]
     public var sidebarOpen = true
     public var albumArtworkSize: Double = 172
+    public var playerLCDMode = "title"
+    public var playerShowsRemaining = true
+    public var temporaryCacheLimitMB = 200
+    public var clearSpectrumOnExit = false
+    public var clearWaveformsOnExit = false
     /// The icon favorites are drawn with: "heart" or "star".
     public var favoriteIcon = "heart"
     /// Identifiers of the list columns the user hid, shared by every list view; nil keeps the defaults.
@@ -227,9 +232,14 @@ public struct PortableSettings: Codable, Sendable {
     /// Custom row order per sidebar section title, keyed by `SidebarItem.persistentName`.
     public var sidebarOrder: [String: [String]] = [:]
     public init() {}
-    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder }
+    private enum CodingKeys: String, CodingKey { case temporaryCacheLimitMB, clearSpectrumOnExit, clearWaveformsOnExit, playerLCDMode, playerShowsRemaining, version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        temporaryCacheLimitMB = try values.decodeIfPresent(Int.self, forKey: .temporaryCacheLimitMB) ?? 200
+        clearSpectrumOnExit = try values.decodeIfPresent(Bool.self, forKey: .clearSpectrumOnExit) ?? false
+        clearWaveformsOnExit = try values.decodeIfPresent(Bool.self, forKey: .clearWaveformsOnExit) ?? false
+        playerLCDMode = try values.decodeIfPresent(String.self, forKey: .playerLCDMode) ?? "title"
+        playerShowsRemaining = try values.decodeIfPresent(Bool.self, forKey: .playerShowsRemaining) ?? true
         version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
         syncArtwork = try values.decodeIfPresent(Bool.self, forKey: .syncArtwork) ?? true
         musicViewMode = try values.decodeIfPresent(String.self, forKey: .musicViewMode) ?? "All Songs"

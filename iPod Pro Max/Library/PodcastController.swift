@@ -165,6 +165,8 @@ final class PodcastController {
               let store, !episode.isDownloaded, downloads[episodeID] == nil else { return }
         let directory = store.downloadDirectory(for: show)
         progress[episodeID] = 0
+        let activityID = "podcast-" + episodeID.uuidString
+        PlayerActivityController.shared.begin(activityID, kind: .download, title: "Downloading podcast", cancel: { [weak self] in self?.cancelDownload(episodeID: episodeID) })
         let task = Task { [weak self] in
             do {
                 // Throttled where the callbacks arrive: thousands per download would each wake the main actor.
@@ -175,7 +177,10 @@ final class PodcastController {
                 }
                 let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
                 self?.mutate(showID, episodeID) { $0.localPath = file.path; $0.fileSize = size }
+                PlayerActivityController.shared.finish(activityID)
             } catch {
+                let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                PlayerActivityController.shared.finish(activityID, error: cancelled ? nil : error.localizedDescription, cancelled: cancelled)
                 if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
                     self?.onError("Download failed for “\(episode.title)”: \(error.localizedDescription)")
                 }
@@ -244,6 +249,7 @@ final class PodcastController {
     private func publishProgress(_ id: UUID, _ fraction: Double) {
         guard downloads[id] != nil else { return }
         progress[id] = fraction
+        PlayerActivityController.shared.progress("podcast-" + id.uuidString, detail: "Downloading…", fraction: fraction)
         onChange()
     }
 

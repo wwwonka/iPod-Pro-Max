@@ -197,15 +197,24 @@ func checkNativeSidebarPersistence() async {
         dragDivider(through: [250])
         verifyWidth(dragSplit, 250, "dragged back out")
         dragWidths = []
-        // Past 64 pt it closes (the hidden divider keeps its 1 pt, as when the toolbar closes the sidebar); the pointer coming back (90, 200) and the release must not reopen it.
+        // Native AppKit may reopen while the same gesture returns past the threshold.
         dragDivider(through: [200, 100, 60, 90, 200])
-        precondition(!dragSplit.isSidebarOpen, "dragged past 64 pt, the sidebar snaps shut and stays shut")
+        precondition(dragSplit.isSidebarOpen && dragChrome.isSidebarVisible, "dragging back right reopens live")
+        precondition(dragWidths.last == Double(dragSplit.subviews[0].frame.width.rounded()), "reopened drag saves the final visible width")
+        dragDivider(through: [250])
+        verifyWidth(dragSplit, 250, "width before a completed collapse")
+        dragWidths = []; dragChoices = []
+        // Releasing below the threshold completes collapse; it must stay closed
+        // through later layout, resizing and preference restoration.
+        dragDivider(through: [200, 100, 60])
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        precondition(!dragSplit.isSidebarOpen, "releasing below 64 pt leaves the sidebar closed")
         precondition(!dragChrome.isSidebarVisible && !dragSplit.dividerDragEnabled, "the chrome knows at once")
         try? await Task.sleep(nanoseconds: 200_000_000)
         dragWindow.layoutIfNeeded()
         precondition(!dragSplit.isSidebarOpen && backend.sidebarWidth(ofSplitView: dragSplit) == 0, "closed for SwiftCrossUI's layout too")
         precondition(abs(dragSplit.subviews[1].frame.width - dragSplit.bounds.width) < 1.5 && dragSplit.subviews[1].frame.minX < 1.5, "the content takes the whole width: got \(dragSplit.subviews[1].frame) in \(dragSplit.bounds.width)")
-        precondition(dragChoices == [true, false], "the app is told once that the sidebar closed: \(dragChoices)")
+        precondition(dragChoices == [false], "the app is told once that the sidebar closed: \(dragChoices)")
         precondition(dragWidths == [250], "the width from before the drag is the one kept: \(dragWidths)")
         dragWindow.setContentSize(NSSize(width: 1100, height: 700))
         dragWindow.layoutIfNeeded()

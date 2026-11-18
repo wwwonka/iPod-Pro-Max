@@ -124,6 +124,7 @@ extension Array {
 
         func updateNSView(_ scroll: NSScrollView, context: Context) {
             let coordinator = context.coordinator
+            defer { NativePlaybackReveal.apply() }
             coordinator.onPlay = onPlay
             coordinator.artworkFolder = artworkFolder
             coordinator.playlists = playlists
@@ -137,6 +138,7 @@ extension Array {
             coordinator.onToggleFavorite = onToggleFavorite
             coordinator.showsFavorites = showsFavorites
             coordinator.setActive(isActive, in: scroll)
+            if isActive { NativePlaybackReveal.active = coordinator }
             guard let table = scroll.documentView as? NSTableView else { return }
             if coordinator.sortScope != sortScope {
                 coordinator.sortScope = sortScope
@@ -436,6 +438,9 @@ extension Array {
                 menu.addItem(play)
                 menu.addItem(.separator())
             }
+            for (title, action) in [("Play Next", #selector(playNext)), ("Add to Queue", #selector(addToQueue))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
+            }
             if !coordinator.playlists.isEmpty {
                 let parent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
                 let choices = NSMenu()
@@ -500,6 +505,14 @@ extension Array {
             coordinator.onRemoveFromPlaylist(ids, playlist)
         }
 
+        @objc private func playNext() { enqueueSelection(next: true) }
+        @objc private func addToQueue() { enqueueSelection(next: false) }
+        private func enqueueSelection(next: Bool) {
+            guard let coordinator else { return }
+            let selected = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0] : nil }
+            PlayerArtwork.folder = coordinator.artworkFolder
+            PlaybackController.shared.enqueue(selected, next: next)
+        }
         @objc private func revealSelection() {
             guard let coordinator else { return }
             let urls = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].path.map { URL(fileURLWithPath: $0) } : nil }
@@ -1422,4 +1435,30 @@ extension Array {
             Color.adaptive(light: Color(white: 1, opacity: 0.50), dark: Color(white: 0, opacity: 0.50))
         }
     }
+#endif
+
+#if canImport(AppKitBackend)
+@MainActor enum NativePlaybackReveal {
+    static weak var active: TrackTable.Coordinator?
+    enum Kind { case table, artist, album }
+    private static var kind: Kind = .table
+    private static var pending: String?
+    static func request(_ id: String, kind: Kind = .table) { pending = id; self.kind = kind }
+    static func applyArtist(_ coordinator: ArtistTrackList.Coordinator) {
+        guard kind == .artist, let id = pending, let table = coordinator.table,
+              let index = coordinator.entries.firstIndex(where: { if case .song(let row) = $0 { return row.id == id }; return false }) else { return }
+        pending = nil
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+    }
+    static var pendingAlbumID: String? { kind == .album ? pending : nil }
+    static func completeAlbum() { if kind == .album { pending = nil } }
+    static func apply() {
+        guard kind == .table, let id = pending, let active, active.isActive, let table = active.table,
+              let index = active.rows.firstIndex(where: { $0.id == id }) else { return }
+        pending = nil
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+    }
+}
 #endif

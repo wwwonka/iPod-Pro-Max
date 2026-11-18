@@ -38,6 +38,8 @@ final class SettingsController {
             }.value
             guard !Task.isCancelled else { return }
             syncArtwork = settings?.syncArtwork ?? true
+            PlayerDisplayController.shared.load(settings, store: store)
+            TemporaryCacheController.shared.load(settings, store: store)
             ListAppearance.shared.load(settings, store: store)
             sources = hosts?.hosts.first { $0.id == store.hostID }?.sources.map { Source(id: $0.id, kind: $0.kind.rawValue, path: $0.path) } ?? []
             onChange()

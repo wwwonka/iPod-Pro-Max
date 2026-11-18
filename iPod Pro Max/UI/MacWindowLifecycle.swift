@@ -32,7 +32,10 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         window.delegate = proxy
     }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { DockPlaybackMenu.shared.makeMenu() }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        log("[lifecycle] reopen, visible=\(flag)")
         guard !flag else {
             return originalApplicationDelegate?.applicationShouldHandleReopen?(sender, hasVisibleWindows: flag) ?? true
         }
@@ -43,6 +46,7 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        log("[lifecycle] quit requested, pid=\(ProcessInfo.processInfo.processIdentifier)")
         guard let beforeTerminate else { return originalApplicationDelegate?.applicationShouldTerminate?(sender) ?? .terminateNow }
         guard terminationTask == nil else { return .terminateLater }
         terminationTask = Task {
@@ -81,7 +85,15 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
             inner?.windowWillClose?(notification)
             if let window = notification.object as? NSWindow { onClose(window) }
         }
+        func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
+            var options = inner?.window?(window, willUseFullScreenPresentationOptions: proposedOptions) ?? proposedOptions
+            // Playback lives in the toolbar; full screen must not hide it.
+            options.remove(.autoHideToolbar)
+            log("[lifecycle] full screen presentation proposed=\(proposedOptions.rawValue), chosen=\(options.rawValue)")
+            return options
+        }
         func windowShouldClose(_ sender: NSWindow) -> Bool {
+            log("[lifecycle] close requested; hide window")
             guard inner?.windowShouldClose?(sender) != false else { return false }
             sender.orderOut(nil)
             onHide(sender)

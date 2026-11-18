@@ -52,7 +52,7 @@ public enum TagWriter {
             let isPNG = artworkData.starts(with: [0x89, 0x50, 0x4E, 0x47])
             let isJPEG = artworkData.starts(with: [0xFF, 0xD8, 0xFF])
             let artExt = isPNG ? "png" : "jpg"
-            let artURL = fm.temporaryDirectory.appendingPathComponent("ippm-art-\(token).\(artExt)")
+            let artURL = TemporaryMediaCache.shared.scratchURL(extension: artExt)
             try artworkData.write(to: artURL, options: .atomic)
             tempArtwork = artURL
 

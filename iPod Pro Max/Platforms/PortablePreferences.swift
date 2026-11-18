@@ -15,6 +15,11 @@ final class PortablePreferences {
         var albumArtworkSize: Double?
         var syncArtwork: Bool?
         var favoriteIcon: String?
+        var cacheLimitMB: Int?
+        var clearSpectrum: Bool?
+        var clearWaveforms: Bool?
+        var playerLCDMode: String?
+        var playerShowsRemaining: Bool?
         var hiddenTrackColumns: [String]?
         var sidebarOrder: [String: [String]] = [:]
         var revision: Int
@@ -24,6 +29,12 @@ final class PortablePreferences {
     private var saveTask: Task<Void, Never>?
     private let writer = Writer()
 
+    func stageCache(limitMB: Int, clearSpectrum: Bool, clearWaveforms: Bool, store: PortableLibraryStore) {
+        stage(store) { $0.cacheLimitMB = limitMB; $0.clearSpectrum = clearSpectrum; $0.clearWaveforms = clearWaveforms; return true }
+    }
+    func stagePlayer(mode: String, remaining: Bool, store: PortableLibraryStore) {
+        stage(store) { $0.playerLCDMode = mode; $0.playerShowsRemaining = remaining; return true }
+    }
     func stageMusicMode(_ mode: String, store: PortableLibraryStore) {
         stage(store) { guard $0.mode != mode else { return false }; $0.mode = mode; return true }
     }
@@ -78,16 +89,21 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, store: value.store)
+            try await writer.write(cacheLimitMB: value.cacheLimitMB, clearSpectrum: value.clearSpectrum, clearWaveforms: value.clearWaveforms, playerLCDMode: value.playerLCDMode, playerShowsRemaining: value.playerShowsRemaining, mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], store: PortableLibraryStore) throws {
+        func write(cacheLimitMB: Int?, clearSpectrum: Bool?, clearWaveforms: Bool?, playerLCDMode: String?, playerShowsRemaining: Bool?, mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
             var changed = false
+            if let cacheLimitMB, value.temporaryCacheLimitMB != cacheLimitMB { value.temporaryCacheLimitMB = cacheLimitMB; changed = true }
+            if let clearSpectrum, value.clearSpectrumOnExit != clearSpectrum { value.clearSpectrumOnExit = clearSpectrum; changed = true }
+            if let clearWaveforms, value.clearWaveformsOnExit != clearWaveforms { value.clearWaveformsOnExit = clearWaveforms; changed = true }
+            if let playerLCDMode, value.playerLCDMode != playerLCDMode { value.playerLCDMode = playerLCDMode; changed = true }
+            if let playerShowsRemaining, value.playerShowsRemaining != playerShowsRemaining { value.playerShowsRemaining = playerShowsRemaining; changed = true }
             if let mode, value.musicViewMode != mode { value.musicViewMode = mode; changed = true }
             if let sidebarWidth, value.sidebarWidth != sidebarWidth { value.sidebarWidth = sidebarWidth; changed = true }
             if let lastTab, value.lastTab != lastTab { value.lastTab = lastTab; changed = true }

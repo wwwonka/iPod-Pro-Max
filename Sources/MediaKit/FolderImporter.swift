@@ -61,7 +61,7 @@ public enum FolderImporter {
             var next = 0
             var done = 0
             func addNext() {
-                guard next < files.count else { return }
+                guard !Task.isCancelled, next < files.count else { return }
                 let index = next
                 let url = files[index]
                 next += 1

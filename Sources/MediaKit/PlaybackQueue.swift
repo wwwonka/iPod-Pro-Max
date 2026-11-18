@@ -42,5 +42,39 @@ public struct PlaybackQueue: Sendable {
         else if repeatMode == .all { index = ids.count - 1 }
         return current
     }
+    public var upcoming: [String] { index + 1 < ids.count ? Array(ids[(index + 1)...]) : [] }
+    public var canGoPrevious: Bool { current != nil && (index > 0 || repeatMode == .all) }
+    public var canGoNext: Bool { current != nil && (index + 1 < ids.count || repeatMode == .all) }
+    public mutating func jump(to id: String) -> Bool {
+        guard let index = ids.firstIndex(of: id) else { return false }; self.index = index; return true
+    }
+    /// Existing entries move rather than duplicate. The playing entry is never moved.
+    public mutating func insert(_ incoming: [String], at upcomingIndex: Int) {
+        let selected = current
+        var seen = Set<String>()
+        let added = incoming.filter { $0 != selected && seen.insert($0).inserted }
+        guard !added.isEmpty else { return }
+        let addedSet = Set(added)
+        let destination = min(ids.count, max(index + (selected == nil ? 0 : 1), index + 1 + upcomingIndex))
+        let removedBefore = ids.prefix(destination).filter { addedSet.contains($0) }.count
+        ids.removeAll { addedSet.contains($0) }
+        ids.insert(contentsOf: added, at: max(0, min(ids.count, destination - removedBefore)))
+        index = selected.flatMap { ids.firstIndex(of: $0) } ?? 0
+        if shuffled {
+            let existing = Set(original)
+            let inserted = added.filter { !existing.contains($0) }
+            let originalIndex = selected.flatMap { original.firstIndex(of: $0) }.map { $0 + 1 } ?? original.count
+            original.insert(contentsOf: inserted, at: originalIndex)
+        } else { original = ids }
+    }
+    public mutating func append(_ incoming: [String]) { insert(incoming, at: ids.count) }
+    public mutating func remove(_ removed: Set<String>) {
+        let selected = current
+        let allowed = removed.subtracting(selected.map { [$0] } ?? [])
+        ids.removeAll { allowed.contains($0) }; original.removeAll { allowed.contains($0) }
+        index = selected.flatMap { ids.firstIndex(of: $0) } ?? 0
+    }
+    public mutating func clearUpcoming() { remove(Set(upcoming)) }
+    public mutating func move(_ id: String, to upcomingIndex: Int) { insert([id], at: upcomingIndex) }
     public mutating func clear() { ids = []; original = []; index = 0 }
 }
