@@ -111,6 +111,11 @@
                 layoutPlayerHeader()
                 if let root = window.contentView?.superview, let close = window.standardWindowButton(.closeButton) {
                     let y = close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: root).y
+                    for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+                        guard let button = window.standardWindowButton(type) else { preconditionFailure("Native window control missing") }
+                        let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
+                        precondition(abs(center.x - (20 + CGFloat(index) * 20)) <= 0.5 && abs(root.bounds.height - center.y - 22) <= 0.5, "Traffic lights retain the reference offsets")
+                    }
                     let controls: [NSView] = player.transport.subviews + player.volumeView.subviews + [queueButton]
                     for control in controls where !control.isHidden && control.window != nil {
                         let actual = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: root).y
@@ -216,7 +221,9 @@
             window.styleMask.insert(.fullSizeContentView)
             // Full-screen eligibility must survive the titlebar-free full-screen style.
             window.collectionBehavior.insert(.fullScreenPrimary)
-            (window as? NSCustomWindow)?.acceptsKeyWithoutTitle = true
+            if let nativeWindow = window as? NSCustomWindow {
+                nativeWindow.acceptsKeyWithoutTitle = true
+            }
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             // Glass all over: the window paints nothing itself, its effect views do.
@@ -301,6 +308,41 @@
         // MARK: Traffic lights
 
         private var trafficLightObservers: [NSObjectProtocol] = []
+        private var titlebarSuppressionObservations: [NSKeyValueObservation] = []
+        private var suppressedTitlebar: (host: NSWindow, content: NSView, hidden: Bool, opaque: Bool, color: NSColor, ignoresMouse: Bool)?
+        private func suppressFullScreenTitlebar(_ container: NSView?, in primary: NSWindow) {
+            guard suppressedTitlebar == nil else { return }
+            // AppKit may clone the titlebar during the style transition; the original
+            // buttons then no longer lead to the reveal host. Restrict the fallback
+            // to this process's native titlebar on the primary window's screen.
+            let originalHost = container?.window
+            let host = originalHost !== primary && originalHost != nil ? originalHost : NSApp.windows.first {
+                String(describing: type(of: $0)) == "NSToolbarFullScreenWindow" && $0.screen === primary.screen && abs($0.frame.width - primary.frame.width) < 2
+            }
+            guard let host, host !== primary, let content = host.contentView else { return }
+            // AppKit retains this host for menu-bar hover even without NSToolbar.
+            // Its resting alpha is irrelevant: keep the host transparent and non-interactive
+            // even when AppKit animates it to alpha 1 during reveal.
+            suppressedTitlebar = (host, content, content.isHidden, host.isOpaque, host.backgroundColor, host.ignoresMouseEvents)
+            titlebarSuppressionObservations = [
+                content.observe(\.isHidden, options: [.new]) { [weak self] view, _ in
+                    MainActor.assumeIsolated { if self?.suppressedTitlebar != nil && !view.isHidden { view.isHidden = true } }
+                },
+                host.observe(\.ignoresMouseEvents, options: [.new]) { [weak self] window, _ in
+                    MainActor.assumeIsolated { if self?.suppressedTitlebar != nil && !window.ignoresMouseEvents { window.ignoresMouseEvents = true } }
+                }
+            ]
+            content.isHidden = true
+            host.isOpaque = false; host.backgroundColor = .clear; host.ignoresMouseEvents = true
+        }
+        private func restoreFullScreenTitlebar() {
+            guard let saved = suppressedTitlebar else { return }
+            suppressedTitlebar = nil
+            titlebarSuppressionObservations.removeAll()
+            saved.content.isHidden = saved.hidden
+            saved.host.isOpaque = saved.opaque; saved.host.backgroundColor = saved.color
+            saved.host.ignoresMouseEvents = saved.ignoresMouse
+        }
         /// Relayout after search visibility changes and native title-area events.
         private var relayoutTitleArea: (() -> Void)?
         private func scheduleTitleAreaRelayout() {
@@ -311,8 +353,6 @@
         private func keepTrafficLightsCentered(in window: NSWindow) {
             let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
             let container = buttons.first?.superview?.superview
-            let originalHeight = container?.frame.height ?? 22
-            let originalButtonFrames = buttons.map(\.frame)
             var enteringFullScreen = false
             var centering = false
             func center() {
@@ -325,13 +365,15 @@
                 if let container, let parent = container.superview {
                     container.frame = NSRect(x: 0, y: parent.bounds.height - CGFloat(titleBarHeight), width: parent.bounds.width, height: CGFloat(titleBarHeight))
                 }
-                for button in buttons {
-                    let current = button.convert(NSPoint(x: 0, y: button.bounds.midY), to: root).y
-                    let target = root.bounds.height - CGFloat(titleBarHeight) / 2
-                    guard abs(target - current) > 0.25, let parent = button.superview else { continue }
-                    let delta = parent.convert(NSPoint(x: 0, y: target), from: root).y - parent.convert(NSPoint(x: 0, y: current), from: root).y
-                    button.setFrameOrigin(NSPoint(x: button.frame.minX, y: button.frame.minY + delta))
+                for (index, button) in buttons.enumerated() {
+                    let current = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
+                    let target = NSPoint(x: 20 + CGFloat(index) * 20, y: root.bounds.height - 22)
+                    guard abs(target.x - current.x) > 0.25 || abs(target.y - current.y) > 0.25, let parent = button.superview else { continue }
+                    let desired = parent.convert(target, from: root)
+                    let actual = parent.convert(current, from: root)
+                    button.setFrameOrigin(NSPoint(x: button.frame.minX + desired.x - actual.x, y: button.frame.minY + desired.y - actual.y))
                 }
+                self.layoutPlayerHeader()
             }
             for view in buttons + [container].compactMap({ $0 }) {
                 view.postsFrameChangedNotifications = true
@@ -342,17 +384,17 @@
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated {
                     enteringFullScreen = true
-                    for (button, frame) in zip(buttons, originalButtonFrames) { button.frame = frame }
-                    // Leave the system's own revealable traffic lights at their native height.
-                    if let container, let parent = container.superview {
-                        container.frame = NSRect(x: 0, y: parent.bounds.height - originalHeight, width: parent.bounds.width, height: originalHeight)
-                    }
+
                 }
+            })
+            trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.restoreFullScreenTitlebar() }
             })
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification] {
                 trafficLightObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
                     MainActor.assumeIsolated {
-                        if name == NSWindow.didExitFullScreenNotification { enteringFullScreen = false }
+                        if name == NSWindow.didEnterFullScreenNotification { self.suppressFullScreenTitlebar(container, in: window) }
+                        if name == NSWindow.didExitFullScreenNotification { enteringFullScreen = false; self.restoreFullScreenTitlebar() }
                         center()
                         if name == NSWindow.didExitFullScreenNotification { DispatchQueue.main.async { center() } }
                     }

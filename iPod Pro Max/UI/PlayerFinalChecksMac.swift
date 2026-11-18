@@ -76,7 +76,7 @@ import MediaKit
     let enteredObserver = NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in finishedEntering = true }
     let exitedObserver = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in finishedExiting = true }
     defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver) }
-    if !window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+    if !window.styleMask.contains(.fullScreen) { window.standardWindowButton(.zoomButton)?.performClick(nil) }
     let entered = await waitUntil { finishedEntering }
     guard require(entered, "entered full screen") else { return false }
     let visible = await waitUntil {
@@ -87,8 +87,26 @@ import MediaKit
     for candidate in NSApp.windows { log("[check] fullscreen host \(type(of: candidate)): visible=\(candidate.isVisible) alpha=\(candidate.alphaValue) frame=\(candidate.frame)") }
     guard require(window.contentView?.subviews.contains(where: { $0.identifier?.rawValue == "windowGlass" && $0.window === window }) == true && !window.isOpaque, "translucent background remains in the content window"),
           require(visible && window.toolbar == nil, "LCD remains in its original content header in full screen") else { return false }
-    // The hover-revealed title area has no NSToolbar to duplicate or reparent.
-    guard require(!NSApp.windows.contains(where: { String(describing: type(of: $0)) == "NSToolbarFullScreenWindow" && $0.isVisible && $0.alphaValue > 0.01 }), "no auxiliary fullscreen toolbar") else { return false }
+    // Force the reveal state, rather than checking the host's alpha only at rest.
+    for host in NSApp.windows where String(describing: type(of: host)) == "NSToolbarFullScreenWindow" {
+        let alpha = host.alphaValue
+        host.alphaValue = 1
+        host.contentView?.isHidden = false
+        host.ignoresMouseEvents = false
+        guard require(host.contentView?.isHidden == true && !host.isOpaque && host.backgroundColor.alphaComponent == 0 && host.ignoresMouseEvents,
+                      "hover-revealed native host stays transparent and cannot intercept the player") else { return false }
+        if let root = host.contentView?.superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
+            root.cacheDisplay(in: root.bounds, to: bitmap)
+            var maxAlpha: CGFloat = 0
+            for y in stride(from: 0, to: bitmap.pixelsHigh, by: 4) {
+                for x in stride(from: 0, to: bitmap.pixelsWide, by: 4) { maxAlpha = max(maxAlpha, bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) }
+            }
+            guard require(maxAlpha < 0.01, "native titlebar reveal paints no opaque pixels over the player") else { return false }
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/plr-hover-reveal-surface.png"))
+        }
+        host.alphaValue = alpha
+    }
+    log("PASS: revealed native titlebar remains transparent and ignores mouse events, including AppKit property resets")
     guard require(window.isKeyWindow && NSApp.mainWindow === window, "fullscreen content window keeps keyboard and menu ownership") else { return false }
     let fullScreenFrame = window.frame
     if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 2, pressure: 1) {
