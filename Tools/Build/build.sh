@@ -37,6 +37,25 @@ case $ROOT in
 esac
 LINUX_SRC="/media/psf/Home/$REL"
 mkdir -p "$WORK"
+# Ensure pinned yt-dlp + deno vendor binaries exist for requested targets.
+if [ -x Tools/Build/fetch-ytdlp-vendor.sh ]; then
+    for t in "${TARGETS[@]}"; do
+        case "$t" in
+            mac)
+                if [ ! -x "Plug-ins/yt-dlp/vendor/macos/yt-dlp" ]; then
+                    Tools/Build/fetch-ytdlp-vendor.sh macos || echo "warning: yt-dlp vendor fetch failed for macos" >&2
+                fi ;;
+            linux)
+                if [ ! -x "Plug-ins/yt-dlp/vendor/linux-x86_64/yt-dlp" ] || [ ! -x "Plug-ins/yt-dlp/vendor/linux-aarch64/yt-dlp" ]; then
+                    Tools/Build/fetch-ytdlp-vendor.sh linux || echo "warning: yt-dlp vendor fetch failed for linux" >&2
+                fi ;;
+            windows)
+                if [ ! -f "Plug-ins/yt-dlp/vendor/windows-arm64/yt-dlp.exe" ] || [ ! -f "Plug-ins/yt-dlp/vendor/windows-x64/yt-dlp.exe" ]; then
+                    Tools/Build/fetch-ytdlp-vendor.sh windows || echo "warning: yt-dlp vendor fetch failed for windows" >&2
+                fi ;;
+        esac
+    done
+fi
 # The app icon for each platform, from iPod Pro Max/Resources/AppIcon.appiconset (.build-work/icons, read by the VMs too).
 Tools/Build/make-icons.sh
 WINDOWS_SRC='\\Mac\Home\'"${REL//\//\\}"
@@ -152,6 +171,9 @@ EOF
                 universal "$target" "$pdest/$mac_exec"
                 chmod +x "$pdest/$mac_exec"
                 codesign --force --sign - "$pdest/$mac_exec"
+                mkdir -p "$pdir/$(dirname "$mac_exec")"
+                cp "$pdest/$mac_exec" "$pdir/$mac_exec"
+                chmod +x "$pdir/$mac_exec"
                 if [ -d "$pdest/vendor" ]; then
                     find "$pdest/vendor" -type f -perm -111 -exec codesign --force --sign - {} +
                 fi

@@ -466,6 +466,10 @@ func pluginCommand(_ args: Arguments) async {
         let folder = URL(fileURLWithPath: folderPath, isDirectory: true)
         do {
             let validated = try ManifestValidator.loadAndValidate(from: folder.appendingPathComponent("plugin.json"))
+            if let execRel = validated.executableRelativePath,
+               !FileManager.default.fileExists(atPath: folder.appendingPathComponent(execRel).path) {
+                fail("Missing plug-in executable '\(execRel)' in \(FileOps.nativePath(folder)). Run './Tools/Build/build.sh mac' (or copy the compiled binary to '\(execRel)') before packing.")
+            }
             let fileName = "\(folder.lastPathComponent)-\(validated.manifest.version).ippmplugin"
             let outURL = args.options["--output"].map { URL(fileURLWithPath: $0) }
                 ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
