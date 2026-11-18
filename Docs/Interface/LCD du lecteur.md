@@ -134,3 +134,12 @@ Validation manuelle supplémentaire : entrée par le bouton vert, ouverture du m
 La référence visuelle du propriétaire donne des centres à x = 20, 40 et 60 pt, et y = 22 pt sous le bord supérieur. Le placement contraint les deux axes des boutons natifs ; il est vérifié de 820 à 1 600 pt et après la sortie du plein écran. Les espacements du lecteur sont ensuite recalculés depuis ces positions.
 
 Le contrôle de la bande native ne se limite plus à son alpha au repos : il force l’hôte de titre à alpha 1, tente de rétablir son contenu et ses événements souris comme le ferait AppKit, puis vérifie qu’il reste masqué et traversant. Un rendu bitmap de son cadre n’a aucun pixel opaque (échantillonnage tous les 4 pixels). Ce contrôle passe en clair et en sombre avec entrée par le bouton vert et sortie par la chaîne de réponse du menu système.
+
+
+## Transitions du retrait et des boutons système — 18 novembre 2026
+
+Les véritables boutons AppKit sont hébergés dans le header du contenu en mode fenêtre. Ils gardent leurs actions système et leurs centres à 20/40/60 pt, à 22 pt du haut, dès le début de la sortie du plein écran. Quand AppKit recrée ses boutons, le chrome adopte ces nouvelles instances et remplace ses observations de cadre. Leurs parents gardent ainsi une hauteur de 44 pt pendant la transition, sans imposer une géométrie aux conteneurs de titre qu’AppKit anime lui-même. La surface auxiliaire native reste masquée pendant la sortie, puis retrouve son état initial une fois retirée de l’écran.
+
+Après l’entrée en plein écran, le transport passe d’un retrait de 78 pt plus son espace adaptatif à un retrait de 12 pt, sans espace adaptatif. Une translation Core Animation de 250 ms avec accélération/décélération anime ce changement ; la sortie déclenche le mouvement inverse. Une interruption repart de la position de présentation. Réduire les animations applique directement la position finale. Cette transition ne crée aucune horloge au repos.
+
+Les contrôles natifs vérifient l’aller-retour du retrait, la durée de l’animation, l’absence de clipping pendant les passes de disposition de sortie, ainsi que les actions réelles des boutons vert, réduire et fermer. Les intégrations clair/sombre contrôlent aussi la conservation de la lecture, la réouverture depuis le Dock et le maintien de la bande native invisible au survol.

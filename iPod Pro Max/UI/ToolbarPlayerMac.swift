@@ -35,6 +35,7 @@ import SwiftCrossUI
     private var subscription: SwiftCrossUI.Cancellable?
     private var keyMonitor: Any?
     private var compact = false
+    private(set) var fullScreenLayout = false
     private(set) var transportLeadingSpace: CGFloat = 0
     private(set) var volumeTargetGap: CGFloat = 28
     private var selection: TrackRow? { selectionRows.first { selectedIDs.contains($0.id) && $0.path != nil } }
@@ -43,6 +44,7 @@ import SwiftCrossUI
         self.controller = controller
         super.init()
         transport.identifier = NSUserInterfaceItemIdentifier("playerTransport")
+        transport.wantsLayer = true; transport.layer?.masksToBounds = false
         volumeView.identifier = NSUserInterfaceItemIdentifier("playerVolume")
         lcd.identifier = NSUserInterfaceItemIdentifier("playerLCD")
         slider.controlSize = .small
@@ -114,7 +116,7 @@ import SwiftCrossUI
     }
     func updateWidth() {
         let windowWidth = playerControlWindow(for: transport)?.frame.width ?? 1240
-        transportLeadingSpace = min(18, max(0, (windowWidth - 900) / 340 * 18))
+        transportLeadingSpace = fullScreenLayout ? 0 : min(18, max(0, (windowWidth - 900) / 340 * 18))
         for (index, button) in transport.subviews.enumerated() {
             button.setFrameOrigin(NSPoint(x: transportLeadingSpace + CGFloat(index) * 30, y: button.frame.minY))
         }
@@ -129,11 +131,27 @@ import SwiftCrossUI
         }
         transport.centerControls(); volumeView.centerControls()
     }
+    func setFullScreenLayout(_ enabled: Bool) {
+        guard fullScreenLayout != enabled else { return }
+        let presentationOffset = transport.layer?.presentation()?.transform.m41 ?? 0
+        let oldX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0) + presentationOffset
+        fullScreenLayout = enabled
+        if let header = transport.superview { layout(in: header) }
+        let newX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0)
+        transport.layer?.removeAnimation(forKey: "fullScreenSpacing")
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, abs(oldX - newX) > 0.5 else { return }
+        let movement = CABasicAnimation(keyPath: "transform.translation.x")
+        movement.fromValue = oldX - newX; movement.toValue = 0
+        movement.duration = 0.25
+        movement.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        transport.layer?.add(movement, forKey: "fullScreenSpacing")
+    }
     /// Geometry is owned by the content header; AppKit never reparents these views.
     func layout(in header: NSView) {
         updateWidth()
-        transport.frame.origin = NSPoint(x: 78, y: 6)
-        let gap = header.window?.styleMask.contains(.fullScreen) == true ? 18 + transportLeadingSpace : trafficToBackGap(in: header)
+        transport.frame.origin = NSPoint(x: fullScreenLayout ? 12 : 78, y: 6)
+        let normalLeading = min(18, max(0, ((header.window?.frame.width ?? 1240) - 900) / 340 * 18))
+        let gap = header.window?.styleMask.contains(.fullScreen) == true ? 18 + normalLeading : trafficToBackGap(in: header)
         volumeTargetGap = gap
         let minimumSide = 80 + transport.bounds.width + volumeView.bounds.width + 32
         let lcdWidth = min(460, max(280, header.bounds.width - 2 * minimumSide))

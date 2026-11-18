@@ -77,8 +77,9 @@ import MediaKit
     let exitedObserver = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in finishedExiting = true }
     defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver) }
     if !window.styleMask.contains(.fullScreen) { window.standardWindowButton(.zoomButton)?.performClick(nil) }
-    let entered = await waitUntil { finishedEntering }
+    let entered = await waitUntil { finishedEntering && MacChrome.shared.playerUsesFullScreenSpacing }
     guard require(entered, "entered full screen") else { return false }
+    guard require(MacChrome.shared.playerUsesFullScreenSpacing, "fullscreen removes the traffic-light clearance from playback controls") else { return false }
     let visible = await waitUntil {
         originalLCD.window === window && originalLCD.superview === originalHeader && originalHeader.isDescendant(of: window.contentView!) &&
         !originalLCD.isHiddenOrHasHiddenAncestor && originalLCD.visibleRect.height >= originalLCD.bounds.height - 1
@@ -120,13 +121,22 @@ import MediaKit
     let exited = await waitUntil { finishedExiting }
     guard require(exited && playback.playing, "exit full screen preserves playback") else { return false }
     guard require(originalLCD.window === window && originalLCD.superview === originalHeader && window.toolbar == nil && window.styleMask.contains(.titled), "exit full screen keeps content ownership and restores native titlebar") else { return false }
+    guard require(!MacChrome.shared.playerUsesFullScreenSpacing && MacChrome.shared.exitButtonLayoutSamples > 0 && MacChrome.shared.exitButtonClippedSamples == 0,
+                  "native buttons stay unclipped during fullscreen exit layout passes") else { return false }
+    log("PASS: fullscreen spacing collapses; exit button layouts=\(MacChrome.shared.exitButtonLayoutSamples), clipped=\(MacChrome.shared.exitButtonClippedSamples)")
     MacChrome.shared.checkPlayerToolbarLayout()
     // Check after the next main-loop turn too: AppKit restores its saved style late.
     await Task.yield()
     guard require(window.styleMask.contains(.titled) && window.standardWindowButton(.closeButton)?.window === window, "native window buttons remain after final AppKit style restoration") else { return false }
     log("PASS: enter/exit full screen keeps the content player stable without auxiliary toolbar, audio playing")
 
-    window.performClose(nil)
+    window.standardWindowButton(.miniaturizeButton)?.performClick(nil)
+    let minimized = await waitUntil { window.isMiniaturized }
+    guard require(minimized && playback.playing, "hosted native minimize button preserves playback") else { return false }
+    window.deminiaturize(nil)
+    let restored = await waitUntil { !window.isMiniaturized && window.isVisible }
+    guard require(restored, "native window returns from the Dock") else { return false }
+    window.standardWindowButton(.closeButton)?.performClick(nil)
     guard require(!window.isVisible && playback.playing && center.nowPlayingInfo != nil, "closing hides the window and preserves playback/system session") else { return false }
     _ = MacWindowLifecycle.shared.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
     guard require(window.isVisible && playback.playing, "Dock reopen restores the live window") else { return false }

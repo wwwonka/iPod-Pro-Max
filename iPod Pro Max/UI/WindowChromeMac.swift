@@ -145,6 +145,14 @@
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
             window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
+            player.setFullScreenLayout(true)
+            precondition(playerUsesFullScreenSpacing, "Full screen removes the window-button clearance")
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                precondition(player.transport.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Spacing uses a bounded native animation")
+            }
+            player.setFullScreenLayout(false)
+            precondition(player.transport.frame.minX == 78 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
+            log("PASS: playback clearance animates in/out over 250 ms and restores its windowed position")
             measurements.sort()
             log(String(format: "PASS: toolbar resize 820–1600 pt, LCD bounds; synchronous layout median %.2f ms, max %.2f ms", measurements[measurements.count / 2], measurements.last ?? 0))
         }
@@ -308,6 +316,24 @@
         // MARK: Traffic lights
 
         private var trafficLightObservers: [NSObjectProtocol] = []
+        private var nativeButtonFrameObservers: [NSObjectProtocol] = []
+        private var observedNativeButtonViews: [NSView] = []
+        private var hostedTrafficLights: [NSButton] = []
+        private var hidingTrafficLights = false
+        private(set) var exitButtonLayoutSamples = 0
+        private(set) var exitButtonClippedSamples = 0
+        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == 12 }
+        private func observeNativeButtonFrames(_ views: [NSView], onChange: @escaping () -> Void) {
+            guard views.map(ObjectIdentifier.init) != observedNativeButtonViews.map(ObjectIdentifier.init) else { return }
+            nativeButtonFrameObservers.forEach(NotificationCenter.default.removeObserver)
+            nativeButtonFrameObservers.removeAll(); observedNativeButtonViews = views
+            for view in views {
+                view.postsFrameChangedNotifications = true
+                nativeButtonFrameObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { _ in
+                    MainActor.assumeIsolated { onChange() }
+                })
+            }
+        }
         private var titlebarSuppressionObservations: [NSKeyValueObservation] = []
         private var suppressedTitlebar: (host: NSWindow, content: NSView, hidden: Bool, opaque: Bool, color: NSColor, ignoresMouse: Bool)?
         private func suppressFullScreenTitlebar(_ container: NSView?, in primary: NSWindow) {
@@ -338,6 +364,7 @@
         private func restoreFullScreenTitlebar() {
             guard let saved = suppressedTitlebar else { return }
             suppressedTitlebar = nil
+            if window?.styleMask.contains(.fullScreen) != true { saved.host.orderOut(nil) }
             titlebarSuppressionObservations.removeAll()
             saved.content.isHidden = saved.hidden
             saved.host.isOpaque = saved.opaque; saved.host.backgroundColor = saved.color
@@ -349,52 +376,56 @@
             DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.relayoutTitleArea?() } }
         }
 
-        /// Only the native window buttons use the title area. The player stays in content.
+        /// Keep actual AppKit window buttons in the same stable row as playback.
+        /// Native titlebar containers are resized/replaced during full-screen transitions;
+        /// the content header has its final height from the first animation frame.
         private func keepTrafficLightsCentered(in window: NSWindow) {
-            let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-            let container = buttons.first?.superview?.superview
-            var enteringFullScreen = false
+            let originalContainer = window.standardWindowButton(.closeButton)?.superview?.superview
             var centering = false
+            var exitingFullScreen = false
             func center() {
                 guard !centering else { return }; centering = true; defer { centering = false }
-                let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-                let container = buttons.first?.superview?.superview
-                self.playerHeader?.needsLayout = true
-                self.playerHeader?.layoutSubtreeIfNeeded()
-                guard !enteringFullScreen, !window.styleMask.contains(.fullScreen), let root = window.contentView?.superview else { return }
-                if let container, let parent = container.superview {
-                    container.frame = NSRect(x: 0, y: parent.bounds.height - CGFloat(titleBarHeight), width: parent.bounds.width, height: CGFloat(titleBarHeight))
+                guard let header = self.playerHeader else { return }
+                let native = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
+                if !native.isEmpty && native.map(ObjectIdentifier.init) != self.hostedTrafficLights.map(ObjectIdentifier.init) {
+                    self.hostedTrafficLights.forEach { if $0.superview === header { $0.removeFromSuperview() } }
+                    self.hostedTrafficLights = native
                 }
-                for (index, button) in buttons.enumerated() {
-                    let current = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
-                    let target = NSPoint(x: 20 + CGFloat(index) * 20, y: root.bounds.height - 22)
-                    guard abs(target.x - current.x) > 0.25 || abs(target.y - current.y) > 0.25, let parent = button.superview else { continue }
-                    let desired = parent.convert(target, from: root)
-                    let actual = parent.convert(current, from: root)
-                    button.setFrameOrigin(NSPoint(x: button.frame.minX + desired.x - actual.x, y: button.frame.minY + desired.y - actual.y))
+                self.observeNativeButtonFrames(self.hostedTrafficLights, onChange: center)
+                for (index, button) in self.hostedTrafficLights.enumerated() {
+                    if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
+                    button.isHidden = self.hidingTrafficLights
+                    button.setFrameOrigin(NSPoint(x: 20 + CGFloat(index) * 20 - button.bounds.width / 2,
+                                                  y: header.bounds.height - 22 - button.bounds.height / 2))
+                    if exitingFullScreen && !button.isHiddenOrHasHiddenAncestor {
+                        self.exitButtonLayoutSamples += 1
+                        if button.visibleRect.height < button.bounds.height - 0.5 { self.exitButtonClippedSamples += 1 }
+                    }
                 }
                 self.layoutPlayerHeader()
             }
-            for view in buttons + [container].compactMap({ $0 }) {
-                view.postsFrameChangedNotifications = true
-                trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { _ in
-                    MainActor.assumeIsolated { center() }
-                })
-            }
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated {
-                    enteringFullScreen = true
-
-                }
+                MainActor.assumeIsolated { self.hidingTrafficLights = true; center() }
             })
-            trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.restoreFullScreenTitlebar() }
+            trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    exitingFullScreen = true; self.hidingTrafficLights = false
+                    self.exitButtonLayoutSamples = 0; self.exitButtonClippedSamples = 0
+                    self.player.setFullScreenLayout(false)
+                    center()
+                }
             })
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification] {
                 trafficLightObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
                     MainActor.assumeIsolated {
-                        if name == NSWindow.didEnterFullScreenNotification { self.suppressFullScreenTitlebar(container, in: window) }
-                        if name == NSWindow.didExitFullScreenNotification { enteringFullScreen = false; self.restoreFullScreenTitlebar() }
+                        if name == NSWindow.didEnterFullScreenNotification {
+                            self.suppressFullScreenTitlebar(originalContainer, in: window)
+                            self.player.setFullScreenLayout(true)
+                        }
+                        if name == NSWindow.didExitFullScreenNotification {
+                            exitingFullScreen = false; self.hidingTrafficLights = false
+                            self.player.setFullScreenLayout(false); self.restoreFullScreenTitlebar()
+                        }
                         center()
                         if name == NSWindow.didExitFullScreenNotification { DispatchQueue.main.async { center() } }
                     }
