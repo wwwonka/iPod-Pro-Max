@@ -1,0 +1,622 @@
+import XCTest
+import PluginKit
+@testable import SpotifyPlugin
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+final class SpotifyPluginTests: XCTestCase {
+    private static func repoRoot(file: String = #filePath) -> URL {
+        URL(fileURLWithPath: file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    // MARK: - SPO-1: Manifest & urlPatterns
+
+    func testSpotifyManifestURLPatternsAndConfig() throws {
+        let pluginFolder = Self.repoRoot().appendingPathComponent("Plug-ins/Spotify", isDirectory: true)
+        let manifestURL = pluginFolder.appendingPathComponent("plugin.json")
+        let validated = try ManifestValidator.loadAndValidate(from: manifestURL)
+        let manifest = validated.manifest
+
+        XCTAssertEqual(manifest.id, "spotify")
+        XCTAssertEqual(manifest.knownRoles, [.playlistSource])
+        XCTAssertEqual(manifest.requiresConsent, .scraping)
+        XCTAssertNotNil(manifest.config?["userAgent"]?.stringValue)
+        XCTAssertNotNil(manifest.config?["pathfinder"]?.objectValue?["fetchPlaylist"]?.objectValue?["sha256"]?.stringValue)
+        XCTAssertNotNil(manifest.config?["pathfinder"]?.objectValue?["getAlbum"]?.objectValue?["sha256"]?.stringValue)
+
+        let accepted = [
+            "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+            "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy?si=xyz123",
+            "https://open.spotify.com/intl-fr/playlist/37i9dQZF1DXcBWIGoYBM5M?pi=abc",
+            "https://open.spotify.com/intl-pt-BR/album/4aawyAB9vmqN3uQ7FjRGTy",
+            "https://play.spotify.com/embed/playlist/37i9dQZF1DXcBWIGoYBM5M",
+            "open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+            "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+            "spotify:album:4aawyAB9vmqN3uQ7FjRGTy",
+        ]
+        for url in accepted {
+            XCTAssertTrue(manifest.matchesURL(url), "Expected manifest urlPatterns to accept '\(url)'")
+        }
+
+        let rejected = [
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+            "https://open.spotify.com/artist/0TnOYISbd1XYRBk9myaseg",
+            "https://open.spotify.com/episode/512ojhOuo1ktJprKbVcKyQ",
+            "https://open.spotify.com/show/4rOoJ6Egrf8K2IrywzwOMk",
+            "spotify:track:4cOdK2wGLETKBW3PvgPWqT",
+            "https://spotify.link/short123",
+            "https://spoti.fi/short123",
+            "https://open.spotify.com/playlist/tooShort",
+            "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5Mextra",
+        ]
+        for url in rejected {
+            XCTAssertFalse(manifest.matchesURL(url), "Expected manifest urlPatterns to reject '\(url)'")
+        }
+    }
+
+    // MARK: - SPO-2: SpotifyURL Parser
+
+    func testSpotifyURLParsing() throws {
+        XCTAssertEqual(
+            try SpotifyURL.parse("https://open.spotify.com/intl-fr/playlist/37i9dQZF1DXcBWIGoYBM5M?si=123"),
+            SpotifyTarget(kind: .playlist, id: "37i9dQZF1DXcBWIGoYBM5M")
+        )
+        XCTAssertEqual(
+            try SpotifyURL.parse("open.spotify.com/embed/album/4aawyAB9vmqN3uQ7FjRGTy"),
+            SpotifyTarget(kind: .album, id: "4aawyAB9vmqN3uQ7FjRGTy")
+        )
+        XCTAssertEqual(
+            try SpotifyURL.parse("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"),
+            SpotifyTarget(kind: .playlist, id: "37i9dQZF1DXcBWIGoYBM5M")
+        )
+        XCTAssertEqual(
+            try SpotifyURL.parse("spotify:album:4aawyAB9vmqN3uQ7FjRGTy"),
+            SpotifyTarget(kind: .album, id: "4aawyAB9vmqN3uQ7FjRGTy")
+        )
+
+        for bad in [
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+            "https://spotify.link/abc123",
+            "https://open.spotify.com/playlist/invalid_id_len",
+            "",
+        ] {
+            XCTAssertThrowsError(try SpotifyURL.parse(bad))
+        }
+    }
+
+    // MARK: - SPO-3: TokenManager
+
+    func testTokenManagerExtractionCoalescingAndExpiry() async throws {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let validHTML = Self.makeEmbedHTML(token: "anon-tok-1", expiresAtMs: nowMs + 300_000)
+
+        let transport = MockHTTPTransport { request in
+            XCTAssertTrue(request.url?.absoluteString.contains("open.spotify.com/embed/playlist/") == true)
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            return HTTPResponseData(statusCode: 200, body: Data(validHTML.utf8))
+        }
+
+        let manager = TokenManager(transport: transport)
+        // 5 concurrent callers share a single bootstrap HTTP request
+        let tokens = try await withThrowingTaskGroup(of: String.self) { group in
+            for _ in 0..<5 {
+                group.addTask { try await manager.getToken(preferredPlaylistID: "37i9dQZF1DXcBWIGoYBM5M") }
+            }
+            var out: [String] = []
+            for try await t in group { out.append(t) }
+            return out
+        }
+        XCTAssertEqual(Set(tokens), ["anon-tok-1"])
+        XCTAssertEqual(transport.callCount, 1)
+
+        // Expiring token (<60s remaining) triggers clean refresh on next call
+        let nearExpiryHTML = Self.makeEmbedHTML(token: "short-tok", expiresAtMs: nowMs + 30_000)
+        let refreshedHTML = Self.makeEmbedHTML(token: "fresh-tok", expiresAtMs: nowMs + 600_000)
+        let sequenceTransport = SequenceMockTransport(responses: [
+            HTTPResponseData(statusCode: 200, body: Data(nearExpiryHTML.utf8)),
+            HTTPResponseData(statusCode: 200, body: Data(refreshedHTML.utf8)),
+        ])
+        let m2 = TokenManager(transport: sequenceTransport)
+        let first = try await m2.getToken()
+        XCTAssertEqual(first, "short-tok")
+        let second = try await m2.getToken()
+        XCTAssertEqual(second, "fresh-tok")
+
+        // Missing JSON path logs exact failing path
+        do {
+            _ = try TokenManager.extractSession(fromHTML: "<script id=\"__NEXT_DATA__\" type=\"application/json\">{\"props\":{}}</script>")
+            XCTFail("Expected EmbedParsingFailure")
+        } catch let fail as TokenManager.EmbedParsingFailure {
+            XCTAssertTrue(fail.logDetail.contains("props.pageProps"))
+        }
+    }
+
+    // MARK: - SPO-4, 5, 6, 7, 8: Playlist Pagination, 401 Retry, Parsing, Revision & API Errors
+
+    func testSpotifySourceFetchPagination401AndRevision() async throws {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let embedHTML = Self.makeEmbedHTML(token: "tok-initial", expiresAtMs: nowMs + 300_000)
+        let embedHTMLRefreshed = Self.makeEmbedHTML(token: "tok-refreshed", expiresAtMs: nowMs + 300_000)
+
+        let page1JSON = Self.makePlaylistPageJSON(
+            title: "My Mix",
+            uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+            owner: "Julien",
+            tracks: [
+                (id: "4cOdK2wGLETKBW3PvgPWqT", name: "Track One", artist: "Artist A", duration: 180_000, playable: true, explicit: true),
+                (id: "0VjIjW4GlUZAMYd2vXMi3b", name: "Track Two (Unplayable)", artist: "Artist B", duration: 200_000, playable: false, explicit: false),
+            ],
+            includeEpisodeAndLocal: true,
+            nextOffset: 100
+        )
+        let page2JSON = Self.makePlaylistPageJSON(
+            title: "My Mix",
+            uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+            owner: "Julien",
+            tracks: [
+                // Duplicate of Track One intentionally preserved in order!
+                (id: "4cOdK2wGLETKBW3PvgPWqT", name: "Track One", artist: "Artist A", duration: 180_000, playable: true, explicit: true),
+            ],
+            includeEpisodeAndLocal: false,
+            nextOffset: nil
+        )
+
+        var pathfinderCalls = 0
+        let transport = MockHTTPTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            if url.contains("open.spotify.com/embed/") {
+                let html = pathfinderCalls == 0 ? embedHTML : embedHTMLRefreshed
+                return HTTPResponseData(statusCode: 200, body: Data(html.utf8))
+            }
+            pathfinderCalls += 1
+            if pathfinderCalls == 1 {
+                // Simulate initial 401 forcing single re-bootstrap
+                return HTTPResponseData(statusCode: 401, body: Data())
+            }
+            if url.contains("%22offset%22:100") || url.contains("\"offset\":100") {
+                return HTTPResponseData(statusCode: 200, body: Data(page2JSON.utf8))
+            }
+            return HTTPResponseData(statusCode: 200, body: Data(page1JSON.utf8))
+        }
+
+        let source = SpotifySource(transport: transport)
+        let recorder = TestRuntimeRecorder()
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: .current(),
+                paths: PluginPaths(data: "/tmp", cache: "/tmp", temp: "/tmp")
+            ),
+            context: recorder
+        )
+
+        let res = try await source.fetch(url: URL(string: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")!)
+        XCTAssertEqual(res.playlist.title, "My Mix")
+        XCTAssertEqual(res.playlist.owner, "Julien")
+        XCTAssertEqual(res.playlist.sourceID, "37i9dQZF1DXcBWIGoYBM5M")
+        XCTAssertEqual(res.tracks.count, 3) // episode + local skipped, duplicate & unplayable included
+        XCTAssertEqual(res.tracks.map(\.sourceID), [
+            "4cOdK2wGLETKBW3PvgPWqT",
+            "0VjIjW4GlUZAMYd2vXMi3b",
+            "4cOdK2wGLETKBW3PvgPWqT",
+        ])
+        XCTAssertEqual(res.tracks[0].explicit, true)
+        XCTAssertEqual(res.tracks[0].releaseDate, "2020-03-20")
+        XCTAssertEqual(res.tracks[0].artworkURL?.absoluteString, "https://i.scdn.co/image/large640")
+        XCTAssertEqual(recorder.warnings.count, 1) // unplayable track logged!
+
+        let expectedRevision = SpotifyParsers.computeRevision(
+            title: "My Mix",
+            trackIDs: res.tracks.map(\.sourceID)
+        )
+        XCTAssertEqual(res.playlist.revision, expectedRevision)
+        XCTAssertEqual(res.playlist.revision.count, 64)
+    }
+
+    func testSpotifyPersistedQueryNotFoundTriggersAPIChangedAndStatus() async throws {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let embedHTML = Self.makeEmbedHTML(token: "tok", expiresAtMs: nowMs + 300_000)
+        let errJSON = #"{"errors":[{"message":"PersistedQueryNotFound"}]}"#
+
+        let transport = MockHTTPTransport { request in
+            if request.url?.absoluteString.contains("embed/") == true {
+                return HTTPResponseData(statusCode: 200, body: Data(embedHTML.utf8))
+            }
+            return HTTPResponseData(statusCode: 200, body: Data(errJSON.utf8))
+        }
+
+        let source = SpotifySource(transport: transport)
+        let recorder = TestRuntimeRecorder()
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: .current(),
+                paths: PluginPaths(data: "/tmp", cache: "/tmp", temp: "/tmp")
+            ),
+            context: recorder
+        )
+
+        do {
+            _ = try await source.fetch(url: URL(string: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")!)
+            XCTFail("Expected apiChanged")
+        } catch let pErr as PluginError {
+            XCTAssertEqual(pErr.code, .apiChanged)
+            XCTAssertEqual(pErr.message, SpotifyMessages.apiChanged)
+        }
+        XCTAssertEqual(recorder.statuses.last?.state, .error)
+        XCTAssertEqual(recorder.statuses.last?.message, SpotifyMessages.apiChanged)
+    }
+
+    // MARK: - SPO-10: Offline CLI Conformance Check
+
+    func testSpotifyPluginOfflineConformance() async throws {
+        let pluginFolder = Self.repoRoot().appendingPathComponent("Plug-ins/Spotify", isDirectory: true)
+        let validated = try ManifestValidator.loadAndValidate(from: pluginFolder.appendingPathComponent("plugin.json"))
+        guard let execRel = validated.executableRelativePath,
+              FileManager.default.isExecutableFile(atPath: pluginFolder.appendingPathComponent(execRel).path) else {
+            throw XCTSkip("Spotify plug-in binary not staged at \(validated.executableRelativePath ?? "")")
+        }
+
+        let report = await PluginCLI.runConformanceTests(folderURL: pluginFolder, offline: true)
+        for check in report.results {
+            XCTAssertTrue(check.passed, "Check '\(check.name)' failed: \(check.detail)")
+        }
+        XCTAssertTrue(report.allPassed)
+    }
+
+    // MARK: - Opt-in Live Network Test
+
+    func testLivePublicPlaylistWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["IPPM_LIVE_SPOTIFY_TESTS"] == "1" else {
+            throw XCTSkip("Live Spotify network test disabled (set IPPM_LIVE_SPOTIFY_TESTS=1 to run)")
+        }
+        let source = SpotifySource()
+        let recorder = TestRuntimeRecorder()
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: .current(),
+                paths: PluginPaths(data: "/tmp", cache: "/tmp", temp: "/tmp")
+            ),
+            context: recorder
+        )
+        let res = try await source.fetch(url: URL(string: "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")!)
+        XCTAssertFalse(res.playlist.title.isEmpty)
+        XCTAssertFalse(res.tracks.isEmpty)
+    }
+
+    // MARK: - Fixture Builders
+
+    func testAccountLoginReorderPathfinderAndUnauthorizedHandling() async throws {
+        let recorder = RequestRecorder()
+        let transport = MockHTTPTransport { req in
+            await recorder.append(req)
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"julien","display_name":"Julien"}"#.utf8))
+            }
+            let callIndex = await recorder.mutationCount()
+            if callIndex == 1 {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"data":{"moveItemsInPlaylist":{"__typename":"MoveItemsInPlaylistPayload"}}}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 401, body: Data(#"{"error":{"status":401,"message":"The access token expired"}}"#.utf8))
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("sp-acc-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmpDir.path, cache: tmpDir.path, temp: tmpDir.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+
+        let waiting = try await source.login(key: "account", fields: [:])
+        XCTAssertEqual(waiting.status, "waiting")
+        XCTAssertNotNil(waiting.openURL)
+
+        let signedIn = try await source.login(key: "account", fields: [
+            "accessToken": "user-tok-1",
+            "clientToken": "client-tok-1",
+            "sp_dc": "secret-dc",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+        XCTAssertEqual(signedIn.status, "signedIn")
+        XCTAssertEqual(signedIn.displayName, "Julien")
+
+        try await source.reorder(request: PlaylistReorderRequest(
+            playlistID: "3jiWifGSBvNmcMDMEQDaAr",
+            movedItemUIDs: ["uid-track-2"],
+            beforeItemUID: "uid-track-0",
+            rangeStart: 2,
+            rangeLength: 1,
+            insertBefore: 0
+        ))
+
+        let rawPostReq = await recorder.lastMutationRequest()
+        let postReq = try XCTUnwrap(rawPostReq)
+        let rawBody = postReq.httpBody
+        let postBodyData = try XCTUnwrap(rawBody)
+        XCTAssertEqual(postReq.value(forHTTPHeaderField: "Authorization"), "Bearer user-tok-1")
+        XCTAssertEqual(postReq.value(forHTTPHeaderField: "client-token"), "client-tok-1")
+        let bodyObj = try JSONSerialization.jsonObject(with: postBodyData) as? [String: Any]
+        XCTAssertEqual(bodyObj?["operationName"] as? String, "moveItemsInPlaylist")
+        let vars = bodyObj?["variables"] as? [String: Any]
+        XCTAssertEqual(vars?["playlistUri"] as? String, "spotify:playlist:3jiWifGSBvNmcMDMEQDaAr")
+        XCTAssertEqual(vars?["uids"] as? [String], ["uid-track-2"])
+        let pos = vars?["newPosition"] as? [String: Any]
+        XCTAssertEqual(pos?["moveType"] as? String, "BEFORE_UID")
+        XCTAssertEqual(pos?["fromUid"] as? String, "uid-track-0")
+
+        do {
+            try await source.reorder(request: PlaylistReorderRequest(
+                playlistID: "3jiWifGSBvNmcMDMEQDaAr",
+                movedItemUIDs: ["uid-track-2"],
+                atStart: true,
+                rangeStart: 2,
+                rangeLength: 1,
+                insertBefore: 0
+            ))
+            XCTFail("Expected .unauthorized on 401 response")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unauthorized)
+        }
+
+        let loggedOut = try await source.logout()
+        XCTAssertEqual(loggedOut.status, "signedOut")
+    }
+
+    func testSpotifyUsernamePreferenceAndAddLibraryTracksToPlaylist() async throws {
+        let searchJSON = """
+        {
+          "tracks": {
+            "items": [
+              {
+                "id": "track123",
+                "uri": "spotify:track:track123",
+                "name": "Digital Love",
+                "duration_ms": 298000,
+                "track_number": 4,
+                "disc_number": 1,
+                "artists": [{"name": "Daft Punk"}],
+                "album": {"name": "Discovery", "images": [{"url": "https://i.scdn.co/image/disc", "width": 640, "height": 640}]},
+                "external_ids": {"isrc": "GBDUW0000059"}
+              }
+            ]
+          }
+        }
+        """
+
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(
+                    statusCode: 200,
+                    body: Data(#"{"id":"od192uo8ryp8qhvwlzwuu2u83","display_name":"wwwonka"}"#.utf8)
+                )
+            }
+            if url.contains("/v1/search") {
+                return HTTPResponseData(statusCode: 200, body: Data(searchJSON.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("/v1/playlists/plOwned/items") {
+                return HTTPResponseData(statusCode: 201, body: Data(#"{"snapshot_id":"snap-1"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("/v1/playlists/plNotOwned/items") {
+                return HTTPResponseData(statusCode: 403, body: Data())
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spotify-add-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "0.1", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+
+        let signedIn = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+        XCTAssertEqual(signedIn.status, "signedIn")
+        XCTAssertEqual(signedIn.displayName, "wwwonka")
+
+        let addedRes = try await source.addTracks(request: PlaylistAddTracksRequest(
+            playlistID: "plOwned",
+            tracks: [
+                PlaylistAddTrackInput(title: "Digital Love", artist: "Daft Punk", album: "Discovery", durationMs: 298000),
+            ]
+        ))
+        XCTAssertEqual(addedRes.added.count, 1)
+        XCTAssertEqual(addedRes.added.first?.matchedTrack.sourceID, "track123")
+        XCTAssertEqual(addedRes.notFoundTitles, [])
+
+        do {
+            _ = try await source.addTracks(request: PlaylistAddTracksRequest(
+                playlistID: "plNotOwned",
+                tracks: [PlaylistAddTrackInput(title: "Digital Love", artist: "Daft Punk")]
+            ))
+            XCTFail("Expected .unsupported on HTTP 403")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unsupported)
+            XCTAssertTrue(err.message.localizedCaseInsensitiveContains("own"))
+        }
+    }
+
+    private static func makeEmbedHTML(token: String, expiresAtMs: Int64) -> String {
+        """
+        <html><body>
+        <script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"settings":{"session":{"accessToken":"\(token)","accessTokenExpirationTimestampMs":\(expiresAtMs),"isAnonymous":true}}}}}}</script>
+        </body></html>
+        """
+    }
+
+    private static func makePlaylistPageJSON(
+        title: String,
+        uri: String,
+        owner: String,
+        tracks: [(id: String, name: String, artist: String, duration: Int, playable: Bool, explicit: Bool)],
+        includeEpisodeAndLocal: Bool,
+        nextOffset: Int?
+    ) -> String {
+        var itemsJSON: [String] = tracks.map { t in
+            let rating = t.explicit ? "EXPLICIT" : "NONE"
+            return """
+            {
+              "itemV2": {
+                "__typename": "TrackResponseWrapper",
+                "data": {
+                  "__typename": "Track",
+                  "uri": "spotify:track:\(t.id)",
+                  "name": "\(t.name)",
+                  "trackNumber": 1,
+                  "discNumber": 1,
+                  "contentRating": {"label": "\(rating)"},
+                  "playability": {"playable": \(t.playable)},
+                  "duration": {"totalMilliseconds": \(t.duration)},
+                  "artists": {"items": [{"uri": "spotify:artist:1", "profile": {"name": "\(t.artist)"}}]},
+                  "albumOfTrack": {
+                    "uri": "spotify:album:4aawyAB9vmqN3uQ7FjRGTy",
+                    "name": "Sample Album",
+                    "date": {"year": 2020, "month": 3, "day": 20},
+                    "artists": {"items": [{"uri": "spotify:artist:1", "profile": {"name": "\(t.artist)"}}]},
+                    "coverArt": {
+                      "sources": [
+                        {"url": "https://i.scdn.co/image/small64", "width": 64, "height": 64},
+                        {"url": "https://i.scdn.co/image/large640", "width": 640, "height": 640}
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+            """
+        }
+
+        if includeEpisodeAndLocal {
+            itemsJSON.append("""
+            {
+              "itemV2": {
+                "__typename": "EpisodeResponseWrapper",
+                "data": {
+                  "__typename": "Episode",
+                  "uri": "spotify:episode:512ojhOuo1ktJprKbVcKyQ",
+                  "name": "Ignored Episode"
+                }
+              }
+            }
+            """)
+            itemsJSON.append("""
+            {
+              "itemV2": {
+                "__typename": "TrackResponseWrapper",
+                "data": {
+                  "__typename": "LocalTrack",
+                  "uri": "spotify:local:Artist:Album:Title:180",
+                  "name": "Local File"
+                }
+              }
+            }
+            """)
+        }
+
+        let offsetStr = nextOffset.map { "\($0)" } ?? "null"
+        return """
+        {
+          "data": {
+            "playlistV2": {
+              "__typename": "Playlist",
+              "data": {
+                "uri": "\(uri)",
+                "name": "\(title)",
+                "ownerV2": {"data": {"name": "\(owner)"}},
+                "images": {"items": [{"sources": [{"url": "https://i.scdn.co/image/pl640", "width": 640, "height": 640}]}]},
+                "contents": {
+                  "totalCount": \(tracks.count),
+                  "offsets": {"nextOffset": \(offsetStr)},
+                  "items": [\(itemsJSON.joined(separator: ","))]
+                }
+              }
+            }
+          }
+        }
+        """
+    }
+}
+
+private final class MockHTTPTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var callCount = 0
+    private let handler: @Sendable (URLRequest) async throws -> HTTPResponseData
+
+    init(handler: @escaping @Sendable (URLRequest) async throws -> HTTPResponseData) {
+        self.handler = handler
+    }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponseData {
+        lock.lock()
+        callCount += 1
+        lock.unlock()
+        return try await handler(request)
+    }
+}
+
+private final class SequenceMockTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var responses: [HTTPResponseData]
+
+    init(responses: [HTTPResponseData]) {
+        self.responses = responses
+    }
+
+    func send(_ request: URLRequest) async throws -> HTTPResponseData {
+        lock.lock()
+        defer { lock.unlock() }
+        return responses.removeFirst()
+    }
+}
+
+private final class TestRuntimeRecorder: PluginRuntimeContext, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var warnings: [String] = []
+    private(set) var statuses: [PluginStatusUpdate] = []
+
+    func log(_ level: PluginLogLevel, _ message: String) async {
+        lock.lock()
+        if level == .warning { warnings.append(message) }
+        lock.unlock()
+    }
+
+    func reportStatus(_ state: PluginRuntimeState, message: String?) async {
+        lock.lock()
+        statuses.append(PluginStatusUpdate(state: state, message: message))
+        lock.unlock()
+    }
+
+    func reportAccountStatus(_ status: PluginAccountStatus) async {}
+}
+
+private actor RequestRecorder {
+    private var requests: [URLRequest] = []
+    private var mutations = 0
+
+    func append(_ req: URLRequest) {
+        requests.append(req)
+        if req.httpMethod == "POST" { mutations += 1 }
+    }
+
+    func mutationCount() -> Int { mutations }
+
+    func lastMutationRequest() -> URLRequest? {
+        requests.last(where: { $0.httpMethod == "POST" })
+    }
+}

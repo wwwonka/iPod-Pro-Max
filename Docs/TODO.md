@@ -13,7 +13,7 @@ Voir [[Fenêtre des préférences]] : scène `Window`, verre de la fenêtre prin
 - **Architecture proposée : plug-ins hors processus.** Un plug-in = un dossier avec `plugin.json` (id, version, capacités, réglages déclarés) et un exécutable qui dialogue en JSON lignes sur stdin/stdout. Avantages : indépendant du langage (Swift, Python, Node, Go), pas de problème d'ABI ni de chargement dynamique sur 3 OS, un plug-in qui plante n'abat pas l'app, communauté libre d'en écrire, zéro coût au repos (processus lancé à la demande). Les plug-ins vivent sur l'iPod (cohérent avec « les données restent sur l'iPod »).
 - **Les réglages d'un plug-in sont décrits dans son manifeste** et rendus automatiquement par la fenêtre Préférences (champs, clés d'API, bascules) : la fenêtre ne change pas quand un plug-in s'ajoute.
 - **Nouvel ordre** : (A) Préférences, (B) Metadata Editor, (C) contrat de plug-ins + premier plug-in (le scraper Spotify existant de Julien), puis les sections Music, Playlists, Podcasts, etc. Les étapes 0 à 5 ci-dessous se lisent donc dans l'ordre : fondations plug-ins minimales → Préférences → Metadata Editor → reste.
-- Question ouverte : où est le scraper Spotify (langage, dépôt) ? Il servira de plug-in de référence pour figer le contrat.
+- Scraper Spotify retrouvé (`~/Desktop/Coding/Spotify-Soulseek-Downloader`, TypeScript, sans API officielle). Contrat et premiers plug-ins spécifiés le 2026-11-15 : [[feature-plugins]], [[feature-playlist-subscriptions]], [[feature-plugin-spotify]], [[feature-plugin-soulseek]], [[feature-plugin-ytdlp]], [[ADR-007 Plug-ins hors processus]].
 
 ## Avis sur le plan
 Ce qui est bien :

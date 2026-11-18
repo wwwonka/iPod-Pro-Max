@@ -1,4 +1,5 @@
 import Foundation
+import PluginKit
 
 // Symbols that SF Symbols doesn't have, drawn from SVG artwork and used exactly like an SF Symbol:
 // by name (`systemSymbol("apple-music", pointSize: 25)`, `Symbol(name: "apple-music")`), as a
@@ -17,6 +18,8 @@ struct CustomSymbol {
     var steps: [CustomSymbolStep]
     /// Nil fills the path; a value strokes it at that width in the SVG's coordinates.
     var strokeWidth: Double?
+    /// True for square-fitted plug-in badges (uses `max(width, height)` instead of `height`).
+    var fitBounds: Bool = false
 
     /// Parses the M, L, C and Z commands of an SVG path (what this artwork uses).
     init(svgPath: String, strokeWidth: Double? = nil) {
@@ -57,6 +60,19 @@ struct CustomSymbol {
         self.strokeWidth = strokeWidth
     }
 
+    init(parsedBadge: ParsedSVGBadge) {
+        self.steps = parsedBadge.steps.map { step in
+            switch step {
+            case .move(let x, let y): .move(x, y)
+            case .line(let x, let y): .line(x, y)
+            case .curve(let x1, let y1, let x2, let y2, let x, let y): .curve(x1, y1, x2, y2, x, y)
+            case .close: .close
+            }
+        }
+        self.strokeWidth = nil
+        self.fitBounds = true
+    }
+
     /// The artwork's bounds, control points included (a safe over-estimate for centering).
     var bounds: (minX: Double, minY: Double, maxX: Double, maxY: Double) {
         var xs: [Double] = [], ys: [Double] = []
@@ -79,6 +95,9 @@ let customSymbols: [String: CustomSymbol] = [
     "podcasts": CustomSymbol(
         svgPath: "M12 13 L12 21 M12 13 C12.5523 13 13 12.5523 13 12 C13 11.4477 12.5523 11 12 11 C11.4477 11 11 11.4477 11 12 C11 12.5523 11.4477 13 12 13 M15.5355 15.5355 C17.4882 13.5829 17.4882 10.4171 15.5355 8.46447 C13.5829 6.51184 10.4171 6.51184 8.46447 8.46447 C6.51184 10.4171 6.51184 13.5829 8.46447 15.5355 M18.364 18.364 C21.8787 14.8492 21.8787 9.15076 18.364 5.63604 C14.8492 2.12132 9.15076 2.12132 5.63604 5.63604 C2.12132 9.15076 2.12132 14.8492 5.63604 18.364",
         strokeWidth: 1.35
+    ),
+    "playlist-lines": CustomSymbol(
+        svgPath: "M 3 5.5 L 21 5.5 C 21.8 5.5 22.3 6.0 22.3 6.75 C 22.3 7.5 21.8 8.0 21 8.0 L 3 8.0 C 2.2 8.0 1.7 7.5 1.7 6.75 C 1.7 6.0 2.2 5.5 3 5.5 Z M 3 10.75 L 21 10.75 C 21.8 10.75 22.3 11.25 22.3 12.0 C 22.3 12.75 21.8 13.25 21 13.25 L 3 13.25 C 2.2 13.25 1.7 12.75 1.7 12.0 C 1.7 11.25 2.2 10.75 3 10.75 Z M 3 16.0 L 13.5 16.0 C 14.3 16.0 14.8 16.5 14.8 17.25 C 14.8 18.0 14.3 18.5 13.5 18.5 L 3 18.5 C 2.2 18.5 1.7 18.0 1.7 17.25 C 1.7 16.5 2.2 16.0 3 16.0 Z"
     ),
 ]
 

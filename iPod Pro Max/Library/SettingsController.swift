@@ -25,6 +25,7 @@ final class SettingsController {
     /// Called when the main window opens a library (or re-reads it after a folder was added).
     func attach(_ store: PortableLibraryStore?) {
         self.store = store
+        PluginController.shared.attach(store)
         loadTask?.cancel()
         guard let store else {
             sources = []

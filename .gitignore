@@ -25,3 +25,7 @@ Docs/.obsidian/*
 .claude/worktrees/
 .claude/settings.local.json
 .build-x86_64/
+
+# Built/downloaded plug-in executables and vendored runtime binaries
+Plug-ins/*/bin/
+Plug-ins/yt-dlp/vendor/

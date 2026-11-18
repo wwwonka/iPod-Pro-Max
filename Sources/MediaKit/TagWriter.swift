@@ -11,7 +11,12 @@ import Foundation
 import iPodKit
 
 public enum TagWriter {
-    public static func writeTags(for track: LibraryTrack, customArtworkData: Data? = nil) async throws {
+    public static func writeTags(
+        for track: LibraryTrack,
+        customArtworkData: Data? = nil,
+        isrc: String? = nil,
+        stripExistingNonTechnical: Bool = false
+    ) async throws {
         let url = URL(fileURLWithPath: track.path)
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else {
@@ -23,16 +28,30 @@ public enum TagWriter {
 
         let ext = url.pathExtension.lowercased()
         if ext == "mp3" {
-            try writeID3v2MP3(url: url, track: track, customArtworkData: customArtworkData)
+            try writeID3v2MP3(url: url, track: track, customArtworkData: customArtworkData, isrc: isrc ?? track.isrc)
             return
         }
 
-        try await writeWithFFmpeg(url: url, ext: ext, track: track, customArtworkData: customArtworkData)
+        try await writeWithFFmpeg(
+            url: url,
+            ext: ext,
+            track: track,
+            customArtworkData: customArtworkData,
+            isrc: isrc ?? track.isrc,
+            stripExistingNonTechnical: stripExistingNonTechnical
+        )
     }
 
     // MARK: - FFmpeg Backend (.m4a, .m4b, .mp4, etc.)
 
-    private static func writeWithFFmpeg(url: URL, ext: String, track: LibraryTrack, customArtworkData: Data?) async throws {
+    private static func writeWithFFmpeg(
+        url: URL,
+        ext: String,
+        track: LibraryTrack,
+        customArtworkData: Data?,
+        isrc: String?,
+        stripExistingNonTechnical: Bool
+    ) async throws {
         let fm = FileManager.default
         let ffmpeg = try FFmpeg.requireBinary(for: "Writing audio tags")
         let workDir = url.deletingLastPathComponent()
@@ -64,12 +83,22 @@ public enum TagWriter {
             args += ["-map", "0", "-c", "copy"]
         }
 
-        args += ["-map_metadata", "0"]
+        var replayGainPairs: [(String, String)] = []
+        if stripExistingNonTechnical {
+            replayGainPairs = await extractReplayGainTags(ffmpeg: ffmpeg, url: url)
+            args += ["-map_metadata", "-1"]
+        } else {
+            args += ["-map_metadata", "0"]
+        }
         if ext == "m4a" || ext == "m4b" {
             args += ["-f", ext == "m4b" ? "ipod" : "mp4"]
         }
 
-        for (key, value) in metadataPairs(for: track, fileExtension: ext) {
+        for (key, value) in metadataPairs(for: track, fileExtension: ext, isrc: isrc) {
+            if stripExistingNonTechnical && value.isEmpty { continue }
+            args += ["-metadata", "\(key)=\(value)"]
+        }
+        for (key, value) in replayGainPairs {
             args += ["-metadata", "\(key)=\(value)"]
         }
 
@@ -85,11 +114,35 @@ public enum TagWriter {
         try replaceFile(at: url, with: tempOutput)
     }
 
+    private static func extractReplayGainTags(ffmpeg: String, url: URL) async -> [(String, String)] {
+        final class LineBox: @unchecked Sendable {
+            let lock = NSLock()
+            var lines: [String] = []
+            func append(_ s: String) {
+                lock.lock(); lines.append(s); lock.unlock()
+            }
+        }
+        let box = LineBox()
+        try? await FFmpeg.run(ffmpeg, ["-v", "error", "-i", FileOps.nativePath(url), "-f", "ffmetadata", "pipe:1"]) { line in
+            box.append(line)
+        }
+        var result: [(String, String)] = []
+        for line in box.lines {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let rawKey = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            let lower = rawKey.lowercased()
+            guard lower.hasPrefix("replaygain_") || lower == "itunes_cddb_1" || lower == "soundcheck" else { continue }
+            let val = String(line[line.index(after: eq)...])
+            result.append((rawKey, val))
+        }
+        return result
+    }
+
     // MARK: - Pure Swift ID3v2.4 Writer (.mp3)
 
-    private static func writeID3v2MP3(url: URL, track: LibraryTrack, customArtworkData: Data?) throws {
+    private static func writeID3v2MP3(url: URL, track: LibraryTrack, customArtworkData: Data?, isrc: String?) throws {
         let originalData = try Data(contentsOf: url)
-        let (audioOffset, existingAPICs) = parseExistingID3v2Header(in: originalData)
+        let (audioOffset, existingAPICs, replayGainFrames) = parseExistingID3v2Header(in: originalData)
         let audioBody = originalData.subdata(in: audioOffset..<originalData.count)
 
         var frames = Data()
@@ -114,11 +167,15 @@ public enum TagWriter {
         if !discStr.isEmpty { appendText("TPOS", discStr) }
         if track.bpm > 0 { appendText("TBPM", "\(track.bpm)") }
         if track.compilation { appendText("TCMP", "1") }
+        appendText("TSRC", isrc)
         appendText("TSOT", track.sortTitle)
         appendText("TSOA", track.sortAlbum)
         appendText("TSOP", track.sortArtist)
         appendText("TSO2", track.sortAlbumArtist)
         appendText("TSOC", track.sortComposer)
+        for rg in replayGainFrames {
+            frames.append(makeID3v24Frame(id: rg.id, payload: rg.payload))
+        }
 
         if let comment = track.comment, !comment.isEmpty {
             var payload = Data([0x03])
@@ -165,9 +222,9 @@ public enum TagWriter {
         try replaceFile(at: url, with: tempOutput)
     }
 
-    private static func parseExistingID3v2Header(in data: Data) -> (audioOffset: Int, apicPayloads: [Data]) {
+    private static func parseExistingID3v2Header(in data: Data) -> (audioOffset: Int, apicPayloads: [Data], replayGain: [(id: String, payload: Data)]) {
         guard data.count >= 10, data[0] == 0x49, data[1] == 0x44, data[2] == 0x33 else {
-            return (0, [])
+            return (0, [], [])
         }
         let majorVersion = data[3]
         let flags = data[5]
@@ -176,6 +233,7 @@ public enum TagWriter {
         let totalEnd = min(data.count, 10 + tagSize + (hasFooter ? 10 : 0))
 
         var apics: [Data] = []
+        var replayGain: [(id: String, payload: Data)] = []
         var cursor = 10
         // Skip extended header if present (bit 6)
         if (flags & 0x40) != 0, cursor + 4 <= totalEnd {
@@ -190,12 +248,20 @@ public enum TagWriter {
             let bodyStart = cursor + 10
             let bodyEnd = bodyStart + frameSize
             guard frameSize > 0, bodyEnd <= totalEnd else { break }
+            let payload = data.subdata(in: bodyStart..<bodyEnd)
             if frameID == "APIC" {
-                apics.append(data.subdata(in: bodyStart..<bodyEnd))
+                apics.append(payload)
+            } else if frameID == "RVA2" {
+                replayGain.append((id: "RVA2", payload: payload))
+            } else if frameID == "TXXX" {
+                let text = String(decoding: payload.dropFirst(), as: UTF8.self).uppercased()
+                if text.contains("REPLAYGAIN_") {
+                    replayGain.append((id: "TXXX", payload: payload))
+                }
             }
             cursor = bodyEnd
         }
-        return (totalEnd, apics)
+        return (totalEnd, apics, replayGain)
     }
 
     private static func makeID3v24Frame(id: String, payload: Data) -> Data {
@@ -253,7 +319,7 @@ public enum TagWriter {
         #endif
     }
 
-    static func metadataPairs(for track: LibraryTrack, fileExtension ext: String) -> [(String, String)] {
+    static func metadataPairs(for track: LibraryTrack, fileExtension ext: String, isrc: String? = nil) -> [(String, String)] {
         var pairs: [(String, String)] = [
             ("title", track.title),
             ("artist", track.artist ?? ""),
@@ -268,6 +334,9 @@ public enum TagWriter {
             ("comment", track.comment ?? ""),
             ("compilation", track.compilation ? "1" : "0"),
         ]
+        if let isrc, !isrc.isEmpty {
+            pairs.append((ext == "flac" ? "ISRC" : "isrc", isrc))
+        }
 
         let bpmValue = track.bpm > 0 ? "\(track.bpm)" : ""
         pairs.append((ext == "mp3" ? "TBPM" : "bpm", bpmValue))

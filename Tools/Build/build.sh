@@ -53,7 +53,22 @@ build_mac() {
     Tools/Build/patch-dependencies.sh "$x86"
     build_arch() { # <arch> <scratch>
         local product
-        for product in iPodProMaxApp ipodpromax; do
+        local products=(iPodProMaxApp ipodpromax)
+        if [ -d "$ROOT/Plug-ins" ]; then
+            for pjson in "$ROOT"/Plug-ins/*/plugin.json; do
+                [ -f "$pjson" ] || continue
+                local pdir target
+                pdir=$(dirname "$pjson")
+                for sdir in "$pdir"/Sources/*/; do
+                    [ -d "$sdir" ] || continue
+                    target=$(basename "$sdir")
+                    if grep -q "\"$target\"" "$ROOT/Package.swift"; then
+                        products+=("$target")
+                    fi
+                done
+            done
+        fi
+        for product in "${products[@]}"; do
             swift build -c release --scratch-path "$2" --triple "$1-apple-macosx10.15.4" --product "$product" 2>&1 | sed -u "s/^/[mac $1] /"
             [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
         done
@@ -111,6 +126,40 @@ build_mac() {
 </plist>
 EOF
     codesign --force --sign - "$app"
+
+    # Bundled plug-ins (Plug-ins/<Name>/): copy metadata/assets and universal binaries.
+    if [ -d "$ROOT/Plug-ins" ]; then
+        for pjson in "$ROOT"/Plug-ins/*/plugin.json; do
+            [ -f "$pjson" ] || continue
+            local pdir pid mac_exec target
+            pdir=$(dirname "$pjson")
+            pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$pjson")
+            mac_exec=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("executable",{}).get("macos",""))' "$pjson")
+            target=""
+            for sdir in "$pdir"/Sources/*/; do
+                [ -d "$sdir" ] || continue
+                local cand
+                cand=$(basename "$sdir")
+                if grep -q "\"$cand\"" "$ROOT/Package.swift"; then target="$cand"; break; fi
+            done
+            if [ -n "$pid" ] && [ -n "$mac_exec" ] && [ -n "$target" ]; then
+                local pdest="$WORK/plugins/$pid"
+                mkdir -p "$pdest/$(dirname "$mac_exec")"
+                for asset in plugin.json badge.svg LICENSE README.md; do
+                    [ -f "$pdir/$asset" ] && cp "$pdir/$asset" "$pdest/"
+                done
+                [ -d "$pdir/vendor" ] && rsync -a --exclude .DS_Store "$pdir/vendor/" "$pdest/vendor/"
+                universal "$target" "$pdest/$mac_exec"
+                chmod +x "$pdest/$mac_exec"
+                codesign --force --sign - "$pdest/$mac_exec"
+                if [ -d "$pdest/vendor" ]; then
+                    find "$pdest/vendor" -type f -perm -111 -exec codesign --force --sign - {} +
+                fi
+                echo "OK: plugin $pid ($pdest/$mac_exec)"
+            fi
+        done
+    fi
+
     echo "OK: $app, $cli"
     return 0
 }

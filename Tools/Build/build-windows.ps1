@@ -158,6 +158,48 @@ robocopy $cliStage $cliDist /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy to $cliDist failed ($LASTEXITCODE)" }
 Write-Output "OK: $cliDist\ipodpromax.exe"
 
+# Bundled plug-ins
+$pluginsSrc = Join-Path $Work "Plug-ins"
+if (Test-Path $pluginsSrc) {
+    $pkgText = Get-Content (Join-Path $Work "Package.swift") -Raw
+    $winKey = if ($ffArch -eq "arm64") { "windows-arm64" } else { "windows-x64" }
+    Get-ChildItem $pluginsSrc -Directory | ForEach-Object {
+        $pdir = $_.FullName
+        $pjson = Join-Path $pdir "plugin.json"
+        if (-not (Test-Path $pjson)) { return }
+        $manifest = Get-Content $pjson -Raw | ConvertFrom-Json
+        $pluginId = $manifest.id
+        $wexec = $manifest.executable.$winKey
+        if (-not $wexec -and $winKey -eq "windows-arm64") { $wexec = $manifest.executable."windows-x64" }
+        $sourcesDir = Join-Path $pdir "Sources"
+        $target = $null
+        if (Test-Path $sourcesDir) {
+            Get-ChildItem $sourcesDir -Directory | ForEach-Object {
+                if (-not $target -and $pkgText -match [regex]::Escape("`"$($_.Name)`"")) { $target = $_.Name }
+            }
+        }
+        if ($pluginId -and $wexec -and $target) {
+            Push-Location $Work
+            $ErrorActionPreference = "Continue"
+            try {
+                swift build -c release --product $target --build-system native
+                if ($LASTEXITCODE -ne 0) { throw "swift build of $target failed" }
+            } finally { Pop-Location; $ErrorActionPreference = "Stop" }
+            $pdest = Join-Path $Source ".build-work\plugins\$pluginId"
+            $outExe = Join-Path $pdest $wexec
+            New-Item -ItemType Directory (Split-Path $outExe -Parent) -Force | Out-Null
+            foreach ($asset in "plugin.json", "badge.svg", "LICENSE", "README.md") {
+                $srcAsset = Join-Path $pdir $asset
+                if (Test-Path $srcAsset) { Copy-Item $srcAsset $pdest -Force }
+            }
+            $vendorSrc = Join-Path $pdir "vendor"
+            if (Test-Path $vendorSrc) { Copy-Item $vendorSrc $pdest -Recurse -Force }
+            Copy-Item "$bin\$target.exe" $outExe -Force
+            Write-Output "OK: plugin $pluginId ($outExe)"
+        }
+    }
+}
+
 if ($Run) {
     # Started from the local build folder: running WinUI from the \\Mac share is slow and fragile.
     Get-Process iPodProMaxApp -ErrorAction SilentlyContinue | Stop-Process -Force

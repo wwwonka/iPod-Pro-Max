@@ -1,0 +1,56 @@
+{
+  "resolver": {
+    "track": {
+      "source": "spotify",
+      "sourceID": "slsk-sample-1",
+      "title": "Man I Need",
+      "artists": ["Olivia Dean"],
+      "album": "Messy",
+      "durationMs": 202000
+    },
+    "policy": {
+      "preferredFormats": ["flac", "alac", "mp3-320", "aac-256", "mp3-v0", "other"],
+      "minimumBitrateKbps": 192,
+      "acceptYouTubeFallback": true
+    },
+    "offlineResponse": [
+      {
+        "resolver": "soulseek",
+        "token": "{\"user\":\"samplepeer\",\"file\":\"@@Music\\\\Olivia Dean - Man I Need.flac\",\"size\":28401200}",
+        "displayName": "samplepeer: @@Music\\Olivia Dean - Man I Need.flac",
+        "title": "Man I Need",
+        "artist": "Olivia Dean",
+        "durationMs": 202000,
+        "container": "flac",
+        "codec": "flac",
+        "bitrateKbps": 1000,
+        "sampleRateHz": 44100,
+        "bitDepth": 16,
+        "sizeBytes": 28401200,
+        "availability": {
+          "freeSlot": true,
+          "queueLength": 0,
+          "speedBytesPerSec": 1250000
+        }
+      }
+    ]
+  },
+  "downloader": {
+    "candidate": {
+      "resolver": "soulseek",
+      "token": "{\"user\":\"samplepeer\",\"file\":\"@@Music\\\\Olivia Dean - Man I Need.flac\",\"size\":28401200}",
+      "displayName": "samplepeer: @@Music\\Olivia Dean - Man I Need.flac",
+      "title": "Man I Need",
+      "artist": "Olivia Dean",
+      "durationMs": 202000,
+      "container": "flac",
+      "codec": "flac",
+      "bitrateKbps": 1000,
+      "sizeBytes": 28401200
+    }
+  },
+  "share": {
+    "uploadSlots": 2,
+    "entries": []
+  }
+}

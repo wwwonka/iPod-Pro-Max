@@ -1,3 +1,4 @@
+import MediaKit
 import SwiftCrossUI
 import Foundation
 
@@ -27,10 +28,34 @@ let trackColumns: [TrackColumn] = [
     TrackColumn(id: "year", title: "Year", width: 56, value: \.year),
     TrackColumn(id: "time", title: "Time", width: 56, value: \.duration),
     TrackColumn(id: "dateAdded", title: "Date Added", width: 96, value: \.addedText),
+    TrackColumn(id: "status", title: "Status", width: 84, value: \.title),
 ]
 private let columns = trackColumns
 /// The title column carries the cover, the favorite icon and the lyrics mark.
 private let titleColumn = 1
+private let statusColumn = 7
+
+private func subscriptionStatusPresentation(for state: SubscribedTrackState) -> (text: String, tooltip: String, isError: Bool) {
+    switch state {
+    case .available(false):
+        return ("✓", "In Library", false)
+    case .available(true):
+        return ("▶ YouTube", "Downloaded from YouTube", false)
+    case .waiting:
+        return ("…", "Waiting to download", false)
+    case .searching(let resolver):
+        return ("Searching…", "Searching \(resolver)…", false)
+    case .downloading(let resolver, let progress):
+        let pct = Int((progress * 100).rounded())
+        return (pct > 0 ? "\(pct)%" : "Downloading…", "Downloading from \(resolver) (\(pct)%)", false)
+    case .notFound:
+        return ("!", "Not found in any download source", true)
+    case .failed(let reason):
+        return ("⚠ Failed", reason, true)
+    case .noDownloadSource:
+        return ("⊘ No Source", "Enable a download plug-in in Settings › Plug-ins", true)
+    }
+}
 
 extension TrackRow {
     /// The day the song was added, as `2026-11-13`; "" when unknown. Only computed for visible cells.
@@ -80,6 +105,11 @@ extension Array {
         var sortScope = ""
         /// nil hides the favorite icon (lists of things that can't be favorites).
         var onToggleFavorite: (([String], Bool) -> Void)?
+        /// Non-nil on subscribed playlists (`SUB-6`): shows the Status column and enables retry.
+        var subscriptionPlaylistID: String? = nil
+        var subscriptionStates: [String: SubscribedTrackState] = [:]
+        var subscriptionRevision: Int = 0
+        var onRetrySubscribedTrack: ((String, String) -> Void)? = nil
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -136,8 +166,17 @@ extension Array {
             let favoritesChanged = coordinator.showsFavorites != showsFavorites
             coordinator.onToggleFavorite = onToggleFavorite
             coordinator.showsFavorites = showsFavorites
+            let subChanged = coordinator.subscriptionPlaylistID != subscriptionPlaylistID
+            let subRevChanged = coordinator.subscriptionRevision != subscriptionRevision
+            coordinator.subscriptionPlaylistID = subscriptionPlaylistID
+            coordinator.subscriptionStates = subscriptionStates
+            coordinator.subscriptionRevision = subscriptionRevision
+            coordinator.onRetrySubscribedTrack = onRetrySubscribedTrack
             coordinator.setActive(isActive, in: scroll)
             guard let table = scroll.documentView as? NSTableView else { return }
+            if subChanged {
+                coordinator.applyColumns()
+            }
             if coordinator.sortScope != sortScope {
                 coordinator.sortScope = sortScope
                 coordinator.resetSort(in: table)
@@ -145,6 +184,7 @@ extension Array {
             // Same array storage means same rows: skip the reload on unrelated redraws.
             guard let rows, !coordinator.sourceRows.sameStorage(as: rows) else {
                 if favoritesChanged { coordinator.reloadTitleCells() }
+                if subRevChanged && subscriptionPlaylistID != nil { coordinator.reloadStatusCells() }
                 return
             }
             coordinator.setRows(rows, in: table, keepSelection: coordinator.viewKey == viewKey)
@@ -170,6 +210,10 @@ extension Array {
             var onRemoveFromPlaylist: ([String], String) -> Void = { _, _ in }
             var onReorderPlaylist: (([String], Int) -> Void)?
             var onSelectionChange: ([String]) -> Void = { _ in }
+            var subscriptionPlaylistID: String?
+            var subscriptionStates: [String: SubscribedTrackState] = [:]
+            var subscriptionRevision = 0
+            var onRetrySubscribedTrack: ((String, String) -> Void)?
             private var canReorderPlaylist: Bool {
                 currentPlaylistID != nil && sortColumn == nil && onReorderPlaylist != nil
             }
@@ -208,6 +252,16 @@ extension Array {
                 table.needsDisplay = true
             }
 
+            func reloadStatusCells() {
+                guard let table else { return }
+                let column = table.column(withIdentifier: NSUserInterfaceItemIdentifier("\(statusColumn)"))
+                guard column >= 0 else { return }
+                let visible = table.rows(in: table.visibleRect)
+                guard visible.length > 0 else { return }
+                table.reloadData(forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)), columnIndexes: IndexSet(integer: column))
+                table.needsDisplay = true
+            }
+
             /// The favorite icon, a pending favorite or the visible columns changed.
             func appearanceChanged() {
                 applyColumns()
@@ -223,19 +277,26 @@ extension Array {
                 var changed = false
                 for column in table.tableColumns {
                     guard let index = Int(column.identifier.rawValue), columns.indices.contains(index) else { continue }
-                    let hide = !columns[index].locked && hidden.contains(columns[index].id)
+                    let hide: Bool
+                    if columns[index].id == "status" {
+                        hide = (subscriptionPlaylistID == nil)
+                    } else {
+                        hide = !columns[index].locked && hidden.contains(columns[index].id)
+                    }
                     if column.isHidden != hide { column.isHidden = hide; changed = true }
                 }
                 guard changed else { return }
                 // Sorted on a column that just went away: back to the list's own order.
-                if let sortColumn, hidden.contains(columns[sortColumn].id) { resetSort(in: table) }
+                if let sortColumn, table.tableColumns.indices.contains(sortColumn), table.tableColumns[sortColumn].isHidden {
+                    resetSort(in: table)
+                }
                 table.enclosingScrollView?.tile()
             }
 
             func menuNeedsUpdate(_ menu: NSMenu) {
                 menu.removeAllItems()
                 let hidden = ListAppearance.shared.hiddenColumns
-                for column in columns {
+                for column in columns where column.id != "status" {
                     let item = NSMenuItem(title: column.menuTitle, action: #selector(toggleColumn(_:)), keyEquivalent: "")
                     item.target = self
                     item.representedObject = column.id
@@ -294,7 +355,7 @@ extension Array {
             func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
                 guard canReorderPlaylist,
                       let text = info.draggingPasteboard.string(forType: .string),
-                      text == TrackDrag.payload, !TrackDrag.ids.isEmpty else { return [] }
+                      text == TrackDrag.payload, !TrackDrag.reorderIDs.isEmpty else { return [] }
                 tableView.setDropRow(row, dropOperation: .above)
                 return .move
             }
@@ -302,8 +363,8 @@ extension Array {
             func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
                 guard canReorderPlaylist,
                       let text = info.draggingPasteboard.string(forType: .string),
-                      text == TrackDrag.payload, !TrackDrag.ids.isEmpty else { return false }
-                let ids = TrackDrag.ids
+                      text == TrackDrag.payload, !TrackDrag.reorderIDs.isEmpty else { return false }
+                let ids = TrackDrag.reorderIDs
                 onReorderPlaylist?(ids, row)
                 return true
             }
@@ -372,8 +433,10 @@ extension Array {
                 guard isActive else { return nil }
                 if dragPayload == nil {
                     let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
-                    let ids = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
-                    dragPayload = TrackDrag.begin(ids)
+                    let downloadedIDs = indexes.compactMap { rows.indices.contains($0) && rows[$0].path != nil ? rows[$0].id : nil }
+                    let allSelectedIDs = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
+                    let reorderTargets = canReorderPlaylist && subscriptionPlaylistID != nil ? allSelectedIDs : downloadedIDs
+                    dragPayload = TrackDrag.begin(downloadedIDs, reorderTargets: reorderTargets)
                 }
                 guard let dragPayload else { return nil }
                 let item = NSPasteboardItem()
@@ -391,15 +454,35 @@ extension Array {
                 guard let tableColumn, let index = Int(tableColumn.identifier.rawValue) else { return nil }
                 let cell = (tableView.makeView(withIdentifier: cellID, owner: nil) as? CenteredTrackCell) ?? CenteredTrackCell()
                 cell.identifier = cellID
-                let value = rows[row][keyPath: columns[index].value]
+                let rowModel = rows[row]
+                let isUnavailable = rowModel.path == nil
+                if columns[index].id == "status" {
+                    if let key = rowModel.subscriptionKey, let state = subscriptionStates[key] {
+                        let pres = subscriptionStatusPresentation(for: state)
+                        cell.label.stringValue = pres.text
+                        cell.label.textColor = pres.isError ? .systemOrange : .secondaryLabelColor
+                        cell.toolTip = pres.tooltip
+                    } else {
+                        cell.label.stringValue = isUnavailable ? "…" : "✓"
+                        cell.label.textColor = .secondaryLabelColor
+                        cell.toolTip = nil
+                    }
+                    cell.setLyrics(false)
+                    cell.showArtwork(nil, reservesSpace: false)
+                    cell.hideFavorite()
+                    return cell
+                }
+                cell.toolTip = nil
+                let value = rowModel[keyPath: columns[index].value]
                 // A list without the clickable icon (an album's songs in the grid) still marks its favorites.
-                cell.label.stringValue = index == titleColumn && !showsFavorites && rows[row].isFavorite
+                cell.label.stringValue = index == titleColumn && !showsFavorites && rowModel.isFavorite
                     ? ListAppearance.shared.favoriteIcon.filledCharacter + "  " + value : value
-                cell.setLyrics(index == titleColumn && rows[row].hasLyrics)
-                cell.showArtwork(index == titleColumn && showsArtwork ? rows[row].artworkKey.flatMap { artworkFolder?.appendingPathComponent($0 + ".jpg") } : nil,
+                cell.label.textColor = isUnavailable ? .secondaryLabelColor : .labelColor
+                cell.setLyrics(index == titleColumn && rowModel.hasLyrics)
+                cell.showArtwork(index == titleColumn && showsArtwork ? rowModel.artworkKey.flatMap { artworkFolder?.appendingPathComponent($0 + ".jpg") } : nil,
                                  reservesSpace: index == titleColumn && showsArtwork)
-                if index == titleColumn && showsFavorites && rows[row].path != nil {
-                    cell.showFavorite(ListAppearance.shared.isFavorite(rows[row])) { [weak self, weak tableView, weak cell] in
+                if index == titleColumn && showsFavorites && !isUnavailable {
+                    cell.showFavorite(ListAppearance.shared.isFavorite(rowModel)) { [weak self, weak tableView, weak cell] in
                         guard let self, let tableView, let cell else { return }
                         self.toggleFavorite(row: tableView.row(for: cell))
                     }
@@ -426,8 +509,28 @@ extension Array {
 
         override func menu(for event: NSEvent) -> NSMenu? {
             let clicked = row(at: convert(event.locationInWindow, from: nil))
-            guard let coordinator, coordinator.isActive, coordinator.rows.indices.contains(clicked),
-                  coordinator.rows[clicked].path != nil else { return nil }
+            guard let coordinator, coordinator.isActive, coordinator.rows.indices.contains(clicked) else { return nil }
+            let clickedRow = coordinator.rows[clicked]
+            if clickedRow.path == nil {
+                guard let key = clickedRow.subscriptionKey, let subPlaylistID = coordinator.subscriptionPlaylistID else { return nil }
+                if !selectedRowIndexes.contains(clicked) { selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false) }
+                let menu = NSMenu()
+                if let state = coordinator.subscriptionStates[key] {
+                    switch state {
+                    case .failed, .notFound, .noDownloadSource:
+                        let retry = NSMenuItem(title: "Try Again", action: #selector(retrySubscribedSelection(_:)), keyEquivalent: "")
+                        retry.representedObject = [subPlaylistID, key]
+                        retry.target = self
+                        menu.addItem(retry)
+                    default: break
+                    }
+                }
+                let copy = NSMenuItem(title: "Copy Song Info", action: #selector(copySongInfo(_:)), keyEquivalent: "")
+                copy.representedObject = clickedRow.artist.isEmpty ? clickedRow.title : "\(clickedRow.artist) - \(clickedRow.title)"
+                copy.target = self
+                menu.addItem(copy)
+                return menu
+            }
             if !selectedRowIndexes.contains(clicked) { selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false) }
             let menu = NSMenu()
             if selectedRowIndexes.count == 1 {
@@ -436,11 +539,13 @@ extension Array {
                 menu.addItem(play)
                 menu.addItem(.separator())
             }
-            if !coordinator.playlists.isEmpty {
+            let targetPlaylists = coordinator.playlists.filter { !$0.isFolder && $0.id != coordinator.currentPlaylistID }
+            if !targetPlaylists.isEmpty {
                 let parent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
                 let choices = NSMenu()
-                for playlist in coordinator.playlists {
-                    let item = NSMenuItem(title: playlist.name, action: #selector(addToPlaylist(_:)), keyEquivalent: "")
+                for playlist in targetPlaylists {
+                    let title = playlist.subscriptionID != nil ? "\(playlist.name) (Spotify)" : playlist.name
+                    let item = NSMenuItem(title: title, action: #selector(addToPlaylist(_:)), keyEquivalent: "")
                     item.representedObject = playlist.id
                     item.target = self
                     choices.addItem(item)
@@ -448,7 +553,7 @@ extension Array {
                 parent.submenu = choices
                 menu.addItem(parent)
             }
-            if coordinator.currentPlaylistID != nil {
+            if coordinator.currentPlaylistID != nil && coordinator.subscriptionPlaylistID == nil {
                 let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
                 remove.target = self
                 menu.addItem(remove)
@@ -463,6 +568,17 @@ extension Array {
                 menu.addItem(info)
             }
             return menu
+        }
+
+        @objc private func retrySubscribedSelection(_ sender: NSMenuItem) {
+            guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+            coordinator?.onRetrySubscribedTrack?(pair[0], pair[1])
+        }
+
+        @objc private func copySongInfo(_ sender: NSMenuItem) {
+            guard let info = sender.representedObject as? String else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(info, forType: .string)
         }
 
         override func keyDown(with event: NSEvent) {
@@ -820,6 +936,11 @@ extension Array {
         var sortScope = ""
         /// nil hides the favorite icon (lists of things that can't be favorites).
         var onToggleFavorite: (([String], Bool) -> Void)?
+        /// Non-nil on subscribed playlists (`SUB-6`): shows the Status column and enables retry.
+        var subscriptionPlaylistID: String? = nil
+        var subscriptionStates: [String: SubscribedTrackState] = [:]
+        var subscriptionRevision: Int = 0
+        var onRetrySubscribedTrack: ((String, String) -> Void)? = nil
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -906,13 +1027,23 @@ extension Array {
             coordinator.artworkFolder = artworkFolder
             let dark = context.environment.colorScheme == .dark
             let favoritesChanged = (coordinator.onToggleFavorite == nil) != (onToggleFavorite == nil) || coordinator.dark != dark
+            let subChanged = coordinator.subscriptionPlaylistID != subscriptionPlaylistID
+            let subRevChanged = coordinator.subscriptionRevision != subscriptionRevision
             coordinator.onToggleFavorite = onToggleFavorite
+            coordinator.subscriptionPlaylistID = subscriptionPlaylistID
+            coordinator.subscriptionStates = subscriptionStates
+            coordinator.subscriptionRevision = subscriptionRevision
+            coordinator.onRetrySubscribedTrack = onRetrySubscribedTrack
             coordinator.dark = dark
+            if subChanged { coordinator.applyColumns() }
             if favoritesChanged { coordinator.refreshFavorites() }
             gtk_widget_set_visible(widget.widgetPointer, isActive ? 1 : 0)
             gtk_widget_set_sensitive(widget.widgetPointer, isActive ? 1 : 0)
             // Same rows: keep the model, and with it the selection and scroll position.
-            guard let rows, !context.coordinator.rows.sameStorage(as: rows) else { return }
+            guard let rows, !context.coordinator.rows.sameStorage(as: rows) else {
+                if subRevChanged, let rows { context.coordinator.show(rows) }
+                return
+            }
             context.coordinator.show(rows)
         }
 
@@ -927,6 +1058,10 @@ extension Array {
             var revision = 0
             var selectedPositions: Set<Int> = []
             var onToggleFavorite: (([String], Bool) -> Void)?
+            var subscriptionPlaylistID: String?
+            var subscriptionStates: [String: SubscribedTrackState] = [:]
+            var subscriptionRevision = 0
+            var onRetrySubscribedTrack: ((String, String) -> Void)?
             var dark = false
             /// The columns and their menu actions, in the order of `trackColumns`.
             var columnViews: [OpaquePointer] = []
@@ -939,7 +1074,7 @@ extension Array {
             @MainActor func applyColumns() {
                 let hidden = ListAppearance.shared.hiddenColumns
                 for (index, column) in columns.enumerated() where columnViews.indices.contains(index) && columnActions.indices.contains(index) {
-                    let visible = column.locked || !hidden.contains(column.id)
+                    let visible = column.id == "status" ? (subscriptionPlaylistID != nil) : (column.locked || !hidden.contains(column.id))
                     gtk_column_view_column_set_visible(cast(columnViews[index]), visible ? 1 : 0)
                     g_simple_action_set_state(cast(columnActions[index]), g_variant_new_boolean(visible ? 1 : 0))
                 }
@@ -1030,7 +1165,7 @@ extension Array {
         return MainActor.assumeIsolated { () -> UnsafeMutablePointer<GdkContentProvider>? in
             let c = Unmanaged<TrackTable.Coordinator>.fromOpaque(data).takeUnretainedValue()
             guard c.isActive, let selection = c.selection else { return nil }
-            let ids = c.rows.indices.filter { gtk_selection_model_is_selected(selection, UInt32($0)) != 0 }.map { c.rows[$0].id }
+            let ids = c.rows.indices.filter { gtk_selection_model_is_selected(selection, UInt32($0)) != 0 && c.rows[$0].path != nil }.map { c.rows[$0].id }
             guard let text = TrackDrag.begin(ids) else { return nil }
             var value = GValue()
             g_value_init(&value, g_type_from_name("gchararray"))
@@ -1126,7 +1261,18 @@ extension Array {
             let position = Int(gtk_list_item_get_position(cast(item)))
             guard c.rows.indices.contains(position) else { return }
             let row = c.rows[position]
-            if binding.column != titleColumn { gtk_label_set_text(cast(child), row[keyPath: columns[binding.column].value]); return }
+            if binding.column != titleColumn {
+                if columns[binding.column].id == "status", let key = row.subscriptionKey, let state = c.subscriptionStates[key] {
+                    let pres = subscriptionStatusPresentation(for: state)
+                    gtk_label_set_text(cast(child), pres.text)
+                    gtk_widget_set_tooltip_text(child, pres.tooltip)
+                } else {
+                    gtk_label_set_text(cast(child), row[keyPath: columns[binding.column].value])
+                    gtk_widget_set_tooltip_text(child, nil)
+                }
+                gtk_widget_set_opacity(child, row.path == nil ? 0.5 : 1.0)
+                return
+            }
             guard let item, let image = gtk_widget_get_first_child(child), let label = gtk_widget_get_next_sibling(image),
                   let favorite = gtk_widget_get_next_sibling(label) else { return }
             // A list without the clickable icon still marks its favorites.
@@ -1173,6 +1319,10 @@ extension Array {
         /// nil hides the favorite mark. Rows are one line of text for now, so the mark can't be
         /// clicked here yet: the title bar's Favorite buttons do it.
         var onToggleFavorite: (([String], Bool) -> Void)?
+        var subscriptionPlaylistID: String? = nil
+        var subscriptionStates: [String: SubscribedTrackState] = [:]
+        var subscriptionRevision: Int = 0
+        var onRetrySubscribedTrack: ((String, String) -> Void)? = nil
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -1228,8 +1378,12 @@ extension Array {
                     grid.padding = Thickness(left: 12, top: 6, right: 12, bottom: 6)
                     Self.applyColumns(to: grid)
                     for (index, column) in columns.enumerated() {
-                        let value = row[keyPath: column.value]
-                        (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = index == titleColumn ? c.favoritePrefix(row) + value : value
+                        if column.id == "status", let key = row.subscriptionKey, let state = c.subscriptionStates[key] {
+                            (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = subscriptionStatusPresentation(for: state).text
+                        } else {
+                            let value = row[keyPath: column.value]
+                            (grid.children.getAt(UInt32(index)) as? TextBlock)?.text = index == titleColumn ? c.favoritePrefix(row) + value : value
+                        }
                     }
                     if let folder = c.artworkFolder, let key = row.artworkKey,
                        let title = grid.children.getAt(1) as? TextBlock {
@@ -1276,7 +1430,7 @@ extension Array {
                               Int(range.firstIndex) < coordinator.rows.count else { continue }
                         let end = min(Int(range.lastIndex), coordinator.rows.count - 1)
                         if end >= Int(range.firstIndex) {
-                            ids.append(contentsOf: coordinator.rows[Int(range.firstIndex)...end].map(\.id))
+                            ids.append(contentsOf: coordinator.rows[Int(range.firstIndex)...end].filter { $0.path != nil }.map(\.id))
                         }
                     }
                     guard let payload = TrackDrag.begin(ids) else { args.cancel = true; return }
@@ -1304,11 +1458,18 @@ extension Array {
             coordinator.onSelectionChange = onSelectionChange
             coordinator.artworkFolder = artworkFolder
             let favoritesChanged = coordinator.showsFavorites != (onToggleFavorite != nil)
+            let subChanged = coordinator.subscriptionPlaylistID != subscriptionPlaylistID
+            let subRevChanged = coordinator.subscriptionRevision != subscriptionRevision
             coordinator.showsFavorites = onToggleFavorite != nil
+            coordinator.subscriptionPlaylistID = subscriptionPlaylistID
+            coordinator.subscriptionStates = subscriptionStates
+            coordinator.subscriptionRevision = subscriptionRevision
+            coordinator.onRetrySubscribedTrack = onRetrySubscribedTrack
             root.visibility = isActive ? .visible : .collapsed
             root.isHitTestVisible = isActive
+            if subChanged { coordinator.applyColumns() }
             guard let rows, !coordinator.rows.sameStorage(as: rows) else {
-                if favoritesChanged { coordinator.showRows() }
+                if favoritesChanged || subRevChanged { coordinator.showRows() }
                 return
             }
             coordinator.rows = rows
@@ -1339,10 +1500,10 @@ extension Array {
         }
 
         /// Collapses the hidden columns of a header or row grid: no width, no text.
-        @MainActor static func applyColumns(to grid: WinUI.Grid) {
+        @MainActor static func applyColumns(to grid: WinUI.Grid, showStatus: Bool = false) {
             let hidden = ListAppearance.shared.hiddenColumns
             for (index, column) in columns.enumerated() {
-                let visible = column.locked || !hidden.contains(column.id)
+                let visible = column.id == "status" ? showStatus : (column.locked || !hidden.contains(column.id))
                 guard let definition = grid.columnDefinitions.getAt(UInt32(index)) else { continue }
                 definition.width = !visible ? GridLength(value: 0, gridUnitType: .pixel)
                     : column.width >= 1 ? GridLength(value: column.width, gridUnitType: .pixel)
@@ -1353,16 +1514,21 @@ extension Array {
 
         final class Coordinator {
             var showsFavorites = false
+            var subscriptionPlaylistID: String?
+            var subscriptionStates: [String: SubscribedTrackState] = [:]
+            var subscriptionRevision = 0
+            var onRetrySubscribedTrack: ((String, String) -> Void)?
             var header: WinUI.Grid?
             /// The header menu's items, in the order of `trackColumns`.
             var columnItems: [ToggleMenuFlyoutItem] = []
 
             @MainActor func applyColumns() {
                 let hidden = ListAppearance.shared.hiddenColumns
+                let showStatus = subscriptionPlaylistID != nil
                 for (index, column) in columns.enumerated() where columnItems.indices.contains(index) {
-                    columnItems[index].isChecked = column.locked || !hidden.contains(column.id)
+                    columnItems[index].isChecked = column.id == "status" ? showStatus : (column.locked || !hidden.contains(column.id))
                 }
-                if let header { TrackTable.applyColumns(to: header) }
+                if let header { TrackTable.applyColumns(to: header, showStatus: showStatus) }
             }
 
             /// "♥  " or "★  " before a favorite's title, in the icon chosen in Settings.
@@ -1376,10 +1542,19 @@ extension Array {
             @MainActor func showRows() {
                 guard let items = list?.items else { return }
                 let hidden = ListAppearance.shared.hiddenColumns
-                let shown = columns.filter { $0.id != "number" && ($0.locked || !hidden.contains($0.id)) }
+                let showStatus = subscriptionPlaylistID != nil
+                let shown = columns.filter {
+                    $0.id != "number" && ($0.id == "status" ? showStatus : ($0.locked || !hidden.contains($0.id)))
+                }
                 items.clear()
                 for row in rows {
-                    items.append(favoritePrefix(row) + shown.map { row[keyPath: $0.value] }.filter { !$0.isEmpty }.joined(separator: "   —   "))
+                    let parts = shown.map { col -> String in
+                        if col.id == "status", let key = row.subscriptionKey, let state = subscriptionStates[key] {
+                            return subscriptionStatusPresentation(for: state).text
+                        }
+                        return row[keyPath: col.value]
+                    }
+                    items.append(favoritePrefix(row) + parts.filter { !$0.isEmpty }.joined(separator: "   —   "))
                 }
             }
 
@@ -1400,6 +1575,10 @@ extension Array {
         var viewKey = ""
         var sortScope = ""
         var onToggleFavorite: (([String], Bool) -> Void)?
+        var subscriptionPlaylistID: String? = nil
+        var subscriptionStates: [String: SubscribedTrackState] = [:]
+        var subscriptionRevision: Int = 0
+        var onRetrySubscribedTrack: ((String, String) -> Void)? = nil
 
         var body: some View {
             Table(rows ?? []) {

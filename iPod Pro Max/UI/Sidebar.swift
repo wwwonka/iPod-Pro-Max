@@ -1,3 +1,5 @@
+import Foundation
+import MediaKit
 import SwiftCrossUI
 
 /// Same items as the SwiftUI app's `SidebarItem`.
@@ -155,6 +157,12 @@ struct SidebarSection {
         var ejectable = false
         var isFolder = false
         var children: [Row] = []
+        /// Non-nil for subscribed playlists (`SUB-3`, `SUB-4`).
+        var subscriptionID: String? = nil
+        var sourcePluginID: String? = nil
+        var isSyncing = false
+        var hasError = false
+        var errorTooltip: String? = nil
     }
 }
 
@@ -213,17 +221,30 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
     let folderIDs = Set(playlists.filter(\.isFolder).map(\.id))
     let childrenByParent = Dictionary(grouping: playlists.filter { $0.parentID != nil && folderIDs.contains($0.parentID!) }) { $0.parentID! }
     let topPlaylists = playlists.filter { $0.parentID == nil || !folderIDs.contains($0.parentID!) }
-    let playlistRows: [SidebarSection.Row] = topPlaylists.map { p in
-        let kids = (childrenByParent[p.id] ?? []).map {
-            SidebarSection.Row(title: $0.name, icon: $0.isFolder ? "folder" : "music.note.list", item: .playlist($0.id), isFolder: $0.isFolder)
+    func makePlaylistRow(_ p: Playlist) -> SidebarSection.Row {
+        let sub = p.subscriptionID.flatMap { idStr -> SubscriptionEntry? in
+            SubscriptionController.shared.subscription(forPlaylistID: p.id)
+                ?? UUID(uuidString: idStr).flatMap { SubscriptionController.shared.subscription(id: $0) }
         }
+        let isSub = p.subscriptionID != nil
+        let isSyncing = isSub && SubscriptionController.shared.isSyncing(playlistID: p.id)
+        let err = isSub ? sub?.lastError : nil
         return SidebarSection.Row(
             title: p.name,
-            icon: p.isFolder ? "folder" : "music.note.list",
+            icon: p.isFolder ? "folder" : (isSub ? "playlist-lines" : "music.note.list"),
             item: .playlist(p.id),
             isFolder: p.isFolder,
-            children: kids
+            subscriptionID: p.subscriptionID,
+            sourcePluginID: sub?.sourcePluginID,
+            isSyncing: isSyncing,
+            hasError: !(err ?? "").isEmpty,
+            errorTooltip: err
         )
+    }
+    let playlistRows: [SidebarSection.Row] = topPlaylists.map { p in
+        var row = makePlaylistRow(p)
+        row.children = (childrenByParent[p.id] ?? []).map(makePlaylistRow)
+        return row
     }
     return [
         SidebarSection(

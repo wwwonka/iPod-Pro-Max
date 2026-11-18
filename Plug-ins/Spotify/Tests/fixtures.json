@@ -1,0 +1,45 @@
+{
+  "playlistSource": {
+    "url": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=example123",
+    "offlineResponse": {
+      "playlist": {
+        "source": "spotify",
+        "sourceID": "37i9dQZF1DXcBWIGoYBM5M",
+        "title": "Today's Top Hits",
+        "owner": "Spotify",
+        "artworkURL": "https://i.scdn.co/image/ab67706f00000003sample640",
+        "revision": "cf7a9c8f4c13be6eb6d2f8798aa4fd529b0fcff74d5676c0ccdf0c0379a1aa01"
+      },
+      "tracks": [
+        {
+          "source": "spotify",
+          "sourceID": "4cOdK2wGLETKBW3PvgPWqT",
+          "title": "Never Gonna Give You Up",
+          "artists": ["Rick Astley"],
+          "album": "Whenever You Need Somebody",
+          "albumArtist": "Rick Astley",
+          "trackNumber": 1,
+          "discNumber": 1,
+          "durationMs": 213573,
+          "releaseDate": "1987-11-12",
+          "artworkURL": "https://i.scdn.co/image/ab67616d0000b273sample640",
+          "explicit": false
+        },
+        {
+          "source": "spotify",
+          "sourceID": "0VjIjW4GlUZAMYd2vXMi3b",
+          "title": "Blinding Lights",
+          "artists": ["The Weeknd"],
+          "album": "After Hours",
+          "albumArtist": "The Weeknd",
+          "trackNumber": 9,
+          "discNumber": 1,
+          "durationMs": 200040,
+          "releaseDate": "2020-03-20",
+          "artworkURL": "https://i.scdn.co/image/ab67616d0000b273sample640b",
+          "explicit": false
+        }
+      ]
+    }
+  }
+}

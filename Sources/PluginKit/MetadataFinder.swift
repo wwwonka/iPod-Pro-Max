@@ -6,9 +6,11 @@
 //
 
 import Foundation
-import iPodKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-public struct MetadataQuery: Sendable {
+public struct MetadataQuery: Codable, Equatable, Sendable {
     public var title: String
     public var artist: String?
     public var album: String?
@@ -24,7 +26,7 @@ public struct MetadataQuery: Sendable {
     }
 }
 
-public struct MetadataMatch: Identifiable, Sendable {
+public struct MetadataMatch: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let source: String
     public let score: Double
@@ -41,6 +43,40 @@ public struct MetadataMatch: Identifiable, Sendable {
     public let musicBrainzReleaseID: String?
     public let artworkURL: URL?
 
+    public init(
+        id: String,
+        source: String,
+        score: Double,
+        title: String,
+        artist: String?,
+        album: String?,
+        albumArtist: String?,
+        year: Int?,
+        trackNumber: Int?,
+        trackCount: Int?,
+        discNumber: Int?,
+        discCount: Int?,
+        genre: String?,
+        musicBrainzReleaseID: String?,
+        artworkURL: URL?
+    ) {
+        self.id = id
+        self.source = source
+        self.score = score
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.albumArtist = albumArtist
+        self.year = year
+        self.trackNumber = trackNumber
+        self.trackCount = trackCount
+        self.discNumber = discNumber
+        self.discCount = discCount
+        self.genre = genre
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.artworkURL = artworkURL
+    }
+
     public var summaryLabel: String {
         var parts = [title]
         if let artist, !artist.isEmpty { parts.append(artist) }
@@ -50,7 +86,7 @@ public struct MetadataMatch: Identifiable, Sendable {
     }
 }
 
-public protocol MetadataLookupProvider: Sendable {
+public protocol MetadataLookupProvider: PluginRoleHandler {
     var name: String { get }
     func search(query: MetadataQuery) async throws -> [MetadataMatch]
 }
@@ -91,7 +127,7 @@ public struct MusicBrainzProvider: MetadataLookupProvider {
         request.setValue("iPodProMax/1.0 (https://github.com/wwwonka/iPod-Pro-Max)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.portableData(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return []
         }
@@ -111,7 +147,7 @@ public struct MusicBrainzProvider: MetadataLookupProvider {
         request.setValue("iPodProMax/1.0 (https://github.com/wwwonka/iPod-Pro-Max)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.portableData(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return []
         }
@@ -250,7 +286,7 @@ public struct AcoustIDProvider: MetadataLookupProvider {
             URLQueryItem(name: "fingerprint", value: fp.fingerprint),
         ]
         guard let url = components.url else { return [] }
-        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
+        let (data, response) = try await session.portableData(for: URLRequest(url: url, timeoutInterval: 10))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return []
         }
@@ -342,7 +378,7 @@ public struct ITunesLookupProvider: MetadataLookupProvider {
         ]
         guard let url = components.url else { return [] }
 
-        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
+        let (data, response) = try await session.portableData(for: URLRequest(url: url, timeoutInterval: 10))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return []
         }
@@ -431,7 +467,7 @@ public final class MetadataFinderService: Sendable {
     public func fetchArtworkData(from url: URL) async -> Data? {
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("iPodProMax/1.0 (https://github.com/wwwonka/iPod-Pro-Max)", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await session.data(for: request),
+        guard let (data, response) = try? await session.portableData(for: request),
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
               !data.isEmpty else {

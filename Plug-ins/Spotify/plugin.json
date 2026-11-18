@@ -1,0 +1,56 @@
+{
+  "id": "spotify",
+  "name": "Spotify",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Reads public Spotify playlists and albums without a Spotify developer account or Premium subscription.",
+  "author": "iPod Pro Max",
+  "license": "MIT",
+  "serviceName": "Spotify",
+  "roles": ["playlistSource"],
+  "executable": {
+    "macos": "bin/macos/spotify-plugin",
+    "windows-x64": "bin/windows-x64/spotify-plugin.exe",
+    "windows-arm64": "bin/windows-arm64/spotify-plugin.exe",
+    "linux-x86_64": "bin/linux-x86_64/spotify-plugin",
+    "linux-aarch64": "bin/linux-aarch64/spotify-plugin"
+  },
+  "urlPatterns": [
+    "^(?:https?://)?(?:open|play)\\.spotify\\.com/(?:embed/)?(?:intl-[a-z]+(?:-[a-z]+)?/)?(?:playlist|album)/[0-9a-z]{22}(?:[/?#].*)?$",
+    "^spotify:(?:playlist|album):[0-9a-z]{22}$"
+  ],
+  "badge": "badge.svg",
+  "requiresConsent": "scraping",
+  "settings": [
+    {
+      "key": "account",
+      "type": "account",
+      "label": "Spotify Web Account",
+      "help": "Sign in to reorder playlists that you own back to Spotify (Free or Premium) and read private playlists. If Spotify blocks the embedded login, paste your sp_dc cookie from open.spotify.com in Safari/Chrome.",
+      "oauth": true,
+      "fields": [
+        {
+          "key": "sp_dc",
+          "label": "Session Cookie (sp_dc)",
+          "type": "secret",
+          "placeholder": "Optional manual sp_dc",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "config": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "pathfinder": {
+      "fetchPlaylist": {
+        "sha256": "a65e12194ed5fc443a1cdebed5fabe33ca5b07b987185d63c72483867ad13cb4"
+      },
+      "getAlbum": {
+        "sha256": "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10"
+      },
+      "moveItemsInPlaylist": {
+        "sha256": "b907ad6b088d5bf7680fa81198996d58398c2d55dfcdf59fcc959e0be98a418a"
+      }
+    }
+  }
+}

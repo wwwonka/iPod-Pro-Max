@@ -5,13 +5,19 @@ import Foundation
 enum TrackDrag {
     static var payload: String?
     static var ids: [String] = []
-    static func begin(_ tracks: [String]) -> String? {
+    /// Includes non-downloaded subscription keys for in-playlist reordering; never accepted by iPod drops.
+    static var reorderIDs: [String] = []
+    static func begin(_ tracks: [String], reorderTargets: [String]? = nil) -> String? {
         ids = Array(Set(tracks.filter { UUID(uuidString: $0) != nil }))
-        guard !ids.isEmpty else { payload = nil; return nil }
+        reorderIDs = reorderTargets ?? tracks
+        guard !ids.isEmpty || !reorderIDs.isEmpty else {
+            payload = nil
+            return nil
+        }
         payload = "ipodpromax-tracks:" + UUID().uuidString
         return payload
     }
-    static func end() { payload = nil; ids = [] }
+    static func end() { payload = nil; ids = []; reorderIDs = [] }
     static func accept(_ text: String?, device: String) -> Bool {
         guard let text, text == payload, !ids.isEmpty else { return false }
         return MusicTransfer.shared.onDrop(ids, device)

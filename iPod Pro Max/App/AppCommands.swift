@@ -10,6 +10,9 @@ enum AppCommands {
     static var openTrackInfo: (() -> Void)?
     static var canOpenTrackInfo: (() -> Bool)?
     static var createPlaylist: ((_ isFolder: Bool) -> Void)?
+    static var newSubscription: (() -> Void)?
+    static var newSubscriptionWithURL: ((_ url: String) -> Void)?
+    static var openPlaylistByID: ((_ playlistID: String) -> Void)?
     /// Records a folder (kind = `SourceKind.rawValue`) chosen in the Settings window, then refreshes the
     /// library. The choosing happens in Settings; the main window is only asked to do the work.
     static var addSource: ((_ kind: String, _ folder: URL) -> Void)?

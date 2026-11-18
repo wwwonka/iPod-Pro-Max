@@ -8,6 +8,7 @@
 
 import Foundation
 import iPodKit
+import PluginKit
 import MediaKit
 import DeviceKit
 
@@ -25,6 +26,14 @@ USAGE
   ipodpromax tags   <file>…               tags as iPod Pro Max reads them
   ipodpromax init-sim <folder> [--model <number>] [--name <iPod name>]
                                           makes <folder> look like an iPod, for trying things out
+  ipodpromax plugin new <Name> --role <role> [--id <id>]
+                                          creates a plug-in skeleton in Plug-ins/<Name>/
+  ipodpromax plugin test <folder> [--offline]
+                                          runs conformance checks on a plug-in
+  ipodpromax plugin pack <folder> [--output <path>]
+                                          packages a plug-in into <Name>-<version>.ippmplugin
+  ipodpromax plugin install <file.ippmplugin> [--ipod <path>]
+                                          installs a plug-in onto the iPod (or Build/ if none mounted)
 
   --ipod <path>   the iPod's mount point (/Volumes/IPOD, /run/media/me/IPOD, E:\\) or a folder made by
                   init-sim. Optional when exactly one iPod is mounted.
@@ -33,15 +42,17 @@ USAGE
 struct Arguments {
     var positional: [String] = []
     var options: [String: String] = [:]
+    var multiOptions: [String: [String]] = [:]
     var flags: Set<String> = []
 
     init(_ raw: [String]) {
         var i = 0
-        let valued: Set<String> = ["--ipod", "--model", "--name"]
+        let valued: Set<String> = ["--ipod", "--model", "--name", "--role", "--id", "--output"]
         while i < raw.count {
             let a = raw[i]
             if valued.contains(a), i + 1 < raw.count {
                 options[a] = raw[i + 1]
+                multiOptions[a, default: []].append(raw[i + 1])
                 i += 2
             } else if a.hasPrefix("--") {
                 flags.insert(a)
@@ -387,6 +398,127 @@ func initSimulated(_ args: Arguments) {
     }
 }
 
+// MARK: - Plug-in Commands (PLG-15)
+
+func pluginCommand(_ args: Arguments) async {
+    let subcommand = args.positional.dropFirst().first
+    switch subcommand {
+    case "new":
+        guard let name = args.positional.dropFirst(2).first else {
+            fail("plugin new needs a name: ipodpromax plugin new <Name> --role <role>")
+        }
+        let rawRoles = (args.multiOptions["--role"] ?? [])
+            .flatMap { $0.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
+            .filter { !$0.isEmpty }
+        guard !rawRoles.isEmpty else {
+            fail("plugin new needs at least one --role (playlistSource, resolver, downloader, share, metadataProvider, lyricsProvider).")
+        }
+        var roles: [PluginRole] = []
+        for raw in rawRoles {
+            guard let role = PluginRole(rawValue: raw) else {
+                fail("unknown role '\(raw)'. Valid roles: \(PluginRole.allCases.map(\.rawValue).joined(separator: ", "))")
+            }
+            if !roles.contains(role) { roles.append(role) }
+        }
+        let dest = args.options["--output"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                .appendingPathComponent("Plug-ins/\(name)", isDirectory: true)
+        do {
+            try PluginCLI.createSkeleton(name: name, id: args.options["--id"], roles: roles, at: dest)
+            print("Created plug-in skeleton at \(FileOps.nativePath(dest))")
+        } catch {
+            fail(error.localizedDescription)
+        }
+
+    case "test":
+        guard let folderPath = args.positional.dropFirst(2).first else {
+            fail("plugin test needs a folder: ipodpromax plugin test <folder> [--offline]")
+        }
+        let folder = URL(fileURLWithPath: folderPath, isDirectory: true)
+        let offline = args.flags.contains("--offline")
+        let report = await PluginCLI.runConformanceTests(
+            folderURL: folder,
+            offline: offline,
+            ffmpegPath: FFmpeg.binaryPath()
+        )
+        let useColor = isatty(1) != 0
+        for check in report.results {
+            let mark = check.passed ? "✓" : "✗"
+            let coloredMark = useColor
+                ? (check.passed ? "\u{001B}[32m\(mark)\u{001B}[0m" : "\u{001B}[31m\(mark)\u{001B}[0m")
+                : mark
+            let detail = check.detail.isEmpty ? "" : " (\(check.detail))"
+            print("\(coloredMark) \(check.name)\(detail)")
+        }
+        let summary = "\(report.passedCount)/\(report.totalCount) checks passed"
+        if useColor {
+            let color = report.allPassed ? "\u{001B}[32m" : "\u{001B}[31m"
+            print("\(color)\(summary)\u{001B}[0m")
+        } else {
+            print(summary)
+        }
+        if !report.allPassed { exit(1) }
+
+    case "pack":
+        guard let folderPath = args.positional.dropFirst(2).first else {
+            fail("plugin pack needs a folder: ipodpromax plugin pack <folder> [--output <path>]")
+        }
+        let folder = URL(fileURLWithPath: folderPath, isDirectory: true)
+        do {
+            let validated = try ManifestValidator.loadAndValidate(from: folder.appendingPathComponent("plugin.json"))
+            let fileName = "\(folder.lastPathComponent)-\(validated.manifest.version).ippmplugin"
+            let outURL = args.options["--output"].map { URL(fileURLWithPath: $0) }
+                ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                    .appendingPathComponent(fileName)
+            _ = try PluginPackage.pack(folderURL: folder, outputURL: outURL)
+            print("Packed \(FileOps.nativePath(outURL))")
+        } catch {
+            fail(error.localizedDescription)
+        }
+
+    case "install":
+        guard let pkgPath = args.positional.dropFirst(2).first else {
+            fail("plugin install needs a package: ipodpromax plugin install <file.ippmplugin> [--ipod <path>]")
+        }
+        let pkgURL = URL(fileURLWithPath: pkgPath)
+        let targetRoot = resolvePluginInstallRoot(args)
+        do {
+            let verified = try PluginPackage.verify(packageURL: pkgURL)
+            let registry = PluginRegistry(iPodRoot: targetRoot)
+            let installed = try await registry.install(package: verified)
+            print("Installed \(installed.name) \(installed.version) into \(FileOps.nativePath(installed.rootURL))")
+        } catch {
+            fail(error.localizedDescription)
+        }
+
+    default:
+        fail("plugin needs a subcommand: new, test, pack, or install.")
+    }
+}
+
+func resolvePluginInstallRoot(_ args: Arguments) -> URL {
+    if let explicit = args.options["--ipod"] {
+        guard let device = DeviceScanner.device(at: URL(fileURLWithPath: explicit, isDirectory: true)) else {
+            fail("no iPod at \(explicit) (no iPod_Control folder there).")
+        }
+        return device.mountPoint
+    }
+    let devices = knownIPods()
+    if devices.count == 1 {
+        return devices[0].mountPoint
+    }
+    if devices.count > 1 {
+        fail("several iPods are mounted: pick one with --ipod (\(devices.map { FileOps.nativePath($0.mountPoint) }.joined(separator: ", "))).")
+    }
+    // Fallback to Build/ when no iPod is mounted
+    let buildDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        .appendingPathComponent("Build", isDirectory: true)
+    if FileManager.default.fileExists(atPath: buildDir.path) {
+        return buildDir
+    }
+    fail("no iPod found and no Build/ folder in current directory. Pass --ipod <path>.")
+}
+
 // MARK: - Entry point
 
 let args = Arguments(Array(CommandLine.arguments.dropFirst()))
@@ -398,6 +530,7 @@ case "eject": await eject(resolveDevice(args))
 case "watch": await watch()
 case "tags": await tags(args)
 case "init-sim": initSimulated(args)
+case "plugin": await pluginCommand(args)
 case nil where args.flags.contains("--help") || args.flags.isEmpty: print(usage)
 default:
     FileHandle.standardError.write(Data("Unknown command \(args.positional.first ?? "").\n\n".utf8))

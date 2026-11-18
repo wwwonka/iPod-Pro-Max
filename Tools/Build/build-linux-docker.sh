@@ -104,6 +104,34 @@ EOF
         cp /work/build-cli/$ARCH-swift-linux-musl/release/ipodpromax /out/linux-cli/$ARCH/
         strip /out/linux-cli/$ARCH/ipodpromax
         cp /out/FFmpeg/linux-$FFARCH/ffmpeg /out/linux-cli/$ARCH/ffmpeg
+
+        # Bundled plug-ins (static Linux musl executables)
+        if [ -d /work/src/Plug-ins ]; then
+            for pjson in /work/src/Plug-ins/*/plugin.json; do
+                [ -f "$pjson" ] || continue
+                pdir=$(dirname "$pjson")
+                pid=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"id\"])" "$pjson")
+                lexec=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(\"executable\",{}).get(\"linux-\"+sys.argv[2],\"\"))" "$pjson" "$ARCH")
+                target=""
+                for sdir in "$pdir"/Sources/*/; do
+                    [ -d "$sdir" ] || continue
+                    cand=$(basename "$sdir")
+                    if grep -q "\"$cand\"" /work/src/Package.swift; then target="$cand"; break; fi
+                done
+                if [ -n "$pid" ] && [ -n "$lexec" ] && [ -n "$target" ]; then
+                    swift build -c release --scratch-path /work/build-cli --swift-sdks-path /work/sdks --swift-sdk $ARCH-swift-linux-musl --product "$target"
+                    pdest="/out/plugins/$pid"
+                    mkdir -p "$pdest/$(dirname "$lexec")"
+                    for asset in plugin.json badge.svg LICENSE README.md; do
+                        [ -f "$pdir/$asset" ] && cp "$pdir/$asset" "$pdest/"
+                    done
+                    [ -d "$pdir/vendor" ] && rsync -a --exclude .DS_Store "$pdir/vendor/" "$pdest/vendor/"
+                    cp "/work/build-cli/$ARCH-swift-linux-musl/release/$target" "$pdest/$lexec"
+                    strip "$pdest/$lexec"
+                    chmod +x "$pdest/$lexec"
+                fi
+            done
+        fi
         echo "OK: Linux $ARCH"
     '
 }

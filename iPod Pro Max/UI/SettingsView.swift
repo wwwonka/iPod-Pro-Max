@@ -65,7 +65,7 @@ struct SettingsView: View {
                     case .syncing: syncing
                     case .playback: empty("Playback settings will appear here.")
                     case .devices: empty("Settings for each connected iPod will appear here.")
-                    case .plugins: empty("No plug-ins installed.")
+                    case .plugins: PluginsSettingsTabView()
                     case .advanced: empty("No advanced settings yet.")
                     }
                 }
@@ -77,8 +77,24 @@ struct SettingsView: View {
         }
         .frame(width: 540, height: 540)
         .settingsWindowChrome(title: tab.rawValue)
+        .pluginPackageDropTarget()
+        .onChange(of: tab) {
+            PluginController.shared.settingsPluginsTabActive = (tab == .plugins)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: {
+                    let _ = revision
+                    return PluginController.shared.pendingInstall != nil && PluginController.shared.settingsPluginsTabActive
+                },
+                set: { if !$0 { PluginController.shared.cancelInstall() } }
+            )
+        ) {
+            PluginInstallSheet()
+        }
         .task {
             SettingsController.shared.onChange = { revision += 1 }
+            PluginController.shared.observe("settings-sheet") { revision += 1 }
         }
     }
 

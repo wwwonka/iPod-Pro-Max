@@ -29,6 +29,7 @@ private final class AppearanceObserverToken {}
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.presentAlert) private var presentAlert
     @State var portableLibrary: LoadedPortableLibrary?
     @State var busyDevices: Set<String> = []
     @State var transferStatus = ""
@@ -66,6 +67,13 @@ struct ContentView: View {
     @State var sidebarOrder: [String: [String]] = [:]
     @State var editingPlaylistID: String? = nil
     @State private var appearanceRevision = 0
+    @State private var pluginSheetRevision = 0
+    @State private var subscriptionRevision = 0
+    @State private var subscriptionsLoaded = false
+    @State private var newSubscriptionVisible = false
+    @State private var newSubscriptionInitialURL = ""
+    @State private var subscriptionNotice: String?
+    @State private var libraryPickerPlaylistID: String? = nil
     private let appearanceToken = AppearanceObserverToken()
     @State var selectedAlbumID: String?
     @State var playlistEditorVisible = false
@@ -76,6 +84,7 @@ struct ContentView: View {
 
     var body: some View {
         let _ = appearanceRevision
+        let _ = subscriptionRevision
         #if canImport(AppKitBackend)
         // Before the layout of this pass, so the sidebar and the page change in the same frame.
         let _: Void = MacChrome.shared.setSidebarAvailable(!isDevicePage)
@@ -117,8 +126,10 @@ struct ContentView: View {
         }
         .windowChrome(colorScheme: $colorScheme)
         .followingSystemColorScheme(colorScheme)
+        .pluginPackageDropTarget()
 
         .task {
+            PluginController.shared.observe("main-window") { pluginSheetRevision += 1 }
             ListAppearance.shared.observe(appearanceToken) { appearanceRevision += 1 }
             // With a library open the menu adds a folder (as Settings does); the first one sets it up.
             AppCommands.addMusicFolder = { Task {
@@ -132,6 +143,17 @@ struct ContentView: View {
             AppCommands.addPhotosFolder = { Task { await addPhotosFolder() } }
             AppCommands.openSettings = { openWindow(id: "settings") }
             AppCommands.createPlaylist = { isFolder in createNewPlaylist(isFolder: isFolder) }
+            AppCommands.newSubscription = {
+                newSubscriptionInitialURL = ""
+                newSubscriptionVisible = true
+            }
+            AppCommands.newSubscriptionWithURL = { url in
+                newSubscriptionInitialURL = url
+                newSubscriptionVisible = true
+            }
+            AppCommands.openPlaylistByID = { id in
+                navigationSelection.wrappedValue = .playlist(id)
+            }
             AppCommands.addSource = { kind, folder in Task { await addSource(kind: kind, folder: folder) } }
             AppCommands.removeSource = { id in Task { await removeSource(id: id) } }
             #if canImport(AppKitBackend)
@@ -181,9 +203,22 @@ struct ContentView: View {
                 MusicTransfer.shared.acceptingDrops = false
                 defer { MusicTransfer.shared.acceptingDrops = true }
                 try await flushPreferences()
+                await SubscriptionController.shared.finishAndCheckpointBeforeQuit()
+                await ShareController.shared.shutdown()
                 await MusicTransfer.shared.finishActiveTransfers()
+                await PluginController.shared.registry?.shutdownAll(timeoutSeconds: 2.0)
                 try await flushPreferences()
             }
+            SubscriptionController.shared.observe("main") {
+                subscriptionRevision += 1
+                if let msg = SubscriptionController.shared.corruptSubscriptionsNotice {
+                    SubscriptionController.shared.dismissCorruptNotice()
+                    ejectError = msg
+                }
+            }
+            #if canImport(AppKitBackend)
+            installSubscriptionPasteMonitor()
+            #endif
             MusicTransfer.shared.beforeTransfer = { _ in try await flushPreferences() }
             MusicTransfer.shared.onPodcastResult = { PodcastController.shared.apply($0) }
             PodcastController.shared.onChange = { podcastRevision += 1 }
@@ -255,6 +290,9 @@ struct ContentView: View {
                 }
                 ipods = found
                 devices = names
+                if let tracks = portableLibrary?.cache.tracks {
+                    ShareController.shared.update(tracks: tracks, connectedDevice: found.first)
+                }
                 if let added {
                     // `IPPM_SELECT_MUSIC=1`: stays on Music, to look at its page and sidebar.
                     selection = ProcessInfo.processInfo.environment["IPPM_SELECT_MUSIC"] != nil ? .music : .device(added.id)
@@ -310,6 +348,52 @@ struct ContentView: View {
             }.padding(24).frame(width: 340)
         }
         .alert($ejectError) {}
+        .alert($subscriptionNotice) {}
+        .sheet(
+            isPresented: Binding(
+                get: {
+                    let _ = pluginSheetRevision
+                    return PluginController.shared.pendingInstall != nil && !PluginController.shared.settingsPluginsTabActive
+                },
+                set: { if !$0 { PluginController.shared.cancelInstall() } }
+            )
+        ) {
+            PluginInstallSheet()
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { libraryPickerPlaylistID != nil },
+                set: { if !$0 { libraryPickerPlaylistID = nil } }
+            )
+        ) {
+            if let targetPlaylistID = libraryPickerPlaylistID,
+               let sub = SubscriptionController.shared.subscription(forPlaylistID: targetPlaylistID) {
+                let existingIDs = Set(sub.tracks.compactMap { $0.libraryTrackID?.uuidString })
+                AddLibrarySongsSheet(
+                    playlistTitle: sub.title,
+                    sourceName: sub.sourceName,
+                    libraryRows: library?.allRows ?? [],
+                    existingLibraryIDs: existingIDs,
+                    onAdd: { chosenIDs in
+                        SubscriptionController.shared.addLibraryTracks(chosenIDs, toPlaylistID: targetPlaylistID)
+                    },
+                    onClose: { libraryPickerPlaylistID = nil }
+                )
+            }
+        }
+        .sheet(isPresented: $newSubscriptionVisible) {
+            NewSubscriptionSheet(
+                isPresented: $newSubscriptionVisible,
+                urlText: $newSubscriptionInitialURL,
+                pluginRevision: pluginSheetRevision,
+                onNoDownloadSource: {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        subscriptionNotice = "Playlist Subscribed\n\nNo download source plug-in is currently enabled. Missing tracks will remain as unavailable placeholders until you enable a download source plug-in in Settings › Plug-ins."
+                    }
+                }
+            )
+        }
     }
 
     private var isDevicePage: Bool {
@@ -340,6 +424,9 @@ struct ContentView: View {
             selectedSongIDs = []
             if item == .artists { selection = .music; mode = .byArtist }
             else { selection = item; if item == .music { mode = .allSongs } }
+            if case .playlist(let id) = item {
+                SubscriptionController.shared.onPlaylistSelected(id)
+            }
             if settingsLoaded, let store = portableLibrary?.store, let mode {
                 PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
                 if let tab = item.persistentName, let section = item.media?.persistentName {
@@ -568,10 +655,15 @@ struct ContentView: View {
     #endif
 
     private func addTracksToPlaylist(_ ids: [String], _ playlistID: String) {
+        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
+            SubscriptionController.shared.addLibraryTracks(ids, toPlaylistID: playlistID)
+            return
+        }
         guard let id = UUID(uuidString: playlistID) else { return }
         let trackIDs = ids.compactMap(UUID.init(uuidString:))
         updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = playlists.firstIndex(where: { $0.id == id }),
+                  playlists[index].subscriptionID == nil else { return }
             var existing = Set(playlists[index].trackIDs)
             for track in trackIDs where existing.insert(track).inserted { playlists[index].trackIDs.append(track) }
         }
@@ -581,7 +673,8 @@ struct ContentView: View {
         guard let id = UUID(uuidString: playlistID) else { return }
         let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
         updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+            guard let index = playlists.firstIndex(where: { $0.id == id }),
+                  playlists[index].subscriptionID == nil else { return }
             playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
         }
     }
@@ -604,11 +697,13 @@ struct ContentView: View {
 
     private func renamePlaylist(_ id: String, to name: String) {
         guard let uuid = UUID(uuidString: id) else { return }
-        if let idx = library?.playlists.firstIndex(where: { $0.id == id }) {
+        if let idx = library?.playlists.firstIndex(where: { $0.id == id }),
+           library?.playlists[idx].subscriptionID == nil {
             library?.playlists[idx].name = name
         }
         updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == uuid }) else { return }
+            guard let index = playlists.firstIndex(where: { $0.id == uuid }),
+                  playlists[index].subscriptionID == nil else { return }
             playlists[index].name = name
         }
     }
@@ -674,6 +769,10 @@ struct ContentView: View {
 
     private func reorderPlaylistTracks(_ ids: [String], to targetRow: Int) {
         guard let playlistID = selectedPlaylistID, let uuid = UUID(uuidString: playlistID) else { return }
+        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
+            SubscriptionController.shared.reorderTracks(playlistID: playlistID, movedIDs: ids, toTargetRow: targetRow)
+            return
+        }
         let moving = ids.compactMap(UUID.init(uuidString:))
         guard !moving.isEmpty else { return }
         let movingSet = Set(moving)
@@ -719,9 +818,56 @@ struct ContentView: View {
         return nil
     }
 
+    private func unsubscribePlaylist(_ id: String) {
+        guard let playlist = library?.playlists.first(where: { $0.id == id }),
+              playlist.subscriptionID != nil else { return }
+        Task {
+            await presentAlert(
+                "Unsubscribe from “\(playlist.name)”?\n\nYou can keep this playlist and its downloaded music in your library, or remove the playlist and move its downloaded files to the Trash."
+            ) {
+                Button("Unsubscribe and Keep Music") {
+                    SubscriptionController.shared.unsubscribeKeepMusic(playlistID: id)
+                }
+                Button("Unsubscribe and Remove Everything") {
+                    SubscriptionController.shared.unsubscribeRemoveEverything(playlistID: id)
+                    if selectedPlaylistID == id {
+                        navigationSelection.wrappedValue = .music
+                    }
+                }
+                Button("Cancel") {}
+            }
+        }
+    }
+
     #if canImport(AppKitBackend)
+    private func installSubscriptionPasteMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else {
+                return event
+            }
+            let responder = NSApp.keyWindow?.firstResponder
+            if responder is NSText || responder is NSTextView {
+                return event
+            }
+            guard let clip = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !clip.isEmpty,
+                  let matched = SubscriptionController.shared.matchSource(for: clip),
+                  matched.plugin != nil else {
+                return event
+            }
+            Task { @MainActor in
+                AppCommands.newSubscriptionWithURL?(matched.url.absoluteString)
+            }
+            return nil
+        }
+    }
+
     private func renamePlaylist(_ id: String) {
-        guard let playlist = library?.playlists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        guard let playlist = library?.playlists.first(where: { $0.id == id }),
+              playlist.subscriptionID == nil,
+              let uuid = UUID(uuidString: id) else { return }
         let alert = NSAlert(); alert.messageText = "Rename Playlist"
         let field = NSTextField(string: playlist.name); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = field; alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
@@ -735,6 +881,10 @@ struct ContentView: View {
 
     private func deletePlaylist(_ id: String) {
         guard let playlist = library?.playlists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        if playlist.subscriptionID != nil {
+            unsubscribePlaylist(id)
+            return
+        }
         let alert = NSAlert(); alert.messageText = "Delete Playlist?"
         alert.informativeText = "Delete “\(playlist.name)”? Your music files won't be deleted."
         alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
@@ -778,6 +928,7 @@ struct ContentView: View {
         portableLibrary = saved; library = indexed
         pendingLibrarySave = nil
         applyArtistPhotos()
+        ShareController.shared.update(tracks: saved.cache.tracks, connectedDevice: ipods.first)
         #if canImport(AppKitBackend)
         configureMetadataEditor()
         #endif
@@ -882,8 +1033,8 @@ struct ContentView: View {
 
     private func reorderSidebarSection(_ section: String, items: [SidebarItem]) {
         if section == "Playlists" {
-            let orderedIDs = items.compactMap { item -> UUID? in
-                if case .playlist(let id) = item { return UUID(uuidString: id) }
+            let orderedIDs = items.compactMap { item -> Foundation.UUID? in
+                if case .playlist(let id) = item { return Foundation.UUID(uuidString: id) }
                 return nil
             }
             updatePlaylists { playlists in
@@ -898,8 +1049,8 @@ struct ContentView: View {
                 playlists = reordered
             }
         } else if section == "Video Playlists" {
-            let orderedIDs = items.compactMap { item -> UUID? in
-                if case .videoPlaylist(let id) = item { return UUID(uuidString: id) }
+            let orderedIDs = items.compactMap { item -> Foundation.UUID? in
+                if case .videoPlaylist(let id) = item { return Foundation.UUID(uuidString: id) }
                 return nil
             }
             updateVideoPlaylists { playlists in
@@ -937,7 +1088,7 @@ struct ContentView: View {
         let selected = Set(ids)
         ListAppearance.shared.beginFavoriteWrite(ids, favorite: favorite)
         enqueueLibraryWrite("favorites") { cache in
-            var pathsByID: [UUID: String] = [:]
+            var pathsByID: [Foundation.UUID: String] = [:]
             for index in cache.tracks.indices where selected.contains(cache.tracks[index].id.uuidString) && cache.tracks[index].mediaKind == .song {
                 cache.tracks[index].isFavorite = favorite
                 pathsByID[cache.tracks[index].id] = cache.tracks[index].path
@@ -946,7 +1097,7 @@ struct ContentView: View {
                 var refs = cache.favoriteReferences ?? []
                 var existing = Set(refs.map(\.id))
                 for idString in ids {
-                    guard let uuid = UUID(uuidString: idString),
+                    guard let uuid = Foundation.UUID(uuidString: idString),
                           let path = pathsByID[uuid],
                           existing.insert(uuid).inserted else { continue }
                     refs.append(PortableFavoriteReference(id: uuid, path: path))
@@ -1076,6 +1227,25 @@ struct ContentView: View {
                 PhotoChoices.shared.onError = { transferStatus = $0 }
                 await PodcastController.shared.load(store: loaded.store)
             }
+            if !subscriptionsLoaded {
+                subscriptionsLoaded = true
+                SubscriptionController.shared.attach(
+                    store: loaded.store,
+                    tracksProvider: { [self] in portableLibrary?.cache.tracks ?? [] },
+                    playlistsProvider: { [self] in portableLibrary?.cache.playlists ?? [] },
+                    libraryMutator: { [self] mutation in
+                        enqueueLibraryWrite("subscription", edit: mutation)
+                    },
+                    onSelectPlaylist: { [self] pid in
+                        navigationSelection.wrappedValue = .playlist(pid)
+                    }
+                )
+            }
+            ShareController.shared.attach(
+                store: loaded.store,
+                tracks: loaded.cache.tracks,
+                connectedDevice: ipods.first
+            )
             if !settingsLoaded {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
                 albumArtworkSize = min(max(settings?.albumArtworkSize ?? 172, 110), 280)
@@ -1131,7 +1301,7 @@ struct ContentView: View {
     private var sidebarColumn: some View {
         VStack(spacing: 0) {
             #if canImport(AppKitBackend)
-            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, sidebarOrder: sidebarOrder, editingPlaylistID: editingPlaylistID, onEject: eject,
+            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, sidebarOrder: sidebarOrder, editingPlaylistID: editingPlaylistID, subscriptionRevision: subscriptionRevision, onEject: eject,
                 onAdd: { media in
                     switch media {
                     case .music: Task { await configureMusic() }
@@ -1147,8 +1317,12 @@ struct ContentView: View {
                 },
                 onAddMusicFolder: { AppCommands.addMusicFolder?() },
                 onCreatePlaylist: { isFolder in createNewPlaylist(isFolder: isFolder) },
+                onNewSubscription: { AppCommands.newSubscription?() },
                 onRenamePlaylist: { id, name in renamePlaylist(id, to: name) },
                 onDeletePlaylist: { id in deletePlaylist(id) },
+                onRefreshSubscription: { id in SubscriptionController.shared.refresh(playlistID: id) },
+                onStopSubscription: { id in SubscriptionController.shared.stop(playlistID: id) },
+                onUnsubscribePlaylist: { id in unsubscribePlaylist(id) },
                 onMovePlaylistToFolder: { id, folderID, index in movePlaylist(id, toFolder: folderID, atIndex: index) },
                 onSendPlaylistToDevice: { id, device in sendPlaylist(id, toDevice: device) },
                 onClearEditing: { editingPlaylistID = nil })
@@ -1221,6 +1395,15 @@ struct ContentView: View {
                             onUnsubscribe: { PodcastController.shared.unsubscribe(showID: show.id); selectedShowID = nil })
                         Divider()
                     }
+                    if let subPlaylistID = selectedPlaylistID,
+                       SubscriptionController.shared.subscription(forPlaylistID: subPlaylistID) != nil {
+                        SubscriptionHeaderView(
+                            playlistID: subPlaylistID,
+                            revision: subscriptionRevision,
+                            onAddFromLibrary: { libraryPickerPlaylistID = subPlaylistID }
+                        )
+                        Divider()
+                    }
                     // The cover only hides the table: over the artist list, it would swallow the
                     // clicks that pick an artist.
                     ZStack {
@@ -1237,7 +1420,13 @@ struct ContentView: View {
                                        if ids != selectedSongIDs { selectedSongIDs = ids }
                                    },
                                    viewKey: "\(selection)", sortScope: selection == .recentMusic ? "recent" : "",
-                                   onToggleFavorite: showsFavoriteIcon ? { ids, favorite in setFavorite(favorite, ids: ids) } : nil)
+                                   onToggleFavorite: showsFavoriteIcon ? { ids, favorite in setFavorite(favorite, ids: ids) } : nil,
+                                   subscriptionPlaylistID: selectedPlaylistID.flatMap { SubscriptionController.shared.subscription(forPlaylistID: $0) != nil ? $0 : nil },
+                                   subscriptionStates: selectedPlaylistID.map { SubscriptionController.shared.statusStates(forPlaylistID: $0) } ?? [:],
+                                   subscriptionRevision: subscriptionRevision,
+                                   onRetrySubscribedTrack: { playlistID, trackKey in
+                                       SubscriptionController.shared.retryTrack(playlistID: playlistID, trackKey: trackKey)
+                                   })
                         if selection == .albums && selectedAlbumID == nil {
                             AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
                                          onSelect: { selectedAlbumID = $0 }, artworkSize: albumArtworkSize,
@@ -1366,7 +1555,13 @@ struct ContentView: View {
             subtitle = album.map { "\($0.artist) · \(songCount($0.rows.count))" } ?? "\(library.albums.count) albums"
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
-            subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+            if let sub = SubscriptionController.shared.subscription(forPlaylistID: id) {
+                let owner = sub.owner?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let ownerPart = (owner?.isEmpty == false) ? "by \(owner!)" : nil
+                subtitle = [ownerPart, songCount(sub.tracks.count)].compactMap { $0 }.joined(separator: " · ")
+            } else {
+                subtitle = songCount(library.rowsByPlaylist[id]?.count ?? 0)
+            }
         case .videos:
             title = "Videos"
             subtitle = videoCount(library.videoRows.count)
@@ -1460,11 +1655,21 @@ struct ContentView: View {
         case .albums:
             return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
         case .playlist(let id):
-            if library.playlists.first(where: { $0.id == id })?.isFolder == true {
-                let rows = library.playlists
-                    .filter { $0.parentID == id }
-                    .flatMap { library.rowsByPlaylist[$0.id] ?? [] }
-                return filtered(rows)
+            if let playlist = library.playlists.first(where: { $0.id == id }) {
+                if playlist.isFolder {
+                    var rows = library.playlists
+                        .filter { $0.parentID == id }
+                        .flatMap { p in
+                            p.subscriptionID != nil
+                                ? SubscriptionController.shared.rows(for: p, library: library)
+                                : (library.rowsByPlaylist[p.id] ?? [])
+                        }
+                    for i in rows.indices { rows[i].number = "\(i + 1)" }
+                    return filtered(rows)
+                }
+                if playlist.subscriptionID != nil {
+                    return filtered(SubscriptionController.shared.rows(for: playlist, library: library))
+                }
             }
             return filtered(library.rowsByPlaylist[id] ?? [])
         case .videos:
@@ -1518,9 +1723,12 @@ struct ContentView: View {
         case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder == true && !library.playlists.contains(where: { $0.parentID == id }):
             return EmptyState(icon: "folder", title: "Empty Playlist Folder",
                               message: "Drag playlists onto this folder in the sidebar to organize them.")
-        case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder != true && library.rowsByPlaylist[id, default: []].isEmpty:
+        case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder != true && SubscriptionController.shared.subscription(forPlaylistID: id) == nil && library.rowsByPlaylist[id, default: []].isEmpty:
             return EmptyState(icon: "music.note.list", title: "Empty Playlist",
                               message: "Drag songs onto this playlist or use Add to Playlist to add music.")
+        case .playlist(let id) where SubscriptionController.shared.subscription(forPlaylistID: id)?.tracks.isEmpty == true:
+            return EmptyState(icon: "music.note.list", title: "Empty Subscribed Playlist",
+                              message: "This subscribed playlist currently has no tracks.")
         case .favorites where library.favoriteRows.isEmpty:
             return EmptyState(icon: ListAppearance.shared.favoriteIcon.rawValue, title: "No Favorites Yet",
                               message: "Click the \(ListAppearance.shared.favoriteIcon.rawValue) next to a song to keep it here.")
@@ -1842,8 +2050,9 @@ struct IPodProMaxApp: App {
             // Merged into the system File menu by the backend.
             CommandMenu("File") {
                 #if !canImport(AppKitBackend)
-                // macOS has "Settings… ⌘," in the application menu (AppMenuMac).
+                // macOS has "Settings… ⌘," in the application menu (AppMenuMac) and "New Subscription… ⌥⌘N" in File menu.
                 Button("Settings…") { AppCommands.openSettings?() }
+                Button("New Subscription…") { AppCommands.newSubscription?() }
                 #endif
                 Menu("Add to Library") {
                     Button("Local Music Folder…") { AppCommands.addMusicFolder?() }
@@ -1866,5 +2075,10 @@ struct IPodProMaxApp: App {
         }
         .defaultSize(width: 520, height: 420)
         .windowResizability(.contentSize)
+
+        Window("Plug-in Log", id: "plugin-log") {
+            PluginLogWindowView()
+        }
+        .defaultSize(width: 680, height: 420)
     }
 }

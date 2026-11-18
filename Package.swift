@@ -18,9 +18,13 @@ let package = Package(
     products: [
         .executable(name: "iPodProMaxApp", targets: ["iPodProMaxApp"]),
         .library(name: "iPodKit", targets: ["iPodKit"]),
+        .library(name: "PluginKit", targets: ["PluginKit"]),
         .library(name: "MediaKit", targets: ["MediaKit"]),
         .library(name: "DeviceKit", targets: ["DeviceKit"]),
         .executable(name: "ipodpromax", targets: ["ipodpromax"]),
+        .executable(name: "SpotifyPlugin", targets: ["SpotifyPlugin"]),
+        .executable(name: "SoulseekPlugin", targets: ["SoulseekPlugin"]),
+        .executable(name: "YtDlpPlugin", targets: ["YtDlpPlugin"]),
     ],
     dependencies: [
         .package(url: "https://github.com/moreSwift/swift-cross-ui", exact: "0.10.0"),
@@ -31,7 +35,7 @@ let package = Package(
         .executableTarget(
             name: "iPodProMaxApp",
             dependencies: [
-                "iPodKit", "DeviceKit", "MediaKit",
+                "iPodKit", "PluginKit", "DeviceKit", "MediaKit",
                 .target(name: "CGStreamerPlayback", condition: .when(platforms: [.linux])),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
@@ -42,10 +46,12 @@ let package = Package(
         .systemLibrary(name: "GStreamer", pkgConfig: "gstreamer-1.0", providers: [.apt(["libgstreamer1.0-dev"])]),
         .target(name: "CGStreamerPlayback", dependencies: ["GStreamer"]),
         .target(name: "iPodKit"),
+        .target(name: "PluginKit"),
         .target(
             name: "MediaKit",
             dependencies: [
                 "iPodKit",
+                "PluginKit",
                 .product(name: "ImageFormats", package: "swift-image-formats",
                          condition: .when(platforms: [.linux, .windows])),
             ]
@@ -64,9 +70,29 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "/STACK:8388608"], .when(platforms: [.windows])),
             ]
         ),
-        .executableTarget(name: "ipodpromax", dependencies: ["iPodKit", "MediaKit", "DeviceKit"]),
+        .executableTarget(name: "ipodpromax", dependencies: ["iPodKit", "PluginKit", "MediaKit", "DeviceKit"]),
+        .target(name: "CSockets", linkerSettings: [
+            .linkedLibrary("ws2_32", .when(platforms: [.windows])),
+        ]),
+        .target(name: "CZlib"),
+        .executableTarget(
+            name: "SpotifyPlugin",
+            dependencies: ["PluginKit"],
+            path: "Plug-ins/Spotify/Sources/SpotifyPlugin"
+        ),
+        .executableTarget(
+            name: "SoulseekPlugin",
+            dependencies: ["PluginKit", "CSockets", "CZlib"],
+            path: "Plug-ins/Soulseek/Sources/SoulseekPlugin"
+        ),
+        .executableTarget(
+            name: "YtDlpPlugin",
+            dependencies: ["PluginKit"],
+            path: "Plug-ins/yt-dlp/Sources/YtDlpPlugin"
+        ),
         .testTarget(name: "iPodKitTests", dependencies: ["iPodKit"]),
-        .testTarget(name: "MediaKitTests", dependencies: ["MediaKit", "iPodKit"]),
+        .testTarget(name: "PluginKitTests", dependencies: ["PluginKit", "SpotifyPlugin", "SoulseekPlugin", "YtDlpPlugin"]),
+        .testTarget(name: "MediaKitTests", dependencies: ["MediaKit", "PluginKit", "iPodKit"]),
     ],
     // Same language mode as the Xcode app; strict concurrency comes with the AppModel work (phase 3).
     swiftLanguageModes: [.v5]

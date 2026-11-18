@@ -1,4 +1,5 @@
 import Foundation
+import PluginKit
 import SwiftCrossUI
 
 // SF Symbols on every platform. macOS draws the real, vector symbols. GTK and WinUI draw glyphs
@@ -56,6 +57,7 @@ let symbolCodepoints: [String: UInt32] = [
 
     "music.note": 0xF134,
     "music.note.list": 0xF133,
+    "playlist-lines": 0xF133,
     "music.mic": 0xF12D,
     "microphone.dynamic.on.stand": 0xF12D,
     "ipod": 0xEE8E,
@@ -125,6 +127,7 @@ private func symbolFallback(_ name: String) -> String {
     case "photo.on.rectangle.angled": "Photos"
     case "plus": "+"
     case "xmark": "×"
+    case "puzzlepiece.extension": "Plug-ins"
     default: name.replacingOccurrences(of: ".fill", with: "")
     }
 }
@@ -162,9 +165,11 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         let side = CGFloat(pointSize * 1.4)
         let b = symbol.bounds
         let width = CGFloat(b.maxX - b.minX), height = CGFloat(b.maxY - b.minY)
-        let scale = CGFloat(pointSize * 1.15) / max(height, 1)
+        let refDim = symbol.fitBounds ? max(width, height, 1) : max(height, 1)
+        let scale = CGFloat(pointSize * 1.15) / refDim
         let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
             let path = NSBezierPath()
+            path.windingRule = .evenOdd
             for step in symbol.steps {
                 switch step {
                 case .move(let x, let y): path.move(to: NSPoint(x: x, y: y))
@@ -192,6 +197,88 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         }
         image.isTemplate = true
         image.accessibilityDescription = description
+        return image
+    }
+
+    /// Composite monochrome template icon for a subscribed playlist (`SUB-4`): `playlist-lines`
+    /// plus a scaled plug-in badge in the bottom-right corner (`icloud` fallback when no badge SVG).
+    @MainActor
+    private var compositeSubscriptionSymbolCache: [String: NSImage] = [:]
+
+    @MainActor
+    func subscriptionSidebarSymbol(pluginID: String?, parsedBadge: ParsedSVGBadge?, description: String?, pointSize: Double = 14) -> NSImage {
+        let key = "\(pluginID ?? "generic"):\(parsedBadge?.steps.count ?? 0):\(Int(pointSize))"
+        if let cached = compositeSubscriptionSymbolCache[key] {
+            return cached
+        }
+        let side = CGFloat(pointSize * 1.4)
+        let lines = customSymbols["playlist-lines"]
+        let badgeSymbol = parsedBadge.map { CustomSymbol(parsedBadge: $0) }
+        let fallbackBadge = badgeSymbol == nil ? systemSymbol("icloud", pointSize: 7.5) : nil
+
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+            if let lines {
+                let b = lines.bounds
+                let w = CGFloat(b.maxX - b.minX)
+                let h = CGFloat(b.maxY - b.minY)
+                let scale = CGFloat(pointSize * 1.1) / max(w, h, 1)
+                let path = NSBezierPath()
+                for step in lines.steps {
+                    switch step {
+                    case .move(let x, let y): path.move(to: NSPoint(x: x, y: y))
+                    case .line(let x, let y): path.line(to: NSPoint(x: x, y: y))
+                    case .curve(let x1, let y1, let x2, let y2, let x, let y):
+                        path.curve(to: NSPoint(x: x, y: y), controlPoint1: NSPoint(x: x1, y: y1), controlPoint2: NSPoint(x: x2, y: y2))
+                    case .close: path.close()
+                    }
+                }
+                var t = AffineTransform(translationByX: side / 2, byY: side / 2)
+                t.scale(scale)
+                t.translate(x: -(CGFloat(b.minX) + w / 2), y: -(CGFloat(b.minY) + h / 2))
+                path.transform(using: t)
+                NSColor.black.setFill()
+                path.fill()
+            }
+
+            let badgeSize: CGFloat = 7.5
+            let badgeRect = NSRect(x: side - badgeSize - 0.5, y: side - badgeSize - 0.5, width: badgeSize, height: badgeSize)
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.saveGState()
+                ctx.setBlendMode(.clear)
+                ctx.fillEllipse(in: badgeRect.insetBy(dx: -1.3, dy: -1.3))
+                ctx.restoreGState()
+            }
+
+            if let badgeSymbol {
+                let b = badgeSymbol.bounds
+                let w = CGFloat(b.maxX - b.minX)
+                let h = CGFloat(b.maxY - b.minY)
+                let scale = badgeSize / max(w, h, 1)
+                let path = NSBezierPath()
+                path.windingRule = .evenOdd
+                for step in badgeSymbol.steps {
+                    switch step {
+                    case .move(let x, let y): path.move(to: NSPoint(x: x, y: y))
+                    case .line(let x, let y): path.line(to: NSPoint(x: x, y: y))
+                    case .curve(let x1, let y1, let x2, let y2, let x, let y):
+                        path.curve(to: NSPoint(x: x, y: y), controlPoint1: NSPoint(x: x1, y: y1), controlPoint2: NSPoint(x: x2, y: y2))
+                    case .close: path.close()
+                    }
+                }
+                var t = AffineTransform(translationByX: badgeRect.midX, byY: badgeRect.midY)
+                t.scale(scale)
+                t.translate(x: -(CGFloat(b.minX) + w / 2), y: -(CGFloat(b.minY) + h / 2))
+                path.transform(using: t)
+                NSColor.black.setFill()
+                path.fill()
+            } else if let fallbackBadge {
+                fallbackBadge.draw(in: badgeRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        compositeSubscriptionSymbolCache[key] = image
         return image
     }
 

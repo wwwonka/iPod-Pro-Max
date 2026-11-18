@@ -42,5 +42,16 @@ public struct PlaybackQueue: Sendable {
         else if repeatMode == .all { index = ids.count - 1 }
         return current
     }
+    public mutating func remove(ids removed: Set<String>) {
+        guard !removed.isEmpty else { return }
+        let currentID = current
+        original.removeAll { removed.contains($0) }
+        ids.removeAll { removed.contains($0) }
+        if let currentID, let idx = ids.firstIndex(of: currentID) {
+            index = idx
+        } else {
+            index = min(index, max(0, ids.count - 1))
+        }
+    }
     public mutating func clear() { ids = []; original = []; index = 0 }
 }

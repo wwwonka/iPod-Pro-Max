@@ -6,8 +6,11 @@
 //
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-public struct LyricsQuery: Sendable {
+public struct LyricsQuery: Codable, Equatable, Sendable {
     public var title: String
     public var artist: String?
     public var album: String?
@@ -21,11 +24,18 @@ public struct LyricsQuery: Sendable {
     }
 }
 
-public struct LyricsMatch: Sendable {
+public struct LyricsMatch: Codable, Equatable, Sendable {
     public let source: String
     public let plainLyrics: String?
     public let syncedLyrics: String?
     public let instrumental: Bool
+
+    public init(source: String, plainLyrics: String?, syncedLyrics: String?, instrumental: Bool) {
+        self.source = source
+        self.plainLyrics = plainLyrics
+        self.syncedLyrics = syncedLyrics
+        self.instrumental = instrumental
+    }
 
     public var bestText: String? {
         if let plain = plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines), !plain.isEmpty {
@@ -38,7 +48,7 @@ public struct LyricsMatch: Sendable {
     }
 }
 
-public protocol LyricsLookupProvider: Sendable {
+public protocol LyricsLookupProvider: PluginRoleHandler {
     var name: String { get }
     func fetchLyrics(query: LyricsQuery) async throws -> LyricsMatch?
 }
@@ -84,7 +94,7 @@ public struct LRCLIBProvider: LyricsLookupProvider {
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("iPodProMax/1.0 (https://github.com/wwwonka/iPod-Pro-Max)", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.portableData(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return nil
         }
@@ -107,7 +117,7 @@ public struct LRCLIBProvider: LyricsLookupProvider {
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("iPodProMax/1.0 (https://github.com/wwwonka/iPod-Pro-Max)", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await session.portableData(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return nil
         }
@@ -156,7 +166,7 @@ public struct MusixmatchProvider: LyricsLookupProvider {
         components.queryItems = items
         guard let url = components.url else { return nil }
 
-        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
+        let (data, response) = try await session.portableData(for: URLRequest(url: url, timeoutInterval: 10))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return nil
         }

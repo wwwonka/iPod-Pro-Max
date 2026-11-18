@@ -1,0 +1,68 @@
+{
+  "id": "soulseek",
+  "name": "Soulseek",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Search, download and share music on the Soulseek peer-to-peer network.",
+  "author": "iPod Pro Max",
+  "license": "MIT",
+  "serviceName": "Soulseek",
+  "roles": ["resolver", "downloader", "share"],
+  "executable": {
+    "macos": "bin/macos/soulseek-plugin",
+    "windows-x64": "bin/windows-x64/soulseek-plugin.exe",
+    "windows-arm64": "bin/windows-arm64/soulseek-plugin.exe",
+    "linux-x86_64": "bin/linux-x86_64/soulseek-plugin",
+    "linux-aarch64": "bin/linux-aarch64/soulseek-plugin"
+  },
+  "urlPatterns": [],
+  "badge": "badge.svg",
+  "requiresConsent": "p2p",
+  "settings": [
+    {
+      "key": "account",
+      "type": "account",
+      "label": "Identity",
+      "autoIdentity": true,
+      "fields": [
+        { "key": "username", "label": "Username", "placeholder": "Soulseek username", "required": true },
+        { "key": "password", "label": "Password", "type": "secret", "placeholder": "Password", "required": true }
+      ]
+    },
+    {
+      "key": "share",
+      "type": "bool",
+      "label": "Share my music",
+      "default": true
+    },
+    {
+      "key": "listenPort",
+      "type": "int",
+      "label": "Listening port",
+      "default": 2234,
+      "min": 1024,
+      "max": 65535
+    },
+    {
+      "key": "maxDownloads",
+      "type": "int",
+      "label": "Simultaneous downloads",
+      "default": 4,
+      "min": 1,
+      "max": 6
+    },
+    {
+      "key": "searchWindowSeconds",
+      "type": "int",
+      "label": "Search time",
+      "default": 8,
+      "min": 3,
+      "max": 20,
+      "unit": "s"
+    }
+  ],
+  "config": {
+    "serverHost": "server.slsknet.org",
+    "serverPort": 2242
+  }
+}

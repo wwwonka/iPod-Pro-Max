@@ -1,0 +1,30 @@
+{
+  "id": "yt-dlp",
+  "name": "yt-dlp",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Fallback audio search and download from YouTube using embedded yt-dlp.",
+  "author": "iPod Pro Max",
+  "license": "MIT",
+  "serviceName": "YouTube",
+  "roles": ["resolver", "downloader"],
+  "executable": {
+    "macos": "bin/macos/yt-dlp-plugin",
+    "windows-x64": "bin/windows-x64/yt-dlp-plugin.exe",
+    "windows-arm64": "bin/windows-arm64/yt-dlp-plugin.exe",
+    "linux-x86_64": "bin/linux-x86_64/yt-dlp-plugin",
+    "linux-aarch64": "bin/linux-aarch64/yt-dlp-plugin"
+  },
+  "urlPatterns": [],
+  "badge": "badge.svg",
+  "requiresConsent": "scraping",
+  "settings": [
+    {
+      "key": "update",
+      "type": "action",
+      "label": "Update yt-dlp",
+      "help": "Updates the embedded yt-dlp binary in place using yt-dlp -U."
+    }
+  ],
+  "config": {}
+}

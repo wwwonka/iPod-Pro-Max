@@ -27,6 +27,7 @@ struct Playlist: Decodable, Identifiable, Equatable {
     var trackIDs: [String]
     var isFolder: Bool = false
     var parentID: String? = nil
+    var subscriptionID: String? = nil
 }
 
 private struct LibraryFavoriteRef: Decodable {
@@ -53,6 +54,8 @@ struct TrackRow: Equatable {
     var artworkKey: String? = nil
     var dateAdded: Date? = nil
     var isFavorite = false
+    /// Non-nil only for rows belonging to a subscribed playlist (`SUB-6`).
+    var subscriptionKey: String? = nil
 }
 
 struct NamedGroup: Identifiable {
@@ -110,7 +113,16 @@ struct Library {
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
                   discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded, isFavorite: $0.isFavorite)
         }
-        let playlists = cache.playlists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString), isFolder: $0.isFolder, parentID: $0.parentID?.uuidString) }
+        let playlists = cache.playlists.map {
+            Playlist(
+                id: $0.id.uuidString,
+                name: $0.name,
+                trackIDs: $0.trackIDs.map(\.uuidString),
+                isFolder: $0.isFolder,
+                parentID: $0.parentID?.uuidString,
+                subscriptionID: $0.subscriptionID?.uuidString
+            )
+        }
         let videoPlaylists = cache.videoPlaylists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
         var library = index(LibraryDocument(tracks: tracks, playlists: playlists), source: source)
         library.videoPlaylists = videoPlaylists
@@ -129,7 +141,12 @@ struct Library {
         library.videoRowsByCategory = Dictionary(grouping: videos) { categoryByID[$0.id] ?? .movie }
         let videoByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
         library.rowsByVideoPlaylist = Dictionary(uniqueKeysWithValues: videoPlaylists.map { playlist in
-            (playlist.id, playlist.trackIDs.compactMap { videoByID[$0] })
+            let playlistRows = playlist.trackIDs.compactMap { videoByID[$0] }.enumerated().map { idx, row in
+                var copy = row
+                copy.number = "\(idx + 1)"
+                return copy
+            }
+            return (playlist.id, playlistRows)
         })
         library.artworkFolder = artworkFolder
         if let artworkFolder {
@@ -235,7 +252,11 @@ struct Library {
         let playlists = document.playlists ?? []
         var byPlaylist: [String: [TrackRow]] = [:]
         for p in playlists {
-            byPlaylist[p.id] = p.trackIDs.compactMap { byID[$0] }
+            byPlaylist[p.id] = p.trackIDs.compactMap { byID[$0] }.enumerated().map { idx, row in
+                var copy = row
+                copy.number = "\(idx + 1)"
+                return copy
+            }
         }
         let albums = tracksByArtist.mapValues(albumInfos)
         func groups(_ d: [String: [TrackRow]]) -> [NamedGroup] {
@@ -324,7 +345,7 @@ struct Library {
 
 private func ms(_ a: Date, _ b: Date) -> Int { Int(b.timeIntervalSince(a) * 1000) }
 
-private func formatDuration(_ ms: Int) -> String {
+func formatDuration(_ ms: Int) -> String {
     let s = ms / 1000
     return "\(s / 60):" + (s % 60 < 10 ? "0" : "") + "\(s % 60)"
 }

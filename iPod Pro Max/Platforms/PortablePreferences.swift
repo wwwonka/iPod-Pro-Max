@@ -17,6 +17,9 @@ final class PortablePreferences {
         var favoriteIcon: String?
         var hiddenTrackColumns: [String]?
         var sidebarOrder: [String: [String]] = [:]
+        var preferredFormats: [String]?
+        var minimumBitrateKbps: Int?
+        var acceptYouTubeFallback: Bool?
         var revision: Int
     }
     private var pending: Pending?
@@ -61,6 +64,15 @@ final class PortablePreferences {
             return changed
         }
     }
+    func stageQualityPolicy(preferredFormats: [String], minimumBitrateKbps: Int, acceptYouTubeFallback: Bool, store: PortableLibraryStore) {
+        stage(store) {
+            var changed = false
+            if $0.preferredFormats != preferredFormats { $0.preferredFormats = preferredFormats; changed = true }
+            if $0.minimumBitrateKbps != minimumBitrateKbps { $0.minimumBitrateKbps = minimumBitrateKbps; changed = true }
+            if $0.acceptYouTubeFallback != acceptYouTubeFallback { $0.acceptYouTubeFallback = acceptYouTubeFallback; changed = true }
+            return changed
+        }
+    }
     /// Merges one change into what is waiting to be written; false when nothing changed.
     private func stage(_ store: PortableLibraryStore, _ change: (inout Pending) -> Bool) {
         var value = pending?.store.data.url == store.data.url ? pending! : Pending(store: store, revision: 0)
@@ -78,12 +90,12 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, store: value.store)
+            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, preferredFormats: value.preferredFormats, minimumBitrateKbps: value.minimumBitrateKbps, acceptYouTubeFallback: value.acceptYouTubeFallback, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], store: PortableLibraryStore) throws {
+        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], preferredFormats: [String]?, minimumBitrateKbps: Int?, acceptYouTubeFallback: Bool?, store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
@@ -101,6 +113,9 @@ final class PortablePreferences {
                 value.sidebarOrder[section] = items
                 changed = true
             }
+            if let preferredFormats, value.preferredFormats != preferredFormats { value.preferredFormats = preferredFormats; changed = true }
+            if let minimumBitrateKbps, value.minimumBitrateKbps != minimumBitrateKbps { value.minimumBitrateKbps = minimumBitrateKbps; changed = true }
+            if let acceptYouTubeFallback, value.acceptYouTubeFallback != acceptYouTubeFallback { value.acceptYouTubeFallback = acceptYouTubeFallback; changed = true }
             guard changed else { return }
             try store.data.write(value, to: "settings.json")
         }

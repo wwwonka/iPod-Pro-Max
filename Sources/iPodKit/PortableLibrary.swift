@@ -19,15 +19,39 @@ public struct KnownHost: Codable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var sources: [KnownSource]
-    public init(id: String, name: String, sources: [KnownSource] = []) {
-        self.id = id; self.name = name; self.sources = sources
+    public var pluginFolders: [String: [String: String]]?
+    public var unpackedPlugins: [String]?
+    public var downloadFolder: String?
+    public var autoAddedDownloadFolders: [String]?
+    public init(
+        id: String,
+        name: String,
+        sources: [KnownSource] = [],
+        pluginFolders: [String: [String: String]]? = nil,
+        unpackedPlugins: [String]? = nil,
+        downloadFolder: String? = nil,
+        autoAddedDownloadFolders: [String]? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.sources = sources
+        self.pluginFolders = pluginFolders
+        self.unpackedPlugins = unpackedPlugins
+        self.downloadFolder = downloadFolder
+        self.autoAddedDownloadFolders = autoAddedDownloadFolders
     }
-    private enum CodingKeys: String, CodingKey { case id, name, sources }
+    private enum CodingKeys: String, CodingKey {
+        case id, name, sources, pluginFolders, unpackedPlugins, downloadFolder, autoAddedDownloadFolders
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
         name = try values.decodeIfPresent(String.self, forKey: .name) ?? id
         sources = try values.decodeIfPresent([KnownSource].self, forKey: .sources) ?? []
+        pluginFolders = try values.decodeIfPresent([String: [String: String]].self, forKey: .pluginFolders)
+        unpackedPlugins = try values.decodeIfPresent([String].self, forKey: .unpackedPlugins)
+        downloadFolder = try values.decodeIfPresent(String.self, forKey: .downloadFolder)
+        autoAddedDownloadFolders = try values.decodeIfPresent([String].self, forKey: .autoAddedDownloadFolders)
     }
 }
 
@@ -226,8 +250,15 @@ public struct PortableSettings: Codable, Sendable {
     public var hiddenTrackColumns: [String]?
     /// Custom row order per sidebar section title, keyed by `SidebarItem.persistentName`.
     public var sidebarOrder: [String: [String]] = [:]
+    /// Plug-in quality policy (`Settings → Plug-ins → Downloads`).
+    public var preferredFormats: [String]?
+    public var minimumBitrateKbps: Int?
+    public var acceptYouTubeFallback: Bool?
     public init() {}
-    private enum CodingKeys: String, CodingKey { case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder }
+    private enum CodingKeys: String, CodingKey {
+        case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder
+        case preferredFormats, minimumBitrateKbps, acceptYouTubeFallback
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
@@ -241,6 +272,9 @@ public struct PortableSettings: Codable, Sendable {
         favoriteIcon = try values.decodeIfPresent(String.self, forKey: .favoriteIcon) ?? "heart"
         hiddenTrackColumns = try values.decodeIfPresent([String].self, forKey: .hiddenTrackColumns)
         sidebarOrder = try values.decodeIfPresent([String: [String]].self, forKey: .sidebarOrder) ?? [:]
+        preferredFormats = try values.decodeIfPresent([String].self, forKey: .preferredFormats)
+        minimumBitrateKbps = try values.decodeIfPresent(Int.self, forKey: .minimumBitrateKbps)
+        acceptYouTubeFallback = try values.decodeIfPresent(Bool.self, forKey: .acceptYouTubeFallback)
     }
 }
 
@@ -283,4 +317,19 @@ public struct PortableLibraryStore: Sendable {
         return cache
     }
     public func save(_ cache: PortableLibraryCache) throws { try data.requireAvailableStorage(); try hostFolder.write(cache, to: "library.json") }
+
+    public func currentHost() -> KnownHost? {
+        data.read(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == hostID }
+    }
+
+    public func updateCurrentHost(_ mutate: (inout KnownHost) -> Void) throws {
+        try data.requireAvailableStorage()
+        var registry = try data.readChecked(KnownHosts.self, from: "known_hosts.json") ?? KnownHosts()
+        guard registry.version == 1 else { throw IPodDBError.unsupported("Unsupported known_hosts.json version") }
+        var host = registry.hosts.first { $0.id == hostID } ?? KnownHost(id: hostID, name: hostID)
+        mutate(&host)
+        registry.hosts.removeAll { $0.id == hostID }
+        registry.hosts.append(host)
+        try data.write(registry, to: "known_hosts.json")
+    }
 }

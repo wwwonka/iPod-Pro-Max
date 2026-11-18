@@ -1,0 +1,44 @@
+{
+  "resolver": {
+    "track": {
+      "source": "spotify",
+      "sourceID": "ytdlp-sample-1",
+      "title": "Me at the zoo",
+      "artists": ["jawed"],
+      "durationMs": 19000
+    },
+    "policy": {
+      "preferredFormats": ["flac", "alac", "mp3-320", "aac-256", "mp3-v0", "other"],
+      "minimumBitrateKbps": 128,
+      "acceptYouTubeFallback": true
+    },
+    "offlineResponse": [
+      {
+        "resolver": "yt-dlp",
+        "token": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        "displayName": "Me at the zoo — jawed",
+        "title": "Me at the zoo",
+        "artist": "jawed",
+        "durationMs": 19000,
+        "container": "m4a",
+        "codec": "aac",
+        "bitrateKbps": 128,
+        "hint": 0.6
+      }
+    ]
+  },
+  "downloader": {
+    "candidate": {
+      "resolver": "yt-dlp",
+      "token": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "displayName": "Me at the zoo — jawed",
+      "title": "Me at the zoo",
+      "artist": "jawed",
+      "durationMs": 19000,
+      "container": "m4a",
+      "codec": "aac",
+      "bitrateKbps": 128,
+      "hint": 0.6
+    }
+  }
+}

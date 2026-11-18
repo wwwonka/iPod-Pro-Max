@@ -112,6 +112,21 @@ import MediaKit
         queue.repeatMode = repeatMode
     }
     func setVisible(_ visible: Bool) { self.visible = visible; engineStorage?.setVisible(visible) }
+    func removeTracks(ids removed: Set<String>) {
+        guard !removed.isEmpty else { return }
+        for id in removed { rows.removeValue(forKey: id) }
+        let removedCurrent = track.map { removed.contains($0.id) } ?? false
+        queue.remove(ids: removed)
+        if removedCurrent {
+            if let nextID = queue.current, let nextRow = rows[nextID] {
+                load(nextRow)
+            } else {
+                generation += 1; analysis?.cancel(); analysis = nil
+                engineStorage?.stop(); track = nil; playing = false; samples = []; position = 0; duration = 0; error = ""
+                onPresenceChanged?(false)
+            }
+        }
+    }
     func close() {
         generation += 1; analysis?.cancel(); analysis = nil
         engineStorage?.stop(); engineStorage = nil; queue.clear(); rows = [:]

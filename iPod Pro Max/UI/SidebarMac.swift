@@ -1,6 +1,7 @@
 #if canImport(AppKitBackend)
     import AppKit
     import AppKitBackend
+    import MediaKit
     import SwiftCrossUI
 
     /// On macOS the sidebar is a real source-list NSOutlineView, like the one SwiftUI's
@@ -18,14 +19,19 @@
         @Binding var busyDevices: Set<String>
         var sidebarOrder: [String: [String]] = [:]
         var editingPlaylistID: String? = nil
+        var subscriptionRevision: Int = 0
         var onEject: (SidebarItem) -> Void = { _ in }
         /// The "+" at the main section's header: adds to that library (a folder, a podcast…).
         var onAdd: (SidebarItem) -> Void = { _ in }
         var onReorder: (String, [SidebarItem]) -> Void = { _, _ in }
         var onAddMusicFolder: () -> Void = {}
         var onCreatePlaylist: (Bool) -> Void = { _ in }
+        var onNewSubscription: () -> Void = {}
         var onRenamePlaylist: (String, String) -> Void = { _, _ in }
         var onDeletePlaylist: (String) -> Void = { _ in }
+        var onRefreshSubscription: (String) -> Void = { _ in }
+        var onStopSubscription: (String) -> Void = { _ in }
+        var onUnsubscribePlaylist: (String) -> Void = { _ in }
         var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
         var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
         var onClearEditing: () -> Void = {}
@@ -90,14 +96,22 @@
             coordinator.onReorder = onReorder
             coordinator.onAddMusicFolder = onAddMusicFolder
             coordinator.onCreatePlaylist = onCreatePlaylist
+            coordinator.onNewSubscription = onNewSubscription
             coordinator.onRenamePlaylist = onRenamePlaylist
             coordinator.onDeletePlaylist = onDeletePlaylist
+            coordinator.onRefreshSubscription = onRefreshSubscription
+            coordinator.onStopSubscription = onStopSubscription
+            coordinator.onUnsubscribePlaylist = onUnsubscribePlaylist
             coordinator.onMovePlaylistToFolder = onMovePlaylistToFolder
             coordinator.onSendPlaylistToDevice = onSendPlaylistToDevice
             // An iPod's page keeps the list of the section the user came from.
             if let media = selection.media { coordinator.media = media }
             let deviceKey: [String] = devices.map { $0 + (ConnectedDeviceTitles.names[$0] ?? "") }
-            let playlistKey: [String] = (playlists + videoPlaylists).map { $0.id + $0.name + ($0.isFolder ? "F" : "P") + ($0.parentID ?? "") }
+            let playlistKey: [String] = (playlists + videoPlaylists).map {
+                let isSubSync = $0.subscriptionID != nil && SubscriptionController.shared.isSyncing(playlistID: $0.id)
+                let hasErr = ($0.subscriptionID != nil && !(SubscriptionController.shared.subscription(forPlaylistID: $0.id)?.lastError ?? "").isEmpty)
+                return $0.id + $0.name + ($0.isFolder ? "F" : "P") + ($0.parentID ?? "") + ($0.subscriptionID ?? "") + (isSubSync ? "S" : "") + (hasErr ? "E" : "")
+            }
             let orderKey: [String] = sidebarOrder.keys.sorted().flatMap { ["#", $0] + (sidebarOrder[$0] ?? []) }
             let key: [String] = deviceKey + ["|"] + playlistKey + ["|", coordinator.media.title] + orderKey
             if key != coordinator.key && !coordinator.isReordering {
@@ -140,7 +154,12 @@
                 item: row.item,
                 ejectable: row.ejectable,
                 isFolder: row.isFolder,
-                children: row.children.map(makeNode)
+                children: row.children.map(makeNode),
+                subscriptionID: row.subscriptionID,
+                sourcePluginID: row.sourcePluginID,
+                isSyncing: row.isSyncing,
+                hasError: row.hasError,
+                errorTooltip: row.errorTooltip
             )
         }
         private static func sections(devices: [String], playlists: [Playlist], videoPlaylists: [Playlist], media: SidebarItem, sidebarOrder: [String: [String]]) -> [Node] {
@@ -217,16 +236,38 @@
             let ejectable: Bool
             let isFolder: Bool
             var children: [Node]
+            var subscriptionID: String?
+            var sourcePluginID: String?
+            var isSyncing: Bool
+            var hasError: Bool
+            var errorTooltip: String?
             /// The library's own section, at the top: it can't be collapsed, and has a "+" instead.
             var isMain = false
 
-            init(title: String, icon: String? = nil, item: SidebarItem? = nil, ejectable: Bool = false, isFolder: Bool = false, children: [Node] = []) {
+            init(
+                title: String,
+                icon: String? = nil,
+                item: SidebarItem? = nil,
+                ejectable: Bool = false,
+                isFolder: Bool = false,
+                children: [Node] = [],
+                subscriptionID: String? = nil,
+                sourcePluginID: String? = nil,
+                isSyncing: Bool = false,
+                hasError: Bool = false,
+                errorTooltip: String? = nil
+            ) {
                 self.title = title
                 self.icon = icon
                 self.item = item
                 self.ejectable = ejectable
                 self.isFolder = isFolder
                 self.children = children
+                self.subscriptionID = subscriptionID
+                self.sourcePluginID = sourcePluginID
+                self.isSyncing = isSyncing
+                self.hasError = hasError
+                self.errorTooltip = errorTooltip
             }
 
             var isGroup: Bool { icon == nil }
@@ -319,6 +360,9 @@
             var customIcon: NSImage? { didSet { updateTint() } }
             /// iPod rows only.
             var ejectButton: EjectButton?
+            /// Subscribed playlist activity/error indicators.
+            var syncSpinner: NSProgressIndicator?
+            var errorIndicator: NSImageView?
             /// A section's name: big and white, in a label of its own. The source list restyles the
             /// text field of a group row as a small gray caption, whatever is set on it.
             var headerLabel: NSTextField?
@@ -488,6 +532,40 @@
 
             var isEditingInline: Bool { renameBox != nil }
 
+            func ensureSyncIndicators() {
+                if syncSpinner == nil {
+                    let spinner = NSProgressIndicator()
+                    spinner.style = .spinning
+                    spinner.controlSize = .small
+                    spinner.isDisplayedWhenStopped = false
+                    spinner.isHidden = true
+                    spinner.translatesAutoresizingMaskIntoConstraints = false
+                    addSubview(spinner)
+                    NSLayoutConstraint.activate([
+                        spinner.widthAnchor.constraint(equalToConstant: 14),
+                        spinner.heightAnchor.constraint(equalToConstant: 14),
+                        spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
+                        spinner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+                    ])
+                    syncSpinner = spinner
+                }
+                if errorIndicator == nil {
+                    let img = NSImageView()
+                    img.image = systemSymbol("exclamationmark.triangle.fill", description: "Subscription Error", pointSize: 12)
+                    img.contentTintColor = .systemYellow
+                    img.isHidden = true
+                    img.translatesAutoresizingMaskIntoConstraints = false
+                    addSubview(img)
+                    NSLayoutConstraint.activate([
+                        img.widthAnchor.constraint(equalToConstant: 14),
+                        img.heightAnchor.constraint(equalToConstant: 14),
+                        img.centerYAnchor.constraint(equalTo: centerYAnchor),
+                        img.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+                    ])
+                    errorIndicator = img
+                }
+            }
+
             func finishInlineEdit(commit: Bool) {
                 guard let box = renameBox, let textView = renameTextView, let textField else { return }
                 let edited = textView.string
@@ -587,8 +665,12 @@
             var onReorder: (String, [SidebarItem]) -> Void = { _, _ in }
             var onAddMusicFolder: () -> Void = {}
             var onCreatePlaylist: (Bool) -> Void = { _ in }
+            var onNewSubscription: () -> Void = {}
             var onRenamePlaylist: (String, String) -> Void = { _, _ in }
             var onDeletePlaylist: (String) -> Void = { _ in }
+            var onRefreshSubscription: (String) -> Void = { _ in }
+            var onStopSubscription: (String) -> Void = { _ in }
+            var onUnsubscribePlaylist: (String) -> Void = { _ in }
             var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
         var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
             var isReordering = false
@@ -622,8 +704,11 @@
                 newPlaylist.target = self
                 let newFolder = NSMenuItem(title: "New Playlist Folder", action: #selector(menuNewPlaylistFolder), keyEquivalent: "")
                 newFolder.target = self
+                let newSub = NSMenuItem(title: "New Subscription…", action: #selector(menuNewSubscription), keyEquivalent: "")
+                newSub.target = self
                 menu.addItem(newPlaylist)
                 menu.addItem(newFolder)
+                menu.addItem(newSub)
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
                 cell.keepPlusVisible = false
                 if let window = cell.window {
@@ -638,6 +723,7 @@
             @objc private func menuAddMusicFolder() { onAddMusicFolder() }
             @objc private func menuNewPlaylist() { onCreatePlaylist(false) }
             @objc private func menuNewPlaylistFolder() { onCreatePlaylist(true) }
+            @objc private func menuNewSubscription() { onNewSubscription() }
 
             @MainActor func refreshFavoriteIcon() {
                 let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"
@@ -820,19 +906,48 @@
                         sidebarCell.onPlus = { [weak self] in self?.onAdd(target) }
                     }
                 }
-                if case .playlist(let id) = node.item {
+                if case .playlist(let id) = node.item, node.subscriptionID == nil {
                     (cell as? SidebarCell)?.onRenameCommit = { [weak self] name in
                         self?.onRenamePlaylist(id, name)
                     }
                 } else {
                     (cell as? SidebarCell)?.onRenameCommit = nil
                 }
-                if let icon = node.icon {
+                if node.subscriptionID != nil {
+                    let badge = node.sourcePluginID.flatMap { pid in
+                        PluginController.shared.plugins.first(where: { $0.id == pid })?.badgeSVG
+                    }
+                    let composite = subscriptionSidebarSymbol(
+                        pluginID: node.sourcePluginID,
+                        parsedBadge: badge,
+                        description: node.title
+                    )
+                    (cell as? SidebarCell)?.customIcon = composite
+                    cell.imageView?.image = composite
+                } else if let icon = node.icon {
                     let image = systemSymbol(icon)
                     // AppKit automatically substitutes filled variants in source lists. Keep the
                     // TV Shows glyph on the explicitly requested outline `tv`, selected or not.
                     (cell as? SidebarCell)?.customIcon = customSymbols[icon] != nil || icon == "tv" || icon == "microphone.dynamic.on.stand" ? image : nil
                     cell.imageView?.image = image
+                }
+                if let sidebarCell = cell as? SidebarCell {
+                    if node.isSyncing {
+                        sidebarCell.ensureSyncIndicators()
+                        sidebarCell.syncSpinner?.isHidden = false
+                        sidebarCell.syncSpinner?.startAnimation(nil)
+                        sidebarCell.errorIndicator?.isHidden = true
+                    } else if node.hasError {
+                        sidebarCell.ensureSyncIndicators()
+                        sidebarCell.syncSpinner?.stopAnimation(nil)
+                        sidebarCell.syncSpinner?.isHidden = true
+                        sidebarCell.errorIndicator?.isHidden = false
+                        sidebarCell.errorIndicator?.toolTip = node.errorTooltip ?? "Sync failed"
+                    } else {
+                        sidebarCell.syncSpinner?.stopAnimation(nil)
+                        sidebarCell.syncSpinner?.isHidden = true
+                        sidebarCell.errorIndicator?.isHidden = true
+                    }
                 }
                 // Placeholder rows ("No iPod connected", "New Playlist…") are dimmed, as in SwiftUI.
                 let dimmed = !node.isGroup && node.item == nil
@@ -1039,6 +1154,27 @@
             contextTargetID = id
             contextTargetRow = clickedRow
             let menu = NSMenu()
+            if node.subscriptionID != nil {
+                if node.isSyncing {
+                    let stop = NSMenuItem(title: "Stop", action: #selector(contextStopSubscription), keyEquivalent: "")
+                    stop.target = self
+                    menu.addItem(stop)
+                } else {
+                    let refresh = NSMenuItem(title: "Refresh", action: #selector(contextRefreshSubscription), keyEquivalent: "")
+                    refresh.target = self
+                    menu.addItem(refresh)
+                }
+                if let sub = SubscriptionController.shared.subscription(forPlaylistID: id) {
+                    let open = NSMenuItem(title: "Open in \(sub.sourceName)", action: #selector(contextOpenSubscriptionURL), keyEquivalent: "")
+                    open.target = self
+                    menu.addItem(open)
+                }
+                menu.addItem(.separator())
+                let unsub = NSMenuItem(title: "Unsubscribe…", action: #selector(contextUnsubscribePlaylist), keyEquivalent: "")
+                unsub.target = self
+                menu.addItem(unsub)
+                return menu
+            }
             let rename = NSMenuItem(title: "Rename", action: #selector(contextRenamePlaylist), keyEquivalent: "")
             rename.target = self
             let delete = NSMenuItem(title: "Delete", action: #selector(contextDeletePlaylist), keyEquivalent: "")
@@ -1060,6 +1196,28 @@
         @objc private func contextDeletePlaylist() {
             guard let id = contextTargetID else { return }
             coordinator?.onDeletePlaylist(id)
+        }
+
+        @objc private func contextRefreshSubscription() {
+            guard let id = contextTargetID else { return }
+            coordinator?.onRefreshSubscription(id)
+        }
+
+        @objc private func contextStopSubscription() {
+            guard let id = contextTargetID else { return }
+            coordinator?.onStopSubscription(id)
+        }
+
+        @objc private func contextOpenSubscriptionURL() {
+            guard let id = contextTargetID,
+                  let sub = SubscriptionController.shared.subscription(forPlaylistID: id),
+                  let url = URL(string: sub.sourceURL) else { return }
+            NSWorkspace.shared.open(url)
+        }
+
+        @objc private func contextUnsubscribePlaylist() {
+            guard let id = contextTargetID else { return }
+            coordinator?.onUnsubscribePlaylist(id)
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -1111,6 +1269,7 @@
                     if wasAlreadySelected,
                        next.clickCount == 1,
                        case .playlist = node.item,
+                       node.subscriptionID == nil,
                        let cell = view(atColumn: 0, row: clickedRow, makeIfNecessary: false) as? Sidebar.SidebarCell,
                        let textField = cell.textField {
                         let textPt = cell.convert(currentPoint, from: self)
@@ -1501,8 +1660,16 @@
             if (event.keyCode == 36 || event.keyCode == 76), selectedRow >= 0,
                let node = item(atRow: selectedRow) as? Sidebar.Node,
                case .playlist = node.item,
+               node.subscriptionID == nil,
                let cell = view(atColumn: 0, row: selectedRow, makeIfNecessary: false) as? Sidebar.SidebarCell {
                 cell.beginInlineEdit()
+                return
+            }
+            if (event.keyCode == 51 || event.keyCode == 117), selectedRow >= 0,
+               let node = item(atRow: selectedRow) as? Sidebar.Node,
+               case .playlist(let id) = node.item,
+               node.subscriptionID != nil {
+                coordinator?.onUnsubscribePlaylist(id)
                 return
             }
             super.keyDown(with: event)

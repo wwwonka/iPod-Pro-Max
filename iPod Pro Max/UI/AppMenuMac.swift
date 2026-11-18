@@ -38,14 +38,18 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         let folderItem = NSMenuItem(title: "New Folder", action: #selector(newPlaylistFolder(_:)), keyEquivalent: "N")
         folderItem.keyEquivalentModifierMask = [.command, .shift]
         folderItem.target = self
+        let subscriptionItem = NSMenuItem(title: "New Subscription…", action: #selector(newSubscription(_:)), keyEquivalent: "n")
+        subscriptionItem.keyEquivalentModifierMask = [.command, .option]
+        subscriptionItem.target = self
         let infoItem = NSMenuItem(title: "Track Info", action: #selector(openTrackInfo(_:)), keyEquivalent: "i")
         infoItem.keyEquivalentModifierMask = [.command]
         infoItem.target = self
         fileMenu.insertItem(playlistItem, at: 0)
         fileMenu.insertItem(folderItem, at: 1)
-        fileMenu.insertItem(infoItem, at: 2)
-        if fileMenu.items.count > 3 {
-            fileMenu.insertItem(.separator(), at: 3)
+        fileMenu.insertItem(subscriptionItem, at: 2)
+        fileMenu.insertItem(infoItem, at: 3)
+        if fileMenu.items.count > 4 {
+            fileMenu.insertItem(.separator(), at: 4)
         }
     }
 
@@ -87,6 +91,7 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     @objc private func toggleSidebar(_ sender: Any?) { MacChrome.shared.toggleSidebar() }
     @objc private func newPlaylist(_ sender: Any?) { AppCommands.createPlaylist?(false) }
     @objc private func newPlaylistFolder(_ sender: Any?) { AppCommands.createPlaylist?(true) }
+    @objc private func newSubscription(_ sender: Any?) { AppCommands.newSubscription?() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(openSettings(_:)) {
@@ -97,6 +102,9 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         }
         if item.action == #selector(newPlaylist(_:)) || item.action == #selector(newPlaylistFolder(_:)) {
             return AppCommands.createPlaylist != nil
+        }
+        if item.action == #selector(newSubscription(_:)) {
+            return AppCommands.newSubscription != nil
         }
         if item.action == #selector(toggleSidebar(_:)) {
             item.title = MacChrome.shared.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"

@@ -64,6 +64,7 @@ for arch in x86_64 aarch64; do
     place "linux/$arch" "Applications/Linux/$arch"
     place "linux-cli/$arch" "Command Line/Linux/$arch"
 done
+place "plugins" "Plug-ins"
 
 # One polyglot launcher on all three platforms. Remove aliases from earlier builds.
 rm -f "$OUT/LAUNCHER.command" "$OUT/LAUNCHER.desktop" "$OUT/iPod Pro Max.desktop"
