@@ -72,6 +72,11 @@ final class PluginController {
     var dragHoveringPackage = false
     var settingsPluginsTabActive = false
 
+    // On-demand browser cookie import choices (macOS Spotify)
+    private(set) var browserImportChoices: [BrowserCookieCandidate] = []
+    private(set) var browserImportPluginID: String?
+    private var browserImportSetting: PluginSettingDefinition?
+
     private var observers: [String: @MainActor () -> Void] = [:]
 
     func observe(_ key: String, _ handler: @escaping @MainActor () -> Void) {
@@ -562,6 +567,9 @@ final class PluginController {
         guard let runtime = registry?.runtime(for: pluginID),
               let registry else { return }
         accountTasks[pluginID]?.cancel()
+        browserImportChoices = []
+        browserImportPluginID = nil
+        browserImportSetting = nil
 
         var acc = accountStates[pluginID] ?? AccountUIState()
         acc.phase = .signingIn
@@ -696,6 +704,7 @@ final class PluginController {
     }
 
     func cancelSignIn(pluginID: String) {
+        cancelBrowserImportChoices()
         if pluginID == "spotify" {
             SpotifyWebBridge.shared.cancelInteractiveSignIn()
         }
@@ -712,6 +721,7 @@ final class PluginController {
 
     func signOut(pluginID: String) {
         guard let registry else { return }
+        cancelBrowserImportChoices()
         let pStore = registry.settingsStore(for: pluginID)
         let runtime = registry.runtime(for: pluginID)
         Task {
@@ -726,6 +736,108 @@ final class PluginController {
             accountStates[pluginID] = acc
             notifyObservers()
         }
+    }
+
+    func importAccountFromBrowser(pluginID: String, setting: PluginSettingDefinition) {
+        guard pluginID == "spotify", BrowserCookieImporter.isSupportedOnPlatform else { return }
+        accountTasks[pluginID]?.cancel()
+        browserImportChoices = []
+        browserImportPluginID = nil
+        browserImportSetting = nil
+
+        var acc = accountStates[pluginID] ?? AccountUIState()
+        acc.phase = .signingIn
+        acc.errorMessage = nil
+        accountStates[pluginID] = acc
+        notifyObservers()
+
+        accountTasks[pluginID] = Task {
+            let scanResult = await Task.detached(priority: .userInitiated) {
+                (
+                    candidates: BrowserCookieImporter.discoverSpotifyCookieBrowsers(),
+                    safariBlocked: BrowserCookieImporter.safariBlockedByPermissions()
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+
+            if scanResult.candidates.isEmpty {
+                let err: BrowserCookieImportError = scanResult.safariBlocked
+                    ? .safariPermissionDenied
+                    : .noCookiesFound
+                self.failAccountSignIn(
+                    pluginID: pluginID,
+                    message: err.localizedDescription,
+                    setting: setting
+                )
+                return
+            }
+
+            if scanResult.candidates.count == 1, let only = scanResult.candidates.first {
+                self.browserImportSetting = setting
+                self.browserImportPluginID = pluginID
+                self.selectBrowserImportCandidate(only)
+                return
+            }
+
+            var signedOutAcc = self.accountStates[pluginID] ?? AccountUIState()
+            signedOutAcc.phase = .signedOut
+            signedOutAcc.errorMessage = nil
+            self.accountStates[pluginID] = signedOutAcc
+            self.browserImportChoices = scanResult.candidates
+            self.browserImportPluginID = pluginID
+            self.browserImportSetting = setting
+            self.notifyObservers()
+        }
+    }
+
+    func selectBrowserImportCandidate(_ candidate: BrowserCookieCandidate) {
+        guard let pluginID = browserImportPluginID ?? "spotify" as String?,
+              let setting = browserImportSetting,
+              let runtime = registry?.runtime(for: pluginID),
+              let registry else { return }
+
+        browserImportChoices = []
+        browserImportPluginID = nil
+        browserImportSetting = nil
+
+        var acc = accountStates[pluginID] ?? AccountUIState()
+        acc.phase = .signingIn
+        acc.errorMessage = nil
+        accountStates[pluginID] = acc
+        notifyObservers()
+
+        let pStore = registry.settingsStore(for: pluginID)
+        accountTasks[pluginID]?.cancel()
+        accountTasks[pluginID] = Task {
+            do {
+                let spDC = try await Task.detached(priority: .userInitiated) {
+                    try BrowserCookieImporter.readSpotifyCookie(from: candidate)
+                }.value
+                guard !Task.isCancelled else { return }
+
+                if SpotifyWebBridge.shared.isSupportedOnPlatform {
+                    await SpotifyWebBridge.shared.seedSpDCCookie(spDC)
+                    if await self.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil) {
+                        return
+                    }
+                }
+
+                let finalStatus = try await runtime.login(key: setting.key, fields: ["sp_dc": spDC])
+                guard !Task.isCancelled else { return }
+                self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.failAccountSignIn(pluginID: pluginID, message: error.localizedDescription, setting: setting)
+            }
+        }
+    }
+
+    func cancelBrowserImportChoices() {
+        guard !browserImportChoices.isEmpty || browserImportPluginID != nil else { return }
+        browserImportChoices = []
+        browserImportPluginID = nil
+        browserImportSetting = nil
+        notifyObservers()
     }
 
     /// Silently boots an off-screen OS WebView to renew an expired Spotify Web token on demand.

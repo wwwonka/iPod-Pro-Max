@@ -9,7 +9,7 @@ Chaque service externe (Spotify, Soulseek, yt-dlp, YouTube Music, Deezer…) est
 | Fichier | Rôle |
 |---|---|
 | `Types.swift` | Rôles (`PluginRole`), `TrackRef`, `Playlist`, `Candidate`, `Availability`, `QualityPolicy`, `ShareIndexEntry`, erreurs et valeurs JSON. |
-| `Protocols.swift` | Protocoles Swift par rôle (`PlaylistSource`, `Resolver`, `Downloader`, `ShareProvider`, `MetadataLookupProvider`, `LyricsLookupProvider`) et protocoles optionnels (`PluginConfigurable`, `PluginAccountHandling`, `PluginActionHandling`). |
+| `Protocols.swift` | Protocoles Swift par rôle (`PlaylistSource`, `PlaylistReorderable`, `PlaylistEditable`, `Resolver`, `Downloader`, `ShareProvider`, `MetadataLookupProvider`, `LyricsLookupProvider`) et protocoles optionnels (`PluginConfigurable`, `PluginAccountHandling`, `PluginActionHandling`). |
 | `MetadataFinder.swift`, `LyricsProvider.swift` | Fournisseurs intégrés déplacés de MediaKit (MusicBrainz, AcoustID, iTunes, LRCLIB, Musixmatch). |
 | `PluginMain.swift` | Boucle JSON-RPC côté plug-in (`PluginMain.run(roles:)`), gestion de `$/cancelRequest`, limitation de `$/progress` (≤ 4/s), arrêt automatique à la fermeture de `stdin`. |
 | `ExternalPlugin.swift` | Adaptateur côté app, conforme à tous les protocoles de rôle, avec partage de processus entre opérations concurrentes, `shutdown` sans minuteur d'inactivité et suivi des plantages (3 en 60 s → état Error). |
@@ -78,6 +78,8 @@ Transport : **une ligne JSON UTF-8 terminée par `\n` par message**, sur `stdin`
 | `account/logout`, `account/status` | app → plug-in | `{}` → `{status, displayName?}` |
 | `action/<key>` | app → plug-in | `{}` → `{message?}` |
 | `source/fetch` | app → plug-in | `{url}` → `{playlist: Playlist, tracks: [TrackRef]}` |
+| `source/reorder` | app → plug-in | `PlaylistReorderRequest` → `{}` (optionnel, `PlaylistReorderable`) |
+| `source/addTracks` | app → plug-in | `PlaylistAddTracksRequest` → `{added, notFoundTitles}` (optionnel, `PlaylistEditable`) |
 | `resolver/search` | app → plug-in | `{track: TrackRef, policy}` → `{candidates}` (liste finale) ; partiels via notification `resolver/candidates` `{requestID, candidates}` |
 | `downloader/download` | app → plug-in | `{candidate, destinationDir}` → `{path}` |
 | `share/setIndex` | app → plug-in | `{part, lastPart, entries:[{virtualPath, realPath, size, bitrateKbps?, durationMs?}], uploadSlots}` → `{}` |

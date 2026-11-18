@@ -645,11 +645,41 @@ struct PluginsSettingsTabView: View {
                             }
                         }
                         HStack {
+                            if plugin.id == "spotify" && BrowserCookieImporter.isSupportedOnPlatform {
+                                Button("Import from Browser…") {
+                                    controller.importAccountFromBrowser(pluginID: plugin.id, setting: setting)
+                                }
+                            }
                             Spacer()
                             Button(setting.oauth == true ? "Sign In…" : "Sign In") {
                                 controller.signIn(pluginID: plugin.id, setting: setting)
                             }
                             .disabled(missingRequired)
+                        }
+                        if controller.browserImportPluginID == plugin.id && !controller.browserImportChoices.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Spotify session found in multiple browsers — choose one:")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(MacColor.secondaryText)
+                                ForEach(controller.browserImportChoices) { candidate in
+                                    HStack {
+                                        Text(candidate.displayTitle)
+                                            .font(.system(size: 12))
+                                        Spacer()
+                                        Button("Import") {
+                                            controller.selectBrowserImportCandidate(candidate)
+                                        }
+                                    }
+                                }
+                                HStack {
+                                    Spacer()
+                                    Button("Cancel") {
+                                        controller.cancelBrowserImportChoices()
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                            .padding(.top, 2)
                         }
                     }
                 }

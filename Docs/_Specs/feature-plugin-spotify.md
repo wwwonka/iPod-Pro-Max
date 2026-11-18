@@ -258,10 +258,10 @@ Plug-ins/Spotify/
 
 ---
 
-## Hors périmètre
+## Hors périmètre / Évolutions
 
-- **Playlists privées** par OAuth PKCE. L'ancien code accepte déjà un jeton OAuth à la place du jeton anonyme (`setOAuthToken`), sans Premium. On l'ajoutera en v2, par un réglage `account` avec `oauth: true` ([[feature-plugins]], section 5).
-- Recherche dans Spotify, pages d'artiste, podcasts.
+- **Session Web authentifiée (macOS + repli manuel)** : implémentée sans clé développeur ni compte Premium via `SpotifyWebBridge` (`WKWebView` avec UA Safari authentique et hook limité à `open.spotify.com`), **Import from Browser…** (`BrowserCookieImporter` sur Firefox/Zen/LibreWolf en clair, Chrome/Brave/Arc/Edge/Vivaldi/Dia/Opera via Trousseau + PBKDF2/AES-128-CBC + préfixe SHA-256 `host_key` sur DB v24+, et Safari si Full Disk Access), ou champ secret `sp_dc`. Permet l’accès aux playlists privées, l’ajout de titres depuis la librairie personnelle (`PlaylistEditable` / `source/addTracks` : `/v1/search` + `POST /v1/playlists/{id}/items` ou `/tracks`) et le réordonnancement distant (`PlaylistReorderable` / `source/reorder` : `moveItemsInPlaylist` v2/v1 + fallback `PUT /v1/playlists/{id}/items`) **uniquement sur les playlists possédées par l’utilisateur** (sinon alerte `exclamationmark.triangle.fill`).
+- Recherche libre globale dans Spotify, pages d'artiste, podcasts.
 - Rôle `metadataProvider` (Spotify comme source de tags pour le Metadata Editor). Possible plus tard avec le même code.
 
 ## Questions ouvertes
