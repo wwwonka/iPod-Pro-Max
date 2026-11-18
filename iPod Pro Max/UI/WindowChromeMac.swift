@@ -5,7 +5,7 @@
     import SwiftCrossUI
     import iPodKit
 
-    /// macOS draws its own traffic lights and toggle (in the toolbar).
+    /// macOS draws its own traffic lights; the player header belongs to the content.
     let drawsWindowControls = false
 
     extension View {
@@ -18,7 +18,7 @@
     @MainActor func toggleSidebar() { MacChrome.shared.toggleSidebar() }
     @MainActor func performWindowAction(_ action: WindowAction) {}
 
-    /// macOS draws its traffic lights and toggle itself (the window and its toolbar).
+    /// macOS draws its traffic lights itself.
     struct WindowControls: View {
         var body: some View { EmptyView() }
     }
@@ -33,11 +33,10 @@
         }
     }
 
-    /// The AppKit side of the window chrome: a transparent title bar over full-size content, a
-    /// unified toolbar holding the sidebar toggle, and the sidebar slide. The sidebar floats over
-    /// the main view's left side: opening or closing it moves nothing else.
+    /// Transparent window chrome with a stable player header over full-size content
+    /// and the native sidebar split view.
     @MainActor
-    final class MacChrome: NSObject, NSToolbarDelegate, NSSearchFieldDelegate {
+    final class MacChrome: NSObject, NSSearchFieldDelegate {
         static let shared = MacChrome()
 
         private weak var window: NSWindow?
@@ -89,13 +88,8 @@
         /// Open, and the page has a sidebar.
         private var sidebarShown: Bool { sidebarOpen && sidebarAvailable }
         private var slideRevision = 0
-        private static let toggleID = NSToolbarItem.Identifier("toggleSidebar")
-        private static let transportID = NSToolbarItem.Identifier("playerTransport")
-        private static let volumeID = NSToolbarItem.Identifier("playerVolume")
-        private static let queueID = NSToolbarItem.Identifier("playerQueue")
         private let queueButton = ToolbarPlaybackButton()
         private var queueToken: SwiftCrossUI.Cancellable?
-        private static let lcdID = NSToolbarItem.Identifier("playerLCD")
         private let player = ToolbarPlayerMac()
         var canStartSelectionPlayback: Bool { player.canPlaySelection }
         func startSelectionPlayback() { player.toggle() }
@@ -114,6 +108,7 @@
                 player.updateWidth()
                 window.contentView?.superview?.layoutSubtreeIfNeeded()
                 relayoutTitleArea?()
+                layoutPlayerHeader()
                 if let root = window.contentView?.superview, let close = window.standardWindowButton(.closeButton) {
                     let y = close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: root).y
                     let controls: [NSView] = player.transport.subviews + player.volumeView.subviews + [queueButton]
@@ -127,7 +122,15 @@
                     let leftGap = lcdRect.minX - player.volumeRightEdge(in: root)
                     let reference = player.trafficToBackGap(in: root)
                     log(String(format: "Toolbar spacing %.0f pt: slider/LCD %.2f, traffic lights/back %.2f", width, leftGap, reference))
-                    precondition(abs(leftGap - reference) <= 1, "Slider/LCD margin must match traffic lights/back")
+                    precondition(abs(leftGap - reference) <= 1, "Slider/LCD margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
+                }
+                precondition(window.toolbar == nil && player.lcd.window === window, "Player stays in the content window without NSToolbar")
+                if let root = window.contentView?.superview {
+                    for control in player.transport.subviews + [queueButton] {
+                        let point = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: root)
+                        let hit = root.hitTest(point)
+                        precondition(hit === control || hit?.isDescendant(of: control) == true, "Native title area must not intercept player clicks: \(String(describing: hit))")
+                    }
                 }
                 measurements.append((ProcessInfo.processInfo.systemUptime - started) * 1000)
                 precondition(abs(player.transportLeadingSpace - min(18, max(0, (width - 900) / 340 * 18))) < 0.1)
@@ -136,16 +139,46 @@
                 precondition(player.lcd.frame.width >= 280 && player.lcd.frame.width <= 460)
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
-            window.setFrame(original, display: false); player.updateWidth()
+            window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
             measurements.sort()
             log(String(format: "PASS: toolbar resize 820–1600 pt, LCD bounds; synchronous layout median %.2f ms, max %.2f ms", measurements[measurements.count / 2], measurements.last ?? 0))
+        }
+        func checkPlayerHeaderSearch() async -> Bool {
+            guard let window else { return false }
+            let savedFrame = window.frame, savedOwner = searchOwner, savedText = searchField.stringValue
+            let savedPrompt = searchField.placeholderString, savedChange = onSearchChange, savedExpanded = searchExpanded
+            let savedResponder = window.firstResponder
+            defer {
+                searchOwner = savedOwner; onSearchChange = savedChange
+                searchField.stringValue = savedText; searchField.placeholderString = savedPrompt
+                searchExpanded = savedExpanded; window.setFrame(savedFrame, display: false)
+                updateSearchVisibility(); layoutPlayerHeader(); window.makeFirstResponder(savedResponder)
+            }
+            let owner = NSObject()
+            var query = ""
+            setSearch(owner: owner, visible: true, prompt: "Search", text: "check", onChange: { query = $0 })
+            var frame = window.frame; frame.size.width = 820; window.setFrame(frame, display: false)
+            updateSearchVisibility(); layoutPlayerHeader()
+            guard searchField.isHidden && !searchButton.isHidden else { return false }
+            searchButton.performClick(nil)
+            await Task.yield()
+            guard !searchField.isHidden && searchButton.isHidden && searchField.currentEditor() != nil else { return false }
+            searchField.stringValue = "new query"
+            controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+            guard query == "new query" else { return false }
+            searchField.stringValue = ""
+            controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: searchField))
+            guard searchField.isHidden && !searchButton.isHidden else { return false }
+            setSearch(owner: owner, visible: false, prompt: "Search", text: "", onChange: { _ in })
+            guard searchField.isHidden && searchButton.isHidden else { return false }
+            log("PASS: integrated native search collapses, focuses, forwards edits and releases page ownership")
+            return true
         }
         func setPlaybackSelection(rows: [TrackRow], selectedIDs: [String], onStart: @escaping (TrackRow, [TrackRow]) -> Void) {
             player.onStart = onStart
             player.selectionRows = rows
             player.selectedIDs = selectedIDs
         }
-        private static let searchID = NSToolbarItem.Identifier("search")
 
         var isSliding: Bool { false }
         var isLiveResizing: Bool { window?.inLiveResize == true }
@@ -181,29 +214,22 @@
                 NSApp.appearance = appearance; window.appearance = appearance
             }
             window.styleMask.insert(.fullSizeContentView)
+            // Full-screen eligibility must survive the titlebar-free full-screen style.
+            window.collectionBehavior.insert(.fullScreenPrimary)
+            (window as? NSCustomWindow)?.acceptsKeyWithoutTitle = true
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             // Glass all over: the window paints nothing itself, its effect views do.
             window.isOpaque = false
             window.backgroundColor = .clear
             installWindowGlass(on: window)
-            // A unified toolbar gives a compact 44 pt title bar: traffic lights centered
-            // on the header row, the toggle right after them.
-            let toolbar = NSToolbar(identifier: "main")
-            toolbar.delegate = self
-            toolbar.displayMode = .iconOnly
-            toolbar.allowsUserCustomization = false
-            // The compact style would draw small controls: the regular size, as in a 52 pt bar.
-            toolbar.sizeMode = .regular
-            window.toolbar = toolbar
-            self.toolbar = toolbar
-            if #available(macOS 11, *) { toolbar.centeredItemIdentifier = Self.lcdID }
+            // Controls belong to the content, never to AppKit's sliding full-screen toolbar.
+            window.toolbar = nil
+            installPlayerHeader(in: window)
             installFindMenuItem()
             installFindShortcut(window)
             observeWindowWidthForSearch(window)
-            DispatchQueue.main.async { [weak self] in self?.player.updateWidth() }
             shapeAreaWhenReady()
-            if #available(macOS 11, *) { window.toolbarStyle = .unifiedCompact }
             keepTrafficLightsCentered(in: window)
             snapshotIfRequested(window)
             if Self.launchPanelEnabled { MacLaunchTransition.shared.prepare(window) }
@@ -254,86 +280,83 @@
 
         /// The first of the two glass panels: the whole window, under everything. The sidebar's own
         /// panel sits over it and the (opaque) main view over both.
+        private let windowGlass = NSVisualEffectView()
         private func installWindowGlass(on window: NSWindow) {
-            guard let content = window.contentView, let frameView = content.superview else { return }
-            let glass = NSVisualEffectView(frame: frameView.bounds)
-            glass.material = .underWindowBackground
-            glass.blendingMode = .behindWindow
-            glass.state = .active  // stays glass when another app comes forward
-            glass.autoresizingMask = [.width, .height]
-            frameView.addSubview(glass, positioned: .below, relativeTo: content)
+            windowGlass.material = .underWindowBackground
+            windowGlass.blendingMode = .behindWindow
+            windowGlass.state = .active
+            windowGlass.identifier = NSUserInterfaceItemIdentifier("windowGlass")
+            windowGlass.autoresizingMask = [.width, .height]
+            attachWindowGlass()
+        }
+        private func attachWindowGlass() {
+            guard let content = window?.contentView else { return }
+            if windowGlass.superview !== content {
+                windowGlass.removeFromSuperview()
+                windowGlass.frame = content.bounds
+                content.addSubview(windowGlass, positioned: .below, relativeTo: nil)
+            }
         }
 
         // MARK: Traffic lights
 
         private var trafficLightObservers: [NSObjectProtocol] = []
-        /// Lays the title area out again (centering, sizes): after a toolbar item shows or hides.
+        /// Relayout after search visibility changes and native title-area events.
         private var relayoutTitleArea: (() -> Void)?
         private func scheduleTitleAreaRelayout() {
             DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.relayoutTitleArea?() } }
         }
 
-        /// The compact toolbar is a little shorter than the title area, which would leave the
-        /// traffic lights above its middle: they are moved down to the title area's center, and
-        /// put back there whenever AppKit lays the title bar out again (resize, full screen).
+        /// Only the native window buttons use the title area. The player stays in content.
         private func keepTrafficLightsCentered(in window: NSWindow) {
             let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-            // The container of the title bar and the toolbar is as tall as the compact toolbar (38);
-            // it is made as tall as the title area, so the toolbar's items center on it too.
             let container = buttons.first?.superview?.superview
-            container?.postsFrameChangedNotifications = true
+            let originalHeight = container?.frame.height ?? 22
+            let originalButtonFrames = buttons.map(\.frame)
+            var enteringFullScreen = false
             var centering = false
             func center() {
                 guard !centering else { return }; centering = true; defer { centering = false }
-                // AppKit moves this container to NSToolbarFullScreenWindow.
-                // Use its actual parent, not the main window's much taller frame.
-                guard let frameView = container?.superview ?? window.contentView?.superview else { return }
-                if let container {
-                    let height = CGFloat(titleBarHeight)
-                    let frame = NSRect(x: 0, y: frameView.bounds.height - height, width: frameView.bounds.width, height: height)
-                    if container.frame != frame { container.frame = frame }
-                    // The toolbar itself stays 38 tall inside it: it is stretched as well.
-                    if let titlebar = buttons.first?.superview,
-                       let toolbarView = titlebar.subviews.first(where: { String(describing: type(of: $0)) == "NSToolbarView" }) {
-                        let toolbarFrame = NSRect(x: 0, y: titlebar.bounds.height - height, width: titlebar.bounds.width, height: height)
-                        if toolbarView.frame != toolbarFrame { toolbarView.frame = toolbarFrame }
-                        func enlarge(_ view: NSView) {
-                            if ["playerTransport", "playerVolume", "playerLCD", "playerQueue"].contains(view.identifier?.rawValue ?? "") { return }
-                            if #available(macOS 11, *), let control = view as? NSButton, control.controlSize != .large { control.controlSize = .large }
-                            view.subviews.forEach(enlarge)
-                        }
-                        enlarge(toolbarView)
+                let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
+                let container = buttons.first?.superview?.superview
+                self.playerHeader?.needsLayout = true
+                self.playerHeader?.layoutSubtreeIfNeeded()
+                guard !enteringFullScreen, !window.styleMask.contains(.fullScreen), let root = window.contentView?.superview else { return }
+                if let container, let parent = container.superview {
+                    container.frame = NSRect(x: 0, y: parent.bounds.height - CGFloat(titleBarHeight), width: parent.bounds.width, height: CGFloat(titleBarHeight))
+                }
+                for button in buttons {
+                    let current = button.convert(NSPoint(x: 0, y: button.bounds.midY), to: root).y
+                    let target = root.bounds.height - CGFloat(titleBarHeight) / 2
+                    guard abs(target - current) > 0.25, let parent = button.superview else { continue }
+                    let delta = parent.convert(NSPoint(x: 0, y: target), from: root).y - parent.convert(NSPoint(x: 0, y: current), from: root).y
+                    button.setFrameOrigin(NSPoint(x: button.frame.minX, y: button.frame.minY + delta))
+                }
+            }
+            for view in buttons + [container].compactMap({ $0 }) {
+                view.postsFrameChangedNotifications = true
+                trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { _ in
+                    MainActor.assumeIsolated { center() }
+                })
+            }
+            trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    enteringFullScreen = true
+                    for (button, frame) in zip(buttons, originalButtonFrames) { button.frame = frame }
+                    // Leave the system's own revealable traffic lights at their native height.
+                    if let container, let parent = container.superview {
+                        container.frame = NSRect(x: 0, y: parent.bounds.height - originalHeight, width: parent.bounds.width, height: originalHeight)
                     }
                 }
-                let target = frameView.bounds.height - CGFloat(titleBarHeight) / 2
-                for button in buttons + [self.player.transport, self.player.volumeView, self.queueButton] {
-                    let current = button.convert(NSPoint(x: 0, y: button.bounds.midY), to: frameView).y
-                    let delta = target - current
-                    guard abs(delta) > 0.25, let parent = button.superview else { continue }
-                    let moved = parent.convert(NSPoint(x: 0, y: current + delta), from: frameView)
-                    let was = parent.convert(NSPoint(x: 0, y: current), from: frameView)
-                    button.setFrameOrigin(NSPoint(x: button.frame.minX, y: button.frame.minY + (moved.y - was.y)))
-                }
-            }
-            let alignedViews: [NSView] = buttons + [player.transport, player.volumeView, queueButton]
-            for button in alignedViews {
-                button.postsFrameChangedNotifications = true
-                trafficLightObservers.append(NotificationCenter.default.addObserver(
-                    forName: NSView.frameDidChangeNotification, object: button, queue: .main) { _ in
-                        MainActor.assumeIsolated { center() }
-                    })
-            }
-            if let container {
-                trafficLightObservers.append(NotificationCenter.default.addObserver(
-                    forName: NSView.frameDidChangeNotification, object: container, queue: .main) { _ in
-                        MainActor.assumeIsolated { center() }
-                    })
-            }
+            })
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification] {
-                trafficLightObservers.append(NotificationCenter.default.addObserver(
-                    forName: name, object: window, queue: .main) { _ in
-                        MainActor.assumeIsolated { center() }
-                    })
+                trafficLightObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
+                    MainActor.assumeIsolated {
+                        if name == NSWindow.didExitFullScreenNotification { enteringFullScreen = false }
+                        center()
+                        if name == NSWindow.didExitFullScreenNotification { DispatchQueue.main.async { center() } }
+                    }
+                })
             }
             relayoutTitleArea = center
             center()
@@ -342,42 +365,21 @@
 
         // MARK: Search
 
-        // The page's search lives in the toolbar as the system's own search item, the Finder's. The
-        // pages that search put a marker in their header (`SearchAnchor`), which adds the item while
-        // it shows and removes it otherwise.
-        private weak var toolbar: NSToolbar?
-        private var searchItem: NSToolbarItem?
+        private var playerHeader: PlayerHeaderMac?
+        private var headerContentObservation: NSKeyValueObservation?
+        private let searchField = NSSearchField()
+        private let searchButton = ToolbarPlaybackButton()
         private var searchOwner: AnyObject?
         private var onSearchChange: (String) -> Void = { _ in }
 
-        @available(macOS 11.0, *)
-        private func makeSearchItem() -> NSSearchToolbarItem {
-            if let item = searchItem as? NSSearchToolbarItem { return item }
-            let item = NSSearchToolbarItem(itemIdentifier: Self.searchID)
-            item.searchField.delegate = self
-            item.searchField.sendsSearchStringImmediately = true
-            item.preferredWidthForSearchField = 170
-            item.searchField.widthAnchor.constraint(equalToConstant: 170).isActive = true
-            item.searchField.controlSize = .large
-            item.label = "Search"
-            // Hidden until a page that searches claims it.
-            if #available(macOS 15.0, *) { item.isHidden = true }
-            searchItem = item
-            return item
-        }
-
         /// A page's marker asks for the search, or gives it up.
         func setSearch(owner: AnyObject, visible: Bool, prompt: String, text: String, onChange: @escaping (String) -> Void) {
-            // The system's search item needs macOS 11; before it, pages have no search field.
-            guard #available(macOS 11.0, *) else { return }
             installFindMenuItem()
-            // The item is part of the toolbar from the start (inserted later, it never showed); a page
-            // without a search hides it.
-            let item = makeSearchItem()
+            // Pages own the query and whether the native field is shown.
             if visible {
                 searchOwner = owner
                 onSearchChange = onChange
-                let field = item.searchField
+                let field = searchField
                 if field.placeholderString != prompt { field.placeholderString = prompt }
                 if field.stringValue != text { field.stringValue = text }
                 updateSearchVisibility()
@@ -389,9 +391,7 @@
 
         // Like the Finder's: in a narrow window the search field gives way to a magnifier button, and
         // a click on it brings the field back (focused) until it loses focus empty.
-        private static let searchButtonID = NSToolbarItem.Identifier("searchButton")
         private static let searchCollapseWidth: CGFloat = 900
-        private var searchButtonItem: NSToolbarItem?
         private var searchExpanded = false
         private var searchResizeObserver: NSObjectProtocol?
 
@@ -402,19 +402,17 @@
 
         /// Shows the field, the magnifier, or neither, for the page and the window's width.
         private func updateSearchVisibility() {
-            // Hiding a toolbar item needs macOS 15; before it the field always shows.
-            guard #available(macOS 15.0, *) else { return }
             let hasSearch = searchOwner != nil
             if let window, window.frame.width >= Self.searchCollapseWidth { searchExpanded = false }
-            searchItem?.isHidden = !hasSearch || searchCollapsed
-            searchButtonItem?.isHidden = !(hasSearch && searchCollapsed)
+            searchField.isHidden = !hasSearch || searchCollapsed
+            searchButton.isHidden = !(hasSearch && searchCollapsed)
             scheduleTitleAreaRelayout()
         }
 
         private func observeWindowWidthForSearch(_ window: NSWindow) {
             guard searchResizeObserver == nil else { return }
             searchResizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateSearchVisibility(); self?.player.updateWidth() }
+                MainActor.assumeIsolated { self?.updateSearchVisibility(); self?.layoutPlayerHeader() }
             }
         }
 
@@ -424,7 +422,7 @@
             // The field has to be on screen before it can take the focus.
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
-                    if #available(macOS 11.0, *) { (self?.searchItem as? NSSearchToolbarItem)?.beginSearchInteraction() }
+                    guard let self else { return }; self.window?.makeFirstResponder(self.searchField); self.searchField.selectText(nil)
                 }
             }
         }
@@ -439,7 +437,7 @@
         @available(macOS 11.0, *)
         @objc func findInPage(_ sender: Any?) {
             if searchCollapsed { expandSearch(nil); return }
-            (searchItem as? NSSearchToolbarItem)?.beginSearchInteraction()
+            window?.makeFirstResponder(searchField); searchField.selectText(nil)
         }
 
         @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -450,7 +448,7 @@
         private var findMonitor: Any?
 
         /// ⌘F works whatever the menus hold (the Edit menu can be rebuilt after we add to it): the key
-        /// is caught here while a page with a search field is shown, and selects the toolbar's search.
+        /// is caught here while a page with a search field is shown, and selects the integrated search field.
         private func installFindShortcut(_ window: NSWindow) {
             guard findMonitor == nil else { return }
             findMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
@@ -481,72 +479,54 @@
             onSearchChange(field.stringValue)
         }
 
-        // MARK: Toolbar
+        // MARK: Integrated player header
 
-        func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            [Self.transportID, .flexibleSpace, Self.volumeID, Self.lcdID, Self.queueID, .flexibleSpace, Self.searchButtonID, Self.searchID]
+        private func installPlayerHeader(in window: NSWindow) {
+            guard let content = window.contentView else { return }
+            let header = PlayerHeaderMac(frame: NSRect(x: 0, y: content.bounds.height - CGFloat(titleBarHeight), width: content.bounds.width, height: CGFloat(titleBarHeight)))
+            header.identifier = NSUserInterfaceItemIdentifier("playerHeader")
+            header.autoresizingMask = [.width, .minYMargin]
+            header.onLayout = { [weak self] in self?.layoutPlayerHeader() }
+            playerHeader = header
+            queueButton.setSymbol("list.bullet", size: 14)
+            queueButton.isBordered = false; queueButton.target = self; queueButton.action = #selector(showPlayerQueue)
+            queueButton.setAccessibilityLabel("Up Next"); queueButton.toolTip = "Up Next"
+            queueButton.isEnabled = PlaybackController.shared.track != nil
+            queueToken = PlaybackController.shared.didChange.observe { [weak self] in self?.queueButton.isEnabled = PlaybackController.shared.track != nil }
+            searchField.delegate = self; searchField.sendsSearchStringImmediately = true
+            if #available(macOS 11, *) { searchField.controlSize = .large }
+            searchField.setAccessibilityLabel("Search")
+            searchButton.setSymbol("magnifyingglass", size: 15)
+            searchButton.isBordered = false; searchButton.target = self; searchButton.action = #selector(expandSearch(_:))
+            searchButton.setAccessibilityLabel("Search"); searchButton.toolTip = "Search"
+            searchField.isHidden = searchOwner == nil; searchButton.isHidden = true
+            for view in [player.transport, player.volumeView, player.lcd, queueButton, searchField, searchButton] { header.addSubview(view) }
+            content.addSubview(header, positioned: .above, relativeTo: nil)
+            // inspectWindow runs before the backend installs its final content root.
+            // Follow that replacement, rather than attaching to a discarded placeholder.
+            headerContentObservation = window.observe(\.contentView, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.attachPlayerHeader() }
+            }
+            layoutPlayerHeader()
         }
 
-        func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-            [Self.transportID, .flexibleSpace, Self.volumeID, Self.lcdID, Self.queueID, .flexibleSpace, Self.searchButtonID, Self.searchID]
+        private func attachPlayerHeader() {
+            attachWindowGlass()
+            guard let header = playerHeader, let content = window?.contentView else { return }
+            if header.superview !== content {
+                header.removeFromSuperview()
+                header.frame = NSRect(x: 0, y: content.bounds.height - CGFloat(titleBarHeight), width: content.bounds.width, height: CGFloat(titleBarHeight))
+                content.addSubview(header, positioned: .above, relativeTo: nil)
+            }
+            layoutPlayerHeader()
         }
 
-        func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
-                     willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem?
-        {
-            if id == Self.queueID {
-                let item = NSToolbarItem(itemIdentifier: id)
-                queueButton.setSymbol("list.bullet", size: 14)
-                queueButton.isBordered = false; queueButton.target = self; queueButton.action = #selector(showPlayerQueue)
-                queueButton.frame = NSRect(x: 0, y: 0, width: 39, height: 26)
-                queueButton.setAccessibilityLabel("Up Next"); queueButton.toolTip = "Up Next"
-                item.view = queueButton; item.label = "Up Next"
-                item.minSize = NSSize(width: 39, height: 26); item.maxSize = item.minSize
-                queueButton.isEnabled = PlaybackController.shared.track != nil
-                queueToken = PlaybackController.shared.didChange.observe { [weak self] in self?.queueButton.isEnabled = PlaybackController.shared.track != nil }
-                return item
-            }
-            if id == Self.transportID || id == Self.volumeID || id == Self.lcdID {
-                let item = NSToolbarItem(itemIdentifier: id)
-                let view = id == Self.transportID ? player.transport : id == Self.volumeID ? player.volumeView : player.lcd
-                item.view = view
-                if id == Self.transportID { player.transportItem = item }
-                if id == Self.volumeID { player.volumeItem = item }
-                if id == Self.lcdID { player.lcdItem = item }
-                item.label = id == Self.transportID ? "Playback" : id == Self.volumeID ? "Volume" : "Now Playing"
-                item.visibilityPriority = .high
-                let width: CGFloat = id == Self.transportID ? 90 : id == Self.volumeID ? 100 : 280
-                item.minSize = NSSize(width: id == Self.volumeID ? 28 : width, height: id == Self.lcdID ? 44 : 32)
-                item.maxSize = NSSize(width: id == Self.lcdID ? 460 : width, height: id == Self.lcdID ? 44 : 32)
-                return item
-            }
-            if id == Self.searchID { if #available(macOS 11.0, *) { return makeSearchItem() } else { return nil } }
-            if id == Self.searchButtonID {
-                let item = NSToolbarItem(itemIdentifier: id)
-                item.image = systemSymbol("magnifyingglass", description: "Search")
-                item.label = "Search"
-                item.toolTip = "Search"
-                item.isBordered = true
-                item.target = self
-                item.action = #selector(expandSearch(_:))
-                if #available(macOS 15.0, *) { item.isHidden = true }
-                searchButtonItem = item
-                return item
-            }
-            guard id == Self.toggleID else { return nil }
-            let item = NSToolbarItem(itemIdentifier: id)
-            item.image = systemSymbol("sidebar.left", description: "Show or hide the sidebar")
-            item.label = "Sidebar"
-            item.toolTip = "Hide or show the sidebar"
-            item.isBordered = true
-            item.target = self
-            item.action = #selector(toggleSidebarFromToolbar)
-            if #available(macOS 15.0, *) { item.isHidden = !sidebarAvailable }
-            item.isEnabled = sidebarAvailable && !Self.nativeSplitMode
-            toggleItem = item
-            installToolbarButtonFastClickMonitor()
-            if Self.nativeSplitMode { reconcileNativeSidebar() }
-            return item
+        private func layoutPlayerHeader() {
+            guard let header = playerHeader else { return }
+            player.layout(in: header)
+            queueButton.frame = NSRect(x: player.lcd.frame.maxX + 8, y: 9, width: 39, height: 26)
+            searchField.frame = NSRect(x: header.bounds.width - 182, y: 8, width: 170, height: 28)
+            searchButton.frame = NSRect(x: header.bounds.width - 51, y: 9, width: 39, height: 26)
         }
 
         // MARK: Sidebar
@@ -806,11 +786,9 @@
 
         /// Pages with nothing to navigate (an iPod's page, for now) have no sidebar and no toggle.
         private var sidebarAvailable = true
-        private weak var toggleItem: NSToolbarItem?
         private(set) var isAnimatingSidebar = false
         private var sidebarAnimationGeneration = 0
         private weak var sidebarOutlineView: NSOutlineView?
-        private var toolbarMouseDownMonitor: Any?
 
         private var wantsSidebar = true
 
@@ -887,7 +865,6 @@
         private func reconcileNativeSidebar(attempt: Int = 0) {
             guard Self.nativeSplitMode else { return }
             guard let split = nativeSplit() else {
-                toggleItem?.isEnabled = false
                 scheduleSidebarRetry(attempt: attempt)
                 return
             }
@@ -924,7 +901,6 @@
                 split.delegate = proxy
             }
             guard split.frame.width > 500, split.subviews.count > 1 else {
-                toggleItem?.isEnabled = false
                 scheduleSidebarRetry(attempt: attempt)
                 return
             }
@@ -939,7 +915,6 @@
             split.dividerDragEnabled = sidebarAvailable && sidebarOpen
             split.dividerTopInset = CGFloat(titleBarHeight)
             split.setSidebarOpenAtOnce(sidebarAvailable && sidebarOpen)
-            toggleItem?.isEnabled = sidebarAvailable
         }
 
         /// The divider was dragged past half the narrowest width and AppKit collapsed the pane: the
@@ -984,10 +959,6 @@
             if Self.nativeSplitMode {
                 wantsSidebar = available
                 sidebarAvailable = available
-                if #available(macOS 15.0, *) {
-                    toggleItem?.isHidden = !available
-                    scheduleTitleAreaRelayout()
-                }
                 reconcileNativeSidebar()
                 return
             }
@@ -1010,8 +981,6 @@
                 if let list = sidebarAnchor?.layer { list.removeAnimation(forKey: "sidebarFade"); list.opacity = column.isHidden ? 0 : 1 }
             }
             placeResizeHandle()
-            if #available(macOS 15.0, *) { toggleItem?.isHidden = !available; scheduleTitleAreaRelayout() }
-            toggleItem?.isEnabled = available
         }
 
         private func findSidebarOutlineView(in root: NSView) -> NSOutlineView? {
@@ -1058,45 +1027,6 @@
                     }
                 }
             }
-        }
-
-        private func isToggleToolbarHit(_ hit: NSView) -> Bool {
-            let selector = #selector(toggleSidebarFromToolbar)
-            var cursor: NSView? = hit
-            while let view = cursor {
-                if let control = view as? NSControl,
-                   control.action == selector,
-                   control.target === self,
-                   control.isEnabled {
-                    return true
-                }
-                if view.className.contains("NSToolbarView") || view === window?.contentView {
-                    break
-                }
-                cursor = view.superview
-            }
-            return false
-        }
-
-        private func installToolbarButtonFastClickMonitor() {
-            guard toolbarMouseDownMonitor == nil else { return }
-            toolbarMouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-                let consumed = MainActor.assumeIsolated { () -> Bool in
-                    guard let self, Self.nativeSplitMode,
-                          self.sidebarAvailable,
-                          let window = self.window, event.window === window,
-                          let root = window.contentView?.superview,
-                          let hit = root.hitTest(event.locationInWindow),
-                          self.isToggleToolbarHit(hit) else { return false }
-                    self.toggleSidebar()
-                    return true
-                }
-                return consumed ? nil : event
-            }
-        }
-
-        @objc private func toggleSidebarFromToolbar() {
-            toggleSidebar()
         }
 
         @objc func toggleSidebar() {

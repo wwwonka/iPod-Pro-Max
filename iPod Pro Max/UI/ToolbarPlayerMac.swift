@@ -13,19 +13,8 @@ import SwiftCrossUI
     override func resizeSubviews(withOldSize oldSize: NSSize) { super.resizeSubviews(withOldSize: oldSize); centerControls() }
 }
 
-/// Full-screen AppKit toolbars live in an auxiliary window; their activation and
-/// layout still belong to the primary window whose NSToolbar owns these items.
-@MainActor func playerControlWindow(for view: NSView) -> NSWindow? {
-    guard let host = view.window else { return nil }
-    if host.toolbar != nil || host.isKeyWindow { return host }
-    for candidate in NSApp.windows where candidate.styleMask.contains(.fullScreen) {
-        if candidate.toolbar?.items.contains(where: { item in
-            guard let root = item.view else { return false }
-            return view === root || view.isDescendant(of: root)
-        }) == true { return candidate }
-    }
-    return host
-}
+/// All player controls stay in the primary content window, including full screen.
+@MainActor func playerControlWindow(for view: NSView) -> NSWindow? { view.window }
 
 /// Native toolbar drawing only; playback and session volume belong to the shared controller.
 @MainActor final class ToolbarPlayerMac: NSObject {
@@ -46,11 +35,8 @@ import SwiftCrossUI
     private var subscription: SwiftCrossUI.Cancellable?
     private var keyMonitor: Any?
     private var compact = false
-    weak var transportItem: NSToolbarItem?
     private(set) var transportLeadingSpace: CGFloat = 0
     private(set) var volumeTargetGap: CGFloat = 28
-    weak var volumeItem: NSToolbarItem?
-    weak var lcdItem: NSToolbarItem?
     private var selection: TrackRow? { selectionRows.first { selectedIDs.contains($0.id) && $0.path != nil } }
 
     init(controller: PlaybackController = .shared) {
@@ -134,37 +120,27 @@ import SwiftCrossUI
         }
         let transportWidth = 102 + transportLeadingSpace
         transport.setFrameSize(NSSize(width: transportWidth, height: transport.frame.height))
-        transportItem?.minSize = NSSize(width: transportWidth, height: 32)
-        transportItem?.maxSize = NSSize(width: transportWidth, height: 32)
         let narrow = (playerControlWindow(for: volumeView)?.frame.width ?? 1200) < 1000
         compact = narrow
-        slider.frame = NSRect(x: 28, y: 6, width: 72, height: 20)
-        let baseWidth: CGFloat = narrow ? 28 : 100
-        var nativeGap: CGFloat = 8
-        if let window = transport.window, let root = window.contentView?.superview {
-            volumeTargetGap = trafficToBackGap(in: root)
-            let measured = lcd.convert(lcd.bounds, to: root).minX - volumeView.convert(volumeView.bounds, to: root).maxX
-            if measured >= 4 && measured <= 16 { nativeGap = measured }
-        } else { volumeTargetGap = 10 + transportLeadingSpace }
-        let trackInset: CGFloat = narrow ? 0 : slider.bounds.maxX - ((slider.cell as? NSSliderCell)?.barRect(flipped: slider.isFlipped).maxX ?? slider.bounds.maxX)
-        let trailing = max(0, volumeTargetGap - nativeGap - trackInset)
-        let width = baseWidth + trailing
-        volumeView.setFrameSize(NSSize(width: width, height: 32))
-        volumeItem?.minSize = NSSize(width: width, height: 32)
-        volumeItem?.maxSize = NSSize(width: width, height: 32)
-        if let window = playerControlWindow(for: volumeView) {
-            // Reserve the transport and volume even when the flexible gap closes.
-            // Do not derive this from the volume's position: it now hugs the LCD.
-            let minimumSide = 80 + transportWidth + width + 32
-            let lcdWidth = min(460, max(280, window.frame.width - 2 * minimumSide))
-            lcdItem?.minSize = NSSize(width: lcdWidth, height: 44)
-            lcdItem?.maxSize = NSSize(width: lcdWidth, height: 44)
-        }
+        volumeView.setFrameSize(NSSize(width: narrow ? 28 : 100, height: 32))
         if !popover.isShown {
             slider.removeFromSuperview()
             if !narrow { volumeView.addSubview(slider); slider.frame = NSRect(x: 28, y: 6, width: 72, height: 20) }
         }
         transport.centerControls(); volumeView.centerControls()
+    }
+    /// Geometry is owned by the content header; AppKit never reparents these views.
+    func layout(in header: NSView) {
+        updateWidth()
+        transport.frame.origin = NSPoint(x: 78, y: 6)
+        let gap = header.window?.styleMask.contains(.fullScreen) == true ? 18 + transportLeadingSpace : trafficToBackGap(in: header)
+        volumeTargetGap = gap
+        let minimumSide = 80 + transport.bounds.width + volumeView.bounds.width + 32
+        let lcdWidth = min(460, max(280, header.bounds.width - 2 * minimumSide))
+        let lcdX = (header.bounds.width - lcdWidth) / 2
+        lcd.frame = NSRect(x: lcdX, y: 3, width: lcdWidth, height: 41)
+        let trackRight: CGFloat = compact ? 28 : 28 + ((slider.cell as? NSSliderCell)?.barRect(flipped: slider.isFlipped).maxX ?? slider.bounds.maxX)
+        volumeView.frame.origin = NSPoint(x: lcdX - gap - trackRight, y: 6)
     }
     func trafficToBackGap(in root: NSView) -> CGFloat {
         guard let window = playerControlWindow(for: transport), let zoom = window.standardWindowButton(.zoomButton) else { return 10 + transportLeadingSpace }

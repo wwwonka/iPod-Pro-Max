@@ -45,7 +45,7 @@ Chaque sous-tâche donne : objectif, comportement utilisateur, règles d'interac
 ### PLR-1 – Disposition et retrait du lecteur flottant
 
 **OBJECTIF**
-Placer tout le lecteur dans la barre d'outils de 44 pt et supprimer le lecteur flottant sur macOS.
+Placer tout le lecteur dans une barre intégrée au contenu de 44 pt et supprimer le lecteur flottant sur macOS. La barre conserve les contrôles AppKit natifs, sans NSToolbar : le lecteur reste fixe en plein écran et aucune barre d’outils système vide ne doit se révéler au survol de la barre de menus.
 
 **COMPORTEMENT UTILISATEUR**
 De gauche à droite, après les feux : transport (PLR-2), volume (PLR-3), LCD centré avec AirPlay intégré (PLR-3 et PLR-4), bouton « À suivre » (PLR-12), recherche existante. Le lecteur est toujours présent, même sans lecture.

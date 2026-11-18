@@ -6,7 +6,7 @@ import MediaKit
 /// Real AVPlayer, live system metadata and native window lifecycle against the silent preview.
 @MainActor func checkFinalPlayerMac() async -> Bool {
     let playback = PlaybackController.shared, display = PlayerDisplayController.shared
-    guard let window = NSApp.windows.first(where: { $0.toolbar != nil }), let root = window.contentView?.superview else {
+    guard let window = NSApp.windows.first(where: { $0.contentView?.subviews.contains(where: { $0 is PlayerHeaderMac }) == true }), let root = window.contentView?.superview else {
         log("FAIL: final player check needs the native window"); return false
     }
     func require(_ condition: Bool, _ message: String) -> Bool {
@@ -37,6 +37,7 @@ import MediaKit
     await playback.waitForAnalysis()
     let ready = await waitUntil { playback.duration > 0 && display.spectrum != nil }
     guard require(ready && playback.playing && playback.error.isEmpty, "real playback and spectrum readiness") else { return false }
+    guard require(window.toolbar == nil, "player uses no native toolbar"), let originalLCD = findLCD(root), let originalHeader = originalLCD.superview else { return false }
     let center = MPNowPlayingInfoCenter.default()
     guard require(center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == playback.track?.title, "live system Now Playing metadata") else { return false }
 
@@ -68,42 +69,44 @@ import MediaKit
     guard require(window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == expected, "native and declarative appearance agree") else { return false }
     log("PASS: native/declarative appearance \(expected.rawValue)")
 
+    guard require(await MacChrome.shared.checkPlayerHeaderSearch(), "integrated search behavior") else { return false }
     window.makeKeyAndOrderFront(nil)
+    var finishedEntering = window.styleMask.contains(.fullScreen)
+    var finishedExiting = false
+    let enteredObserver = NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in finishedEntering = true }
+    let exitedObserver = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in finishedExiting = true }
+    defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver) }
     if !window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
-    let entered = await waitUntil { window.styleMask.contains(.fullScreen) && !window.inLiveResize }
+    let entered = await waitUntil { finishedEntering }
     guard require(entered, "entered full screen") else { return false }
-    // Layout notifications can follow didEnterFullScreen. This bounded wait checks
-    // actual clipping, not simply toolbar.isVisible, which is true even when auto-hidden.
     let visible = await waitUntil {
-        for candidate in NSApp.windows where candidate.isVisible && candidate.alphaValue > 0 {
-            if let frame = candidate.contentView?.superview, let lcd = findLCD(frame),
-               !lcd.isHiddenOrHasHiddenAncestor, lcd.visibleRect.height >= lcd.bounds.height - 1 { return true }
-        }
-        return false
+        originalLCD.window === window && originalLCD.superview === originalHeader && originalHeader.isDescendant(of: window.contentView!) &&
+        !originalLCD.isHiddenOrHasHiddenAncestor && originalLCD.visibleRect.height >= originalLCD.bounds.height - 1
     }
     snapshot("fullscreen")
-    for candidate in NSApp.windows {
-        log("[check] full screen window: \(type(of: candidate)), visible=\(candidate.isVisible), alpha=\(candidate.alphaValue), frame=\(candidate.frame)")
-        if let frame = candidate.contentView?.superview, let lcd = findLCD(frame) {
-            log("[check] LCD host=\(type(of: candidate)), visible=\(lcd.visibleRect), hidden=\(lcd.isHiddenOrHasHiddenAncestor)")
-            if candidate !== window, let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
-                frame.cacheDisplay(in: frame.bounds, to: bitmap)
-                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/plr-final-fullscreen-toolbar.png"))
-            }
-        }
+    for candidate in NSApp.windows { log("[check] fullscreen host \(type(of: candidate)): visible=\(candidate.isVisible) alpha=\(candidate.alphaValue) frame=\(candidate.frame)") }
+    guard require(window.contentView?.subviews.contains(where: { $0.identifier?.rawValue == "windowGlass" && $0.window === window }) == true && !window.isOpaque, "translucent background remains in the content window"),
+          require(visible && window.toolbar == nil, "LCD remains in its original content header in full screen") else { return false }
+    // The hover-revealed title area has no NSToolbar to duplicate or reparent.
+    guard require(!NSApp.windows.contains(where: { String(describing: type(of: $0)) == "NSToolbarFullScreenWindow" && $0.isVisible && $0.alphaValue > 0.01 }), "no auxiliary fullscreen toolbar") else { return false }
+    guard require(window.isKeyWindow && NSApp.mainWindow === window, "fullscreen content window keeps keyboard and menu ownership") else { return false }
+    let fullScreenFrame = window.frame
+    if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 2, pressure: 1) {
+        originalHeader.mouseDown(with: event)
     }
-    if !visible, let currentRoot = window.contentView?.superview {
-        log("[check] full screen root=\(currentRoot), oldRoot=\(root), delegate=\(String(describing: window.delegate)), options=\(NSApp.presentationOptions.rawValue), toolbar=\(String(describing: window.toolbar?.isVisible))")
-        if let lcd = findLCD(currentRoot) {
-            var cursor: NSView? = lcd
-            while let view = cursor { log("[check] ancestor \(type(of: view)): frame=\(view.frame), bounds=\(view.bounds), visible=\(view.visibleRect), hidden=\(view.isHidden)"); cursor = view.superview }
-        }
-    }
-    guard require(visible, "LCD stays visible in full screen") else { return false }
-    window.toggleFullScreen(nil)
-    let exited = await waitUntil { !window.styleMask.contains(.fullScreen) && !window.inLiveResize }
+    guard require(window.frame == fullScreenFrame, "double click on fullscreen header cannot zoom the window") else { return false }
+    let lcdPosition = originalLCD.frame
+    originalHeader.needsLayout = true; originalHeader.layoutSubtreeIfNeeded()
+    guard require(originalLCD.superview === originalHeader && originalLCD.frame == lcdPosition, "full-screen resize restores the same header layout") else { return false }
+    guard require(NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil), "native fullscreen menu action finds the primary window") else { return false }
+    let exited = await waitUntil { finishedExiting }
     guard require(exited && playback.playing, "exit full screen preserves playback") else { return false }
-    log("PASS: enter/exit full screen keeps the toolbar player visible and audio playing")
+    guard require(originalLCD.window === window && originalLCD.superview === originalHeader && window.toolbar == nil && window.styleMask.contains(.titled), "exit full screen keeps content ownership and restores native titlebar") else { return false }
+    MacChrome.shared.checkPlayerToolbarLayout()
+    // Check after the next main-loop turn too: AppKit restores its saved style late.
+    await Task.yield()
+    guard require(window.styleMask.contains(.titled) && window.standardWindowButton(.closeButton)?.window === window, "native window buttons remain after final AppKit style restoration") else { return false }
+    log("PASS: enter/exit full screen keeps the content player stable without auxiliary toolbar, audio playing")
 
     window.performClose(nil)
     guard require(!window.isVisible && playback.playing && center.nowPlayingInfo != nil, "closing hides the window and preserves playback/system session") else { return false }
