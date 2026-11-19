@@ -145,6 +145,7 @@
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
             window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
+            player.checkVolumeSlider()
             player.setFullScreenLayout(true)
             precondition(playerUsesFullScreenSpacing, "Full screen removes the window-button clearance")
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {

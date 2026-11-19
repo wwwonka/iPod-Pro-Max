@@ -143,3 +143,12 @@ Les véritables boutons AppKit sont hébergés dans le header du contenu en mode
 Après l’entrée en plein écran, le transport passe d’un retrait de 78 pt plus son espace adaptatif à un retrait de 12 pt, sans espace adaptatif. Une translation Core Animation de 250 ms avec accélération/décélération anime ce changement ; la sortie déclenche le mouvement inverse. Une interruption repart de la position de présentation. Réduire les animations applique directement la position finale. Cette transition ne crée aucune horloge au repos.
 
 Les contrôles natifs vérifient l’aller-retour du retrait, la durée de l’animation, l’absence de clipping pendant les passes de disposition de sortie, ainsi que les actions réelles des boutons vert, réduire et fermer. Les intégrations clair/sombre contrôlent aussi la conservation de la lecture, la réouverture depuis le Dock et le maintien de la bande native invisible au survol.
+
+
+## Curseur de volume — 19 novembre 2026
+
+La cellule de volume utilise un bouton de 7 pt pour le dessin comme pour la course native. Le centre du bouton va exactement d’un bout à l’autre de la barre visible ; le rectangle de barre interne d’AppKit reste natif afin que son calcul de glissement conserve la même échelle. Le placement du volume contre le LCD utilise le rectangle visible, y compris dans le popover compact. Barre et bouton partagent le même axe vertical.
+
+Le bouton est dessiné avec une couleur grise solide, adaptée au thème et à l’activation de la fenêtre, ou la couleur d’accent solide ; son alpha reste à 1 pendant les fondus. La barre ne transparaît plus à travers. Le survol local du bouton (avec 3 pt de tolérance) déclenche immédiatement une échelle de 1 à 1,2 en 100 ms, puis le retour en 90 ms. La couleur garde le délai du rail ; l’appui passe à 1,1. Les interruptions repartent de la présentation courante, les mises à jour de géométrie ne modifient pas la taille de base, et Réduire les animations applique directement l’état cible. Le bouton agrandi n’est pas coupé aux extrémités.
+
+Le contrôle monté dans la vraie toolbar vérifie les valeurs 0/25/50/75/100 %, la coïncidence du centre avec les extrémités visibles, le déplacement via les méthodes de suivi natives de NSSliderCell, l’opacité de la couleur, l’échelle immédiate et l’annulation du survol. Les intégrations clair/sombre et les contrôles globaux/lecteur/audio passent après ce changement.

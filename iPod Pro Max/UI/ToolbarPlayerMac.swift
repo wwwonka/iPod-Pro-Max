@@ -46,6 +46,7 @@ import SwiftCrossUI
         transport.identifier = NSUserInterfaceItemIdentifier("playerTransport")
         transport.wantsLayer = true; transport.layer?.masksToBounds = false
         volumeView.identifier = NSUserInterfaceItemIdentifier("playerVolume")
+        volumeView.clipsToBounds = false
         lcd.identifier = NSUserInterfaceItemIdentifier("playerLCD")
         slider.controlSize = .small
         for (button, symbol, label, action, x) in [
@@ -157,9 +158,10 @@ import SwiftCrossUI
         let lcdWidth = min(460, max(280, header.bounds.width - 2 * minimumSide))
         let lcdX = (header.bounds.width - lcdWidth) / 2
         lcd.frame = NSRect(x: lcdX, y: 3, width: lcdWidth, height: 41)
-        let trackRight: CGFloat = compact ? 28 : 28 + ((slider.cell as? NSSliderCell)?.barRect(flipped: slider.isFlipped).maxX ?? slider.bounds.maxX)
+        let trackRight: CGFloat = compact ? 28 : 28 + slider.visibleTrackRect.maxX
         volumeView.frame.origin = NSPoint(x: lcdX - gap - trackRight, y: 6)
     }
+    func checkVolumeSlider() { slider.checkThumbInteraction() }
     func trafficToBackGap(in root: NSView) -> CGFloat {
         guard let window = playerControlWindow(for: transport), let zoom = window.standardWindowButton(.zoomButton) else { return 10 + transportLeadingSpace }
         let symbolRect = previous.cell?.imageRect(forBounds: previous.bounds) ?? previous.bounds
@@ -169,7 +171,7 @@ import SwiftCrossUI
     }
     func volumeRightEdge(in root: NSView) -> CGFloat {
         if compact { return mute.convert(mute.bounds, to: root).maxX }
-        let track = (slider.cell as? NSSliderCell)?.barRect(flipped: slider.isFlipped) ?? slider.bounds
+        let track = slider.visibleTrackRect
         return slider.convert(track, to: root).maxX
     }
     private func refresh() {
@@ -284,9 +286,23 @@ import SwiftCrossUI
 }
 
 @MainActor private final class PlayerVolumeCell: NSSliderCell {
-    override func drawKnob(_ knobRect: NSRect) {} // The small layer follows the native hit area.
+    static let thumbDiameter: CGFloat = 7
+    override var knobThickness: CGFloat { Self.thumbDiameter }
+    var visibleTrackRect: NSRect {
+        let bounds = controlView?.bounds ?? .zero
+        return NSRect(x: bounds.minX + Self.thumbDiameter / 2, y: bounds.midY - 1.5,
+                      width: max(0, bounds.width - Self.thumbDiameter), height: 3)
+    }
+    override func knobRect(flipped: Bool) -> NSRect {
+        let bar = visibleTrackRect
+        let fraction = CGFloat(min(1, max(0, (doubleValue - minValue) / max(0.001, maxValue - minValue))))
+        return NSRect(x: bar.minX + bar.width * fraction - Self.thumbDiameter / 2,
+                      y: bar.midY - Self.thumbDiameter / 2, width: Self.thumbDiameter, height: Self.thumbDiameter)
+    }
+    override func drawKnob(_ knobRect: NSRect) {} // Opaque layer, native cell tracking.
     override func drawBar(inside rect: NSRect, flipped: Bool) {
-        let bar = NSRect(x: rect.minX, y: rect.midY - 1.5, width: rect.width, height: 3)
+        // Keep barRect native: its metrics also drive AppKit's drag calculation.
+        let bar = visibleTrackRect
         NSColor.secondaryLabelColor.withAlphaComponent(0.2).setFill()
         NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
         var filled = bar
@@ -298,16 +314,22 @@ import SwiftCrossUI
 
 @MainActor final class PlayerVolumeSlider: NSSlider {
     private let thumb = CALayer()
+    private var thumbArea: NSTrackingArea?
     private var hoverWork: DispatchWorkItem?
     private var hovering = false
     private var accented = false
     private var pressing = false
+    private var targetScale: CGFloat = 1
     private var activationObservers: [NSObjectProtocol] = []
+    var visibleTrackRect: NSRect { (cell as? PlayerVolumeCell)?.visibleTrackRect ?? .zero }
+    private var thumbHitRect: NSRect { (cell as? NSSliderCell)?.knobRect(flipped: isFlipped).insetBy(dx: -3, dy: -3) ?? .zero }
     override init(frame: NSRect) {
         super.init(frame: frame)
         let volumeCell = PlayerVolumeCell(); volumeCell.minValue = 0; volumeCell.maxValue = 1
-        cell = volumeCell; wantsLayer = true; layer?.addSublayer(thumb)
-        thumb.cornerRadius = 3.5
+        cell = volumeCell; wantsLayer = true; clipsToBounds = false
+        layer?.masksToBounds = false; layer?.addSublayer(thumb)
+        thumb.cornerRadius = PlayerVolumeCell.thumbDiameter / 2
+        thumb.opacity = 1
     }
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) { super.draw(dirtyRect); positionThumb() }
@@ -316,46 +338,81 @@ import SwiftCrossUI
         guard let cell = cell as? NSSliderCell else { return }
         let rect = cell.knobRect(flipped: isFlipped)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        thumb.frame = NSRect(x: rect.midX - 3.5, y: rect.midY - 3.5, width: 7, height: 7)
+        thumb.bounds = NSRect(x: 0, y: 0, width: PlayerVolumeCell.thumbDiameter, height: PlayerVolumeCell.thumbDiameter)
+        thumb.position = NSPoint(x: rect.midX, y: rect.midY)
         CATransaction.commit()
+        updateThumbArea()
+        if hovering && !pressing, let window, !thumbHitRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) { setHovering(false) }
         updateThumb(animated: false)
     }
     private func updateThumb(animated: Bool = true) {
         let active = playerControlWindow(for: self)?.isKeyWindow == true && isEnabled
-        let color = active && (accented || pressing) ? NSColor.controlAccentColor : NSColor.secondaryLabelColor.withAlphaComponent(active ? 0.8 : 0.4)
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let gray: CGFloat = dark ? (active ? 0.66 : 0.44) : (active ? 0.43 : 0.62)
+        let color = active && (accented || pressing) ? NSColor.controlAccentColor.withAlphaComponent(1) : NSColor(white: gray, alpha: 1)
         let saved = NSAppearance.current; NSAppearance.current = effectiveAppearance
         let target = color.cgColor; NSAppearance.current = saved
-        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            let fade = CABasicAnimation(keyPath: "backgroundColor")
-            fade.fromValue = thumb.presentation()?.backgroundColor ?? thumb.backgroundColor; fade.toValue = target
-            fade.duration = RailButton.hoverFadeIn; fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            thumb.add(fade, forKey: "hoverTint")
+        let motion = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if thumb.backgroundColor != target {
+            if motion {
+                let fade = CABasicAnimation(keyPath: "backgroundColor")
+                fade.fromValue = thumb.presentation()?.backgroundColor ?? thumb.backgroundColor; fade.toValue = target
+                fade.duration = RailButton.hoverFadeIn; fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                thumb.add(fade, forKey: "hoverTint")
+            } else { thumb.removeAnimation(forKey: "hoverTint") }
+            CATransaction.begin(); CATransaction.setDisableActions(true); thumb.backgroundColor = target; CATransaction.commit()
         }
-        CATransaction.begin(); CATransaction.setDisableActions(true); thumb.backgroundColor = target; CATransaction.commit()
-    }
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeInKeyWindow, .mouseEnteredAndExited], owner: self))
-    }
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true; hoverWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.hovering, playerControlWindow(for: self)?.isKeyWindow == true else { return }
-            self.accented = true; self.updateThumb()
+        let scale: CGFloat = active ? (pressing ? 1.1 : hovering ? 1.2 : 1) : 1
+        if scale != targetScale {
+            let previous = thumb.presentation()?.transform.m11 ?? thumb.transform.m11
+            targetScale = scale
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            thumb.transform = CATransform3DMakeScale(scale, scale, 1)
+            CATransaction.commit()
+            if motion {
+                let animation = CABasicAnimation(keyPath: "transform.scale")
+                animation.fromValue = previous; animation.toValue = scale
+                animation.duration = hovering ? 0.1 : 0.09
+                animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                thumb.add(animation, forKey: "thumbScale")
+            } else { thumb.removeAnimation(forKey: "thumbScale") }
         }
-        hoverWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + RailButton.hoverDelay, execute: work)
     }
-    override func mouseExited(with event: NSEvent) { hoverWork?.cancel(); hovering = false; accented = false; updateThumb() }
+    private func updateThumbArea() {
+        let rect = thumbHitRect
+        guard thumbArea?.rect != rect else { return }
+        if let thumbArea { removeTrackingArea(thumbArea) }
+        let area = NSTrackingArea(rect: rect, options: [.activeInKeyWindow, .mouseEnteredAndExited, .mouseMoved, .enabledDuringMouseDrag], owner: self)
+        thumbArea = area; addTrackingArea(area)
+    }
+    override func updateTrackingAreas() { super.updateTrackingAreas(); updateThumbArea() }
+    private func setHovering(_ value: Bool) {
+        guard hovering != value else { return }
+        hovering = value; hoverWork?.cancel()
+        if value {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.hovering, playerControlWindow(for: self)?.isKeyWindow == true else { return }
+                self.accented = true; self.updateThumb()
+            }
+            hoverWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + RailButton.hoverDelay, execute: work)
+        } else { accented = false }
+        updateThumb()
+    }
+    override func mouseEntered(with event: NSEvent) { setHovering(true) }
+    override func mouseMoved(with event: NSEvent) { setHovering(thumbHitRect.contains(convert(event.locationInWindow, from: nil))) }
+    override func mouseExited(with event: NSEvent) { setHovering(false) }
     override func mouseDown(with event: NSEvent) {
         hoverWork?.cancel(); pressing = true; updateThumb()
         super.mouseDown(with: event)
-        pressing = false; updateThumb()
+        pressing = false
+        if let window { setHovering(thumbHitRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))) }
+        updateThumb()
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateThumb(animated: false) }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         activationObservers.forEach(NotificationCenter.default.removeObserver); activationObservers.removeAll()
-        if let window {
+        if window != nil {
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
                 activationObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated {
@@ -373,6 +430,29 @@ import SwiftCrossUI
     override func scrollWheel(with event: NSEvent) {
         doubleValue = min(1, max(0, doubleValue + Double(event.scrollingDeltaY) * 0.01))
         sendAction(action, to: target)
+    }
+    func checkThumbInteraction() {
+        guard let cell = cell as? NSSliderCell else { preconditionFailure("Volume cell missing") }
+        let previousValue = doubleValue
+        defer { doubleValue = previousValue; setHovering(false); positionThumb() }
+        let bar = visibleTrackRect
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1] {
+            doubleValue = fraction; positionThumb()
+            precondition(abs(thumb.position.x - (bar.minX + bar.width * fraction)) < 0.01 && abs(thumb.position.y - bar.midY) < 0.01)
+            precondition(thumb.opacity == 1 && thumb.backgroundColor?.alpha == 1, "Volume thumb must occlude the track")
+            doubleValue = 0
+            let start = NSPoint(x: bar.minX, y: bar.midY), end = NSPoint(x: bar.minX + bar.width * fraction, y: bar.midY)
+            _ = cell.startTracking(at: start, in: self)
+            _ = cell.continueTracking(last: start, current: end, in: self)
+            cell.stopTracking(last: start, current: end, in: self, mouseIsUp: true)
+            precondition(abs(doubleValue - fraction) < 0.001, "Native drag and visible track must use the same travel")
+        }
+        setHovering(true)
+        precondition(targetScale == 1.2, "Knob proximity scales immediately")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { precondition(thumb.animation(forKey: "thumbScale")?.duration == 0.1) }
+        setHovering(false)
+        precondition(targetScale == 1 && !accented, "Hover-out restores the size and cancels delayed tint")
+        log("PASS: volume endpoints and native quarter-step drags agree; opaque thumb; immediate 100/90 ms reversible hover scale")
     }
     deinit { hoverWork?.cancel(); activationObservers.forEach(NotificationCenter.default.removeObserver) }
 }
