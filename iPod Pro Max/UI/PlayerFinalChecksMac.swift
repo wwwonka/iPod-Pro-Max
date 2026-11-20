@@ -93,6 +93,7 @@ import MediaKit
     for host in NSApp.windows where String(describing: type(of: host)) == "NSToolbarFullScreenWindow" {
         let alpha = host.alphaValue
         host.alphaValue = 1
+        guard require(MacChrome.shared.fullScreenTrafficLightsVisible, "menu-bar reveal exposes clickable window buttons in the content header") else { return false }
         host.contentView?.isHidden = false
         host.ignoresMouseEvents = false
         guard require(host.contentView?.isHidden == true && !host.isOpaque && host.backgroundColor.alphaComponent == 0 && host.ignoresMouseEvents,
@@ -118,7 +119,9 @@ import MediaKit
     let lcdPosition = originalLCD.frame
     originalHeader.needsLayout = true; originalHeader.layoutSubtreeIfNeeded()
     guard require(originalLCD.superview === originalHeader && originalLCD.frame == lcdPosition, "full-screen resize restores the same header layout") else { return false }
-    guard require(NSApp.sendAction(#selector(NSWindow.toggleFullScreen(_:)), to: nil, from: nil), "native fullscreen menu action finds the primary window") else { return false }
+    if let host = NSApp.windows.first(where: { String(describing: type(of: $0)) == "NSToolbarFullScreenWindow" }) { host.alphaValue = 1 }
+    guard require(MacChrome.shared.fullScreenTrafficLightsVisible, "window buttons remain available on reveal") else { return false }
+    MacChrome.shared.revealedFullScreenZoomButton?.performClick(nil)
     let exited = await waitUntil { finishedExiting }
     guard require(exited && playback.playing, "exit full screen preserves playback") else { return false }
     guard require(originalLCD.window === window && originalLCD.superview === originalHeader && window.toolbar == nil && window.styleMask.contains(.titled), "exit full screen keeps content ownership and restores native titlebar") else { return false }

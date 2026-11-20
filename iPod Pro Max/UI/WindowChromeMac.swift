@@ -114,7 +114,7 @@
                     for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
                         guard let button = window.standardWindowButton(type) else { preconditionFailure("Native window control missing") }
                         let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
-                        precondition(abs(center.x - (20 + CGFloat(index) * 20)) <= 0.5 && abs(root.bounds.height - center.y - 22) <= 0.5, "Traffic lights retain the reference offsets")
+                        precondition(abs(center.x - (20 + CGFloat(index) * 18)) <= 0.5 && abs(root.bounds.height - center.y - 22) <= 0.5, "Traffic lights retain the reference offsets")
                     }
                     let controls: [NSView] = player.transport.subviews + player.volumeView.subviews + [queueButton]
                     for control in controls where !control.isHidden && control.window != nil {
@@ -124,11 +124,12 @@
                 }
                 if let root = window.contentView?.superview {
                     let lcdRect = player.lcd.convert(player.lcd.bounds, to: root)
-                    let leftGap = lcdRect.minX - player.volumeRightEdge(in: root)
+                    let leftGap = player.nextToVolumeGap(in: root)
                     let reference = player.trafficToBackGap(in: root)
-                    log(String(format: "Toolbar spacing %.0f pt: slider/LCD %.2f, traffic lights/back %.2f", width, leftGap, reference))
-                    precondition(abs(leftGap - reference) <= 1, "Slider/LCD margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
+                    log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
+                    precondition(abs(leftGap - reference) <= 1, "Next/volume margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
+                precondition(player.route.bounds.size == NSSize(width: 39, height: 26) && abs(player.route.frame.maxX + 8 - player.lcd.frame.minX) < 0.1, "AirPlay mirrors Queue outside the LCD")
                 precondition(window.toolbar == nil && player.lcd.window === window, "Player stays in the content window without NSToolbar")
                 if let root = window.contentView?.superview {
                     for control in player.transport.subviews + [queueButton] {
@@ -138,7 +139,7 @@
                     }
                 }
                 measurements.append((ProcessInfo.processInfo.systemUptime - started) * 1000)
-                precondition(abs(player.transportLeadingSpace - min(18, max(0, (width - 900) / 340 * 18))) < 0.1)
+                precondition(abs(player.transportLeadingSpace - min(8, max(0, (width - 900) / 340 * 8))) < 0.1)
                 precondition(queueButton.bounds.size == NSSize(width: 39, height: 26), "Queue matches native toolbar plate")
                 precondition(abs(player.lcd.frame.maxY - (player.lcd.superview?.bounds.height ?? 0)) < 0.5, "LCD stays anchored at the top")
                 precondition(player.lcd.frame.width >= 280 && player.lcd.frame.width <= 460)
@@ -152,7 +153,7 @@
                 precondition(player.transport.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Spacing uses a bounded native animation")
             }
             player.setFullScreenLayout(false)
-            precondition(player.transport.frame.minX == 78 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
+            precondition(player.transport.frame.minX == 74 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
             log("PASS: playback clearance animates in/out over 250 ms and restores its windowed position")
             measurements.sort()
             log(String(format: "PASS: toolbar resize 820–1600 pt, LCD bounds; synchronous layout median %.2f ms, max %.2f ms", measurements[measurements.count / 2], measurements.last ?? 0))
@@ -179,13 +180,35 @@
             guard !searchField.isHidden && searchButton.isHidden && searchField.currentEditor() != nil else { return false }
             searchField.stringValue = "new query"
             controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
-            guard query == "new query" else { return false }
+            log("[search check] focused=\(searchField.editing), editor=\(searchField.currentEditor() != nil), queryDelivered=\(query == "new query")")
+            guard query == "new query" && searchField.editing else { return false }
+            log("[search check] appearance field=\(searchField.effectiveAppearance.name.rawValue), editor=\(String(describing: (searchField.currentEditor() as? NSView)?.effectiveAppearance.name.rawValue))")
+            if let root = searchField.superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
+                let savedAppearance = NSAppearance.current
+                NSAppearance.current = root.effectiveAppearance
+                root.cacheDisplay(in: root.bounds, to: bitmap)
+                NSAppearance.current = savedAppearance
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/plr-search-focused-header.png"))
+            }
+            if let editor = searchField.currentEditor() as? NSTextView {
+                editor.string = String(repeating: "long search query ", count: 30)
+                editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+                searchField.revealCaret()
+                log("[search check] long query visible=\(editor.visibleRect), bounds=\(editor.bounds), selected=\(editor.selectedRange())")
+                guard editor.visibleRect.maxX > 170 else { return false }
+                let handled = self.control(searchField, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+                log("[search check] escape handled=\(handled), editor=\(searchField.currentEditor() != nil), focused=\(searchField.editing)")
+                guard handled && searchField.currentEditor() == nil && !searchField.editing else { return false }
+            } else { return false }
+            window.makeFirstResponder(searchField); searchField.selectText(nil); searchField.setEditing(true)
+            guard let outside = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) else { return false }
+            guard handleSearchPointerDown(outside) === outside && searchField.currentEditor() == nil && !searchField.editing else { return false }
             searchField.stringValue = ""
             controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: searchField))
             guard searchField.isHidden && !searchButton.isHidden else { return false }
             setSearch(owner: owner, visible: false, prompt: "Search", text: "", onChange: { _ in })
             guard searchField.isHidden && searchButton.isHidden else { return false }
-            log("PASS: integrated native search collapses, focuses, forwards edits and releases page ownership")
+            log("PASS: search focuses with scale, scrolls its long query to the caret, defocuses on Escape/outside clicks and releases page ownership")
             return true
         }
         func setPlaybackSelection(rows: [TrackRow], selectedIDs: [String], onStart: @escaping (TrackRow, [TrackRow]) -> Void) {
@@ -321,9 +344,26 @@
         private var observedNativeButtonViews: [NSView] = []
         private var hostedTrafficLights: [NSButton] = []
         private var hidingTrafficLights = false
+        private var nativeTitlebarRevealed = false
+        private var holdingTrafficLightReveal = false
+        private var trafficLightArea: NSTrackingArea?
+        var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
+        var fullScreenTrafficLightsVisible: Bool { player.fullScreenLayout && !hidingTrafficLights && hostedTrafficLights.count == 3 && hostedTrafficLights.allSatisfy { !$0.isHidden } }
+        private func updateFullScreenTrafficLights() {
+            guard player.fullScreenLayout else { return }
+            let visible = nativeTitlebarRevealed || holdingTrafficLightReveal
+            hidingTrafficLights = !visible
+            player.setTrafficLightsRevealed(visible)
+            relayoutTitleArea?()
+        }
+        @objc func mouseEntered(with event: NSEvent) {
+            holdingTrafficLightReveal = player.fullScreenLayout && !hidingTrafficLights
+            updateFullScreenTrafficLights()
+        }
+        @objc func mouseExited(with event: NSEvent) { holdingTrafficLightReveal = false; updateFullScreenTrafficLights() }
         private(set) var exitButtonLayoutSamples = 0
         private(set) var exitButtonClippedSamples = 0
-        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == 12 }
+        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == (player.trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) }
         private func observeNativeButtonFrames(_ views: [NSView], onChange: @escaping () -> Void) {
             guard views.map(ObjectIdentifier.init) != observedNativeButtonViews.map(ObjectIdentifier.init) else { return }
             nativeButtonFrameObservers.forEach(NotificationCenter.default.removeObserver)
@@ -355,10 +395,17 @@
                 content.observe(\.isHidden, options: [.new]) { [weak self] view, _ in
                     MainActor.assumeIsolated { if self?.suppressedTitlebar != nil && !view.isHidden { view.isHidden = true } }
                 },
+                host.observe(\.alphaValue, options: [.new]) { [weak self] window, _ in
+                    MainActor.assumeIsolated {
+                        self?.nativeTitlebarRevealed = window.alphaValue > 0.05
+                        self?.updateFullScreenTrafficLights()
+                    }
+                },
                 host.observe(\.ignoresMouseEvents, options: [.new]) { [weak self] window, _ in
                     MainActor.assumeIsolated { if self?.suppressedTitlebar != nil && !window.ignoresMouseEvents { window.ignoresMouseEvents = true } }
                 }
             ]
+            nativeTitlebarRevealed = host.alphaValue > 0.05
             content.isHidden = true
             host.isOpaque = false; host.backgroundColor = .clear; host.ignoresMouseEvents = true
         }
@@ -395,8 +442,9 @@
                 self.observeNativeButtonFrames(self.hostedTrafficLights, onChange: center)
                 for (index, button) in self.hostedTrafficLights.enumerated() {
                     if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
+                    button.autoresizingMask = []
                     button.isHidden = self.hidingTrafficLights
-                    button.setFrameOrigin(NSPoint(x: 20 + CGFloat(index) * 20 - button.bounds.width / 2,
+                    button.setFrameOrigin(NSPoint(x: 20 + CGFloat(index) * 18 - button.bounds.width / 2,
                                                   y: header.bounds.height - 22 - button.bounds.height / 2))
                     if exitingFullScreen && !button.isHiddenOrHasHiddenAncestor {
                         self.exitButtonLayoutSamples += 1
@@ -406,11 +454,11 @@
                 self.layoutPlayerHeader()
             }
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { self.hidingTrafficLights = true; center() }
+                MainActor.assumeIsolated { self.hidingTrafficLights = true; self.nativeTitlebarRevealed = false; self.holdingTrafficLightReveal = false; center() }
             })
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated {
-                    exitingFullScreen = true; self.hidingTrafficLights = false
+                    exitingFullScreen = true; self.hidingTrafficLights = false; self.holdingTrafficLightReveal = false
                     self.exitButtonLayoutSamples = 0; self.exitButtonClippedSamples = 0
                     self.player.setFullScreenLayout(false)
                     center()
@@ -422,6 +470,7 @@
                         if name == NSWindow.didEnterFullScreenNotification {
                             self.suppressFullScreenTitlebar(originalContainer, in: window)
                             self.player.setFullScreenLayout(true)
+                            self.updateFullScreenTrafficLights()
                         }
                         if name == NSWindow.didExitFullScreenNotification {
                             exitingFullScreen = false; self.hidingTrafficLights = false
@@ -441,7 +490,7 @@
 
         private var playerHeader: PlayerHeaderMac?
         private var headerContentObservation: NSKeyValueObservation?
-        private let searchField = NSSearchField()
+        private let searchField = PlayerSearchField()
         private let searchButton = ToolbarPlaybackButton()
         private var searchOwner: AnyObject?
         private var onSearchChange: (String) -> Void = { _ in }
@@ -496,12 +545,19 @@
             // The field has to be on screen before it can take the focus.
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
-                    guard let self else { return }; self.window?.makeFirstResponder(self.searchField); self.searchField.selectText(nil)
+                    guard let self else { return }; self.window?.makeFirstResponder(self.searchField); self.searchField.selectText(nil); self.searchField.setEditing(true)
                 }
             }
         }
 
+        func controlTextDidBeginEditing(_ notification: Notification) { searchField.setEditing(true) }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard control === searchField, commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+            window?.makeFirstResponder(nil); searchField.setEditing(false)
+            return true
+        }
         func controlTextDidEndEditing(_ notification: Notification) {
+            searchField.setEditing(false)
             guard searchExpanded, let field = notification.object as? NSSearchField, field.stringValue.isEmpty else { return }
             searchExpanded = false
             updateSearchVisibility()
@@ -511,7 +567,7 @@
         @available(macOS 11.0, *)
         @objc func findInPage(_ sender: Any?) {
             if searchCollapsed { expandSearch(nil); return }
-            window?.makeFirstResponder(searchField); searchField.selectText(nil)
+            window?.makeFirstResponder(searchField); searchField.selectText(nil); searchField.setEditing(true)
         }
 
         @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -520,6 +576,7 @@
         }
 
         private var findMonitor: Any?
+        private var outsideSearchMonitor: Any?
 
         /// ⌘F works whatever the menus hold (the Edit menu can be rebuilt after we add to it): the key
         /// is caught here while a page with a search field is shown, and selects the integrated search field.
@@ -551,9 +608,18 @@
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
             onSearchChange(field.stringValue)
+            searchField.revealCaret()
+            DispatchQueue.main.async { [weak self] in self?.searchField.revealCaret() }
         }
 
         // MARK: Integrated player header
+
+        private func handleSearchPointerDown(_ event: NSEvent) -> NSEvent {
+            guard event.window === window, searchField.editing, searchField.currentEditor() != nil else { return event }
+            let fieldRect = searchField.convert(searchField.bounds, to: nil).insetBy(dx: -4, dy: -2)
+            if !fieldRect.contains(event.locationInWindow) { window?.makeFirstResponder(nil); searchField.setEditing(false) }
+            return event
+        }
 
         private func installPlayerHeader(in window: NSWindow) {
             guard let content = window.contentView else { return }
@@ -562,6 +628,8 @@
             header.autoresizingMask = [.width, .minYMargin]
             header.onLayout = { [weak self] in self?.layoutPlayerHeader() }
             playerHeader = header
+            let trafficArea = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self)
+            header.addTrackingArea(trafficArea); trafficLightArea = trafficArea
             queueButton.setSymbol("list.bullet", size: 14)
             queueButton.isBordered = false; queueButton.target = self; queueButton.action = #selector(showPlayerQueue)
             queueButton.setAccessibilityLabel("Up Next"); queueButton.toolTip = "Up Next"
@@ -570,11 +638,17 @@
             searchField.delegate = self; searchField.sendsSearchStringImmediately = true
             if #available(macOS 11, *) { searchField.controlSize = .large }
             searchField.setAccessibilityLabel("Search")
+            if outsideSearchMonitor == nil {
+                outsideSearchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                    MainActor.assumeIsolated { _ = self?.handleSearchPointerDown(event) }
+                    return event
+                }
+            }
             searchButton.setSymbol("magnifyingglass", size: 15)
             searchButton.isBordered = false; searchButton.target = self; searchButton.action = #selector(expandSearch(_:))
             searchButton.setAccessibilityLabel("Search"); searchButton.toolTip = "Search"
             searchField.isHidden = searchOwner == nil; searchButton.isHidden = true
-            for view in [player.transport, player.volumeView, player.lcd, queueButton, searchField, searchButton] { header.addSubview(view) }
+            for view in [player.transport, player.volumeView, player.route, player.lcd, queueButton, searchField, searchButton] { header.addSubview(view) }
             content.addSubview(header, positioned: .above, relativeTo: nil)
             // inspectWindow runs before the backend installs its final content root.
             // Follow that replacement, rather than attaching to a discarded placeholder.

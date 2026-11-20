@@ -20,6 +20,7 @@ import SwiftCrossUI
 @MainActor final class ToolbarPlayerMac: NSObject {
     let transport = ToolbarControlGroup(frame: NSRect(x: 0, y: 0, width: 90, height: 32))
     let volumeView = ToolbarControlGroup(frame: NSRect(x: 0, y: 0, width: 100, height: 32))
+    let route = ToolbarRouteControl(frame: NSRect(x: 0, y: 0, width: 39, height: 26))
     let lcd = PlayerLCD(frame: NSRect(x: 0, y: 0, width: 280, height: 44))
     var selectionRows: [TrackRow] = [] { didSet { refresh() } }
     var selectedIDs: [String] = [] { didSet { refresh() } }
@@ -34,8 +35,11 @@ import SwiftCrossUI
     private let popover = NSPopover()
     private var subscription: SwiftCrossUI.Cancellable?
     private var keyMonitor: Any?
+    private var speakerImages: [Int: NSImage] = [:]
+    private var speakerLevel = -1
     private var compact = false
     private(set) var fullScreenLayout = false
+    private(set) var trafficLightsRevealed = false
     private(set) var transportLeadingSpace: CGFloat = 0
     private(set) var volumeTargetGap: CGFloat = 28
     private var selection: TrackRow? { selectionRows.first { selectedIDs.contains($0.id) && $0.path != nil } }
@@ -59,7 +63,10 @@ import SwiftCrossUI
         }
         previous.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position - 5) }
         next.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position + 5) }
-        for button in [previous, play, next] { button.animatesPress = true; button.usesElevation = true }
+        for button in [previous, play, next] {
+            button.animatesPress = true; button.usesElevation = true
+            (button.cell as? NSButtonCell)?.highlightsBy = []
+        }
         play.drawsSymbolTransition = true
         configure(mute, symbol: "speaker.wave.2.fill", label: "Mute", action: #selector(volumeButton))
         mute.frame = NSRect(x: 0, y: 0, width: 28, height: 32)
@@ -67,12 +74,6 @@ import SwiftCrossUI
         slider.target = self; slider.action = #selector(changeVolume)
         slider.isContinuous = true; slider.setAccessibilityLabel("App volume")
         volumeView.addSubview(slider)
-        if #available(macOS 10.15, *) {
-            let route = ToolbarRoutePicker(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
-            route.isRoutePickerButtonBordered = false
-            route.identifier = NSUserInterfaceItemIdentifier("audioRoute")
-            lcd.addSubview(route)
-        }
         let content = NSViewController()
         content.view = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 40))
         popover.contentViewController = content; popover.behavior = .transient
@@ -117,7 +118,7 @@ import SwiftCrossUI
     }
     func updateWidth() {
         let windowWidth = playerControlWindow(for: transport)?.frame.width ?? 1240
-        transportLeadingSpace = fullScreenLayout ? 0 : min(18, max(0, (windowWidth - 900) / 340 * 18))
+        transportLeadingSpace = fullScreenLayout ? 0 : min(8, max(0, (windowWidth - 900) / 340 * 8))
         for (index, button) in transport.subviews.enumerated() {
             button.setFrameOrigin(NSPoint(x: transportLeadingSpace + CGFloat(index) * 30, y: button.frame.minY))
         }
@@ -134,34 +135,50 @@ import SwiftCrossUI
     }
     func setFullScreenLayout(_ enabled: Bool) {
         guard fullScreenLayout != enabled else { return }
+        animateTransportPlacement { self.fullScreenLayout = enabled; if !enabled { self.trafficLightsRevealed = false } }
+    }
+    func setTrafficLightsRevealed(_ revealed: Bool) {
+        guard trafficLightsRevealed != revealed else { return }
+        animateTransportPlacement { self.trafficLightsRevealed = revealed }
+    }
+    private func animateTransportPlacement(_ change: () -> Void) {
         let presentationOffset = transport.layer?.presentation()?.transform.m41 ?? 0
         let oldX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0) + presentationOffset
-        fullScreenLayout = enabled
+        change()
         if let header = transport.superview { layout(in: header) }
         let newX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0)
         transport.layer?.removeAnimation(forKey: "fullScreenSpacing")
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, abs(oldX - newX) > 0.5 else { return }
         let movement = CABasicAnimation(keyPath: "transform.translation.x")
-        movement.fromValue = oldX - newX; movement.toValue = 0
-        movement.duration = 0.25
+        movement.fromValue = oldX - newX; movement.toValue = 0; movement.duration = 0.25
         movement.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         transport.layer?.add(movement, forKey: "fullScreenSpacing")
     }
     /// Geometry is owned by the content header; AppKit never reparents these views.
     func layout(in header: NSView) {
         updateWidth()
-        transport.frame.origin = NSPoint(x: fullScreenLayout ? 12 : 78, y: 6)
-        let normalLeading = min(18, max(0, ((header.window?.frame.width ?? 1240) - 900) / 340 * 18))
-        let gap = header.window?.styleMask.contains(.fullScreen) == true ? 18 + normalLeading : trafficToBackGap(in: header)
+        transport.frame.origin = NSPoint(x: fullScreenLayout ? (trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) : 74, y: 6)
+        let gap = fullScreenLayout ? 18 : trafficToBackGap(in: header)
         volumeTargetGap = gap
+        let nextInk = next.cell?.imageRect(forBounds: next.bounds) ?? next.bounds
+        let nextRight = next.convert(nextInk, to: header).maxX
+        let muteInk = mute.cell?.imageRect(forBounds: mute.bounds) ?? mute.bounds
+        volumeView.frame.origin = NSPoint(x: nextRight + gap - muteInk.minX, y: 6)
         let minimumSide = 80 + transport.bounds.width + volumeView.bounds.width + 32
         let lcdWidth = min(460, max(280, header.bounds.width - 2 * minimumSide))
-        let lcdX = (header.bounds.width - lcdWidth) / 2
+        let lcdX = max((header.bounds.width - lcdWidth) / 2, volumeView.frame.maxX + 59)
         lcd.frame = NSRect(x: lcdX, y: 3, width: lcdWidth, height: 41)
-        let trackRight: CGFloat = compact ? 28 : 28 + slider.visibleTrackRect.maxX
-        volumeView.frame.origin = NSPoint(x: lcdX - gap - trackRight, y: 6)
+        route.frame = NSRect(x: lcdX - 47, y: 9, width: 39, height: 26)
     }
-    func checkVolumeSlider() { slider.checkThumbInteraction() }
+    func nextToVolumeGap(in root: NSView) -> CGFloat {
+        let nextInk = next.cell?.imageRect(forBounds: next.bounds) ?? next.bounds
+        let muteInk = mute.cell?.imageRect(forBounds: mute.bounds) ?? mute.bounds
+        return mute.convert(muteInk, to: root).minX - next.convert(nextInk, to: root).maxX
+    }
+    func checkVolumeSlider() {
+        slider.checkThumbInteraction(); route.checkNativeControl()
+        for level in 0...3 { precondition(speakerImage(level).size == NSSize(width: 20, height: 16), "Speaker horn canvas stays fixed at all volumes") }
+    }
     func trafficToBackGap(in root: NSView) -> CGFloat {
         guard let window = playerControlWindow(for: transport), let zoom = window.standardWindowButton(.zoomButton) else { return 10 + transportLeadingSpace }
         let symbolRect = previous.cell?.imageRect(forBounds: previous.bounds) ?? previous.bounds
@@ -175,18 +192,37 @@ import SwiftCrossUI
         return slider.convert(track, to: root).maxX
     }
     private func refresh() {
-        if #available(macOS 10.15, *), let route = lcd.subviews.first(where: { $0 is AVRoutePickerView }) as? AVRoutePickerView {
-            route.player = (controller.activeEngine as? PlatformAudioEngine)?.routePlayer
-        }
+        route.picker.player = (controller.activeEngine as? PlatformAudioEngine)?.routePlayer
         previous.isEnabled = controller.track != nil; next.isEnabled = controller.track != nil
         play.isEnabled = controller.track != nil || selection != nil
         play.setSymbol(controller.playing ? "pause.fill" : "play.fill", size: 19)
         play.setAccessibilityLabel(controller.playing ? "Pause" : "Play")
         slider.doubleValue = controller.volume
-        let symbol = controller.volume == 0 ? "speaker.slash.fill" : controller.volume < 0.33 ? "speaker.wave.1.fill" : controller.volume < 0.67 ? "speaker.wave.2.fill" : "speaker.wave.3.fill"
-        mute.image = systemSymbol(symbol, pointSize: 12)
+        let level = controller.volume == 0 ? 0 : controller.volume < 0.33 ? 1 : controller.volume < 0.67 ? 2 : 3
+        if level != speakerLevel { speakerLevel = level; mute.image = speakerImage(level) }
         mute.setAccessibilityLabel(controller.volume == 0 ? "Unmute" : "Mute")
         lcd.refresh()
+    }
+    private func speakerImage(_ level: Int) -> NSImage {
+        if let cached = speakerImages[level] { return cached }
+        let horn = systemSymbol("speaker.fill", pointSize: 12)
+        let result = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { _ in
+            horn?.draw(in: NSRect(x: 0, y: 3, width: 9, height: 10))
+            NSColor.black.setStroke()
+            if level == 0 {
+                let cross = NSBezierPath(); cross.lineWidth = 1.1; cross.lineCapStyle = .round
+                cross.move(to: NSPoint(x: 12, y: 6)); cross.line(to: NSPoint(x: 16, y: 10))
+                cross.move(to: NSPoint(x: 12, y: 10)); cross.line(to: NSPoint(x: 16, y: 6)); cross.stroke()
+            } else {
+                for wave in 0..<level {
+                    let path = NSBezierPath(); path.lineWidth = 1.15; path.lineCapStyle = .round
+                    path.appendArc(withCenter: NSPoint(x: 7, y: 8), radius: CGFloat(4 + wave * 3), startAngle: -42, endAngle: 42)
+                    path.stroke()
+                }
+            }
+            return true
+        }
+        result.isTemplate = true; speakerImages[level] = result; return result
     }
     @objc func toggle() {
         if controller.track != nil { controller.toggle() }
@@ -279,15 +315,12 @@ import SwiftCrossUI
         CATransaction.commit()
         content.frame = bounds
         content.needsLayout = true
-        if let route = subviews.first(where: { $0 is AVRoutePickerView }) {
-            route.frame = NSRect(x: bounds.width - 27, y: (bounds.height - 18) / 2 - 1.5, width: 18, height: 18)
-            route.setBoundsSize(NSSize(width: 24, height: 24))
-        }
+
     }
 }
 
 @MainActor private final class PlayerVolumeCell: NSSliderCell {
-    static let thumbDiameter: CGFloat = 12
+    static let thumbDiameter: CGFloat = 7
     override var knobThickness: CGFloat { Self.thumbDiameter }
     var visibleTrackRect: NSRect {
         let bounds = controlView?.bounds ?? .zero
@@ -307,15 +340,15 @@ import SwiftCrossUI
         let dark = controlView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         NSColor(white: dark ? 0.06 : 0.55, alpha: dark ? 0.8 : 0.3).setFill()
         NSBezierPath(roundedRect: bar, xRadius: 2, yRadius: 2).fill()
-        var filled = bar
-        filled.size.width *= CGFloat((doubleValue - minValue) / max(0.001, maxValue - minValue))
-        NSColor(white: dark ? 0.7 : 0.46, alpha: 1).setFill()
-        NSBezierPath(roundedRect: filled, xRadius: 2, yRadius: 2).fill()
+
     }
 }
 
 @MainActor final class PlayerVolumeSlider: NSSlider {
     private let thumb = CALayer()
+    private let volumeFill = CALayer()
+    private var animateNextValueChange = false
+    private var lastDrawnValue = Double.nan
     private var thumbArea: NSTrackingArea?
     private var hoverWork: DispatchWorkItem?
     private var hovering = false
@@ -329,7 +362,9 @@ import SwiftCrossUI
         super.init(frame: frame)
         let volumeCell = PlayerVolumeCell(); volumeCell.minValue = 0; volumeCell.maxValue = 1
         cell = volumeCell; wantsLayer = true; clipsToBounds = false
-        layer?.masksToBounds = false; layer?.addSublayer(thumb)
+        layer?.masksToBounds = false
+        volumeFill.anchorPoint = CGPoint(x: 0, y: 0.5); volumeFill.cornerRadius = 2
+        layer?.addSublayer(volumeFill); layer?.addSublayer(thumb)
         thumb.cornerRadius = PlayerVolumeCell.thumbDiameter / 2
         thumb.opacity = 1
         thumb.shadowColor = NSColor.black.cgColor; thumb.shadowOffset = CGSize(width: 0, height: -1)
@@ -341,11 +376,29 @@ import SwiftCrossUI
     private func positionThumb() {
         guard let cell = cell as? NSSliderCell else { return }
         let rect = cell.knobRect(flipped: isFlipped)
+        let changed = doubleValue != lastDrawnValue
+        let animate = changed && animateNextValueChange && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let oldPosition = thumb.presentation()?.position ?? thumb.position
+        let oldWidth = volumeFill.presentation()?.bounds.width ?? volumeFill.bounds.width
+        let bar = visibleTrackRect
         CATransaction.begin(); CATransaction.setDisableActions(true)
         thumb.bounds = NSRect(x: 0, y: 0, width: PlayerVolumeCell.thumbDiameter, height: PlayerVolumeCell.thumbDiameter)
         thumb.position = NSPoint(x: rect.midX, y: rect.midY)
         thumb.shadowPath = CGPath(ellipseIn: thumb.bounds, transform: nil)
+        volumeFill.bounds = NSRect(x: 0, y: 0, width: max(0, rect.midX - bar.minX), height: bar.height)
+        volumeFill.position = NSPoint(x: bar.minX, y: bar.midY)
+        volumeFill.backgroundColor = NSColor(white: effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? 0.7 : 0.46, alpha: 1).cgColor
         CATransaction.commit()
+        if changed {
+            animateNextValueChange = false; lastDrawnValue = doubleValue
+            thumb.removeAnimation(forKey: "volumeClick"); volumeFill.removeAnimation(forKey: "volumeClick")
+            if animate {
+                let knob = CABasicAnimation(keyPath: "position"); knob.fromValue = NSValue(point: oldPosition); knob.toValue = NSValue(point: thumb.position)
+                let fill = CABasicAnimation(keyPath: "bounds.size.width"); fill.fromValue = oldWidth; fill.toValue = volumeFill.bounds.width
+                for animation in [knob, fill] { animation.duration = 0.14; animation.timingFunction = CAMediaTimingFunction(name: .easeOut) }
+                thumb.add(knob, forKey: "volumeClick"); volumeFill.add(fill, forKey: "volumeClick")
+            }
+        }
         updateThumbArea()
         if hovering && !pressing, let window, !thumbHitRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) { setHovering(false) }
         updateThumb(animated: false)
@@ -372,7 +425,7 @@ import SwiftCrossUI
             } else { thumb.removeAnimation(forKey: "hoverTint") }
             CATransaction.begin(); CATransaction.setDisableActions(true); thumb.backgroundColor = target; CATransaction.commit()
         }
-        let scale: CGFloat = active ? (pressing ? 1.1 : hovering ? 1.2 : 1) : 1
+        let scale: CGFloat = active ? (pressing ? 1.45 : hovering ? 12 / PlayerVolumeCell.thumbDiameter : 1) : 1
         if scale != targetScale {
             let previous = thumb.presentation()?.transform.m11 ?? thumb.transform.m11
             targetScale = scale
@@ -412,8 +465,10 @@ import SwiftCrossUI
     override func mouseMoved(with event: NSEvent) { setHovering(thumbHitRect.contains(convert(event.locationInWindow, from: nil))) }
     override func mouseExited(with event: NSEvent) { setHovering(false) }
     override func mouseDown(with event: NSEvent) {
+        animateNextValueChange = !thumbHitRect.contains(convert(event.locationInWindow, from: nil))
         hoverWork?.cancel(); pressing = true; updateThumb()
         super.mouseDown(with: event)
+        positionThumb(); animateNextValueChange = false
         pressing = false
         if let window { setHovering(thumbHitRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))) }
         updateThumb()
@@ -457,8 +512,11 @@ import SwiftCrossUI
             cell.stopTracking(last: start, current: end, in: self, mouseIsUp: true)
             precondition(abs(doubleValue - fraction) < 0.001, "Native drag and visible track must use the same travel")
         }
+        doubleValue = 0; positionThumb()
+        animateNextValueChange = true; doubleValue = 1; positionThumb()
+        precondition(volumeFill.animation(forKey: "volumeClick")?.duration == 0.14 || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         setHovering(true)
-        precondition(targetScale == 1.2, "Knob proximity scales immediately")
+        precondition(abs(targetScale * PlayerVolumeCell.thumbDiameter - 12) < 0.001, "Knob grows from 7 to 12 pt")
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { precondition(thumb.animation(forKey: "thumbScale")?.duration == 0.1) }
         setHovering(false)
         precondition(targetScale == 1 && !accented, "Hover-out restores the size and cancels delayed tint")
@@ -480,8 +538,9 @@ import SwiftCrossUI
     private var pressed = false
     private var currentSymbol = ""
     private lazy var transportSymbol = TransportSymbolView()
-    var usesElevation = false
+    var usesElevation = false { didSet { if usesElevation { (cell as? NSButtonCell)?.highlightsBy = [] } } }
     var usesAccentTint = false
+    var usesLightGlyph = false
     var animatesPress = false
     var drawsSymbolTransition = false {
         didSet {
@@ -570,13 +629,15 @@ import SwiftCrossUI
         button.mouseEntered(with: event); button.mouseExited(with: event)
         try? await Task.sleep(nanoseconds: 450_000_000)
         precondition(button.hoverLayer.opacity == 0, "Leaving cancels delayed highlight")
+        window.makeKeyAndOrderFront(nil)
         button.usesElevation = true; button.updateInteraction()
-        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.24) < 0.001)
+        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.4) < 0.001, "Elevation base: key=\(window.isKeyWindow), enabled=\(button.isEnabled), shadow=\(button.layer?.shadowOpacity ?? -1), plate=\(button.hoverLayer.opacity)")
         button.mouseEntered(with: event)
         try? await Task.sleep(nanoseconds: 450_000_000)
-        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.48) < 0.001)
+        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.78) < 0.001)
         button.animatesPress = true; button.drawsSymbolTransition = true
         button.pressed = true; button.updateInteraction()
+        precondition(button.contentTintColor != NSColor.white && (button.cell as? NSButtonCell)?.highlightsBy == [], "Press keeps the transport tint and disables native white highlighting")
         precondition((button.layer?.shadowOpacity ?? 1) < 0.02, "Press flattens the elevated symbol")
         precondition(abs((button.layer?.transform.m11 ?? 0) - 0.86) < 0.001, "Transport shrinks while held")
         button.pressed = false; button.updateInteraction()
@@ -603,15 +664,16 @@ import SwiftCrossUI
         hoverLayer.backgroundColor = (dark ? NSColor.white : NSColor.black).cgColor
         hoverLayer.opacity = usesElevation ? 0 : lit ? (pressed ? 0.13 : 0.065) : 0
         CATransaction.commit()
-        contentTintColor = !isEnabled ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : pressed || isLatched ? .white : .secondaryLabelColor
+        contentTintColor = !isEnabled ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : (pressed || isLatched) && !usesElevation ? .white : .secondaryLabelColor
         if usesAccentTint && active { contentTintColor = .controlAccentColor }
+        if usesLightGlyph && active { contentTintColor = .white }
         if drawsSymbolTransition { transportSymbol.tint = contentTintColor }
         if usesElevation, let layer {
             // Shadow follows the symbol alpha, never a rounded hover plate.
             layer.masksToBounds = false
-            let nextOpacity: Float = !active ? 0.08 : pressed ? 0.015 : hovered ? 0.48 : 0.24
-            let nextRadius: CGFloat = pressed ? 0.2 : hovered ? 2.5 : 1.1
-            let nextOffset = CGSize(width: 0, height: pressed ? 0 : hovered ? -2 : -0.75)
+            let nextOpacity: Float = !active ? 0.12 : pressed ? 0.015 : hovered ? 0.78 : 0.4
+            let nextRadius: CGFloat = pressed ? 0.2 : hovered ? 3.6 : 1.7
+            let nextOffset = CGSize(width: 0, height: pressed ? 0 : hovered ? -2.5 : -1)
             let oldOpacity = layer.presentation()?.shadowOpacity ?? layer.shadowOpacity
             let oldRadius = layer.presentation()?.shadowRadius ?? layer.shadowRadius
             let oldOffset = layer.presentation()?.shadowOffset ?? layer.shadowOffset

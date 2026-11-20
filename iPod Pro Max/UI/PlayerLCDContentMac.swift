@@ -12,6 +12,8 @@ import MediaKit
     private let elapsed = NSTextField(labelWithString: "")
     private let remaining = ToolbarPlaybackButton()
     private let mode = LCDModeButton()
+    private let previousMode = LCDModeButton(), nextMode = LCDModeButton()
+    private let modeScrim = LCDPassthroughView()
     private let reveal = ToolbarPlaybackButton()
     private let cover = LCDArtworkButton()
     private let more = ToolbarPlaybackButton()
@@ -48,6 +50,15 @@ import MediaKit
             button.target = self; button.action = action; button.toolTip = label; button.setAccessibilityLabel(label)
         }
         more.usesAccentTint = true
+        for (button, symbol, label, selector) in [(previousMode, "chevron.up", "Previous LCD view", #selector(previousLCDMode)), (nextMode, "chevron.down", "Next LCD view", #selector(nextLCDMode))] {
+            button.usesLightGlyph = true
+            button.setSymbol(symbol, size: 8); button.isBordered = false; button.target = self; button.action = selector
+            button.toolTip = label; button.setAccessibilityLabel(label)
+            button.makeMenu = { [weak self] in self?.modeMenu() ?? NSMenu() }
+            button.wantsLayer = true; button.alphaValue = 0
+        }
+        modeScrim.wantsLayer = true; modeScrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.3).cgColor
+        modeScrim.alphaValue = 0
         mode.makeMenu = { [weak self] in self?.modeMenu() ?? NSMenu() }
         remaining.title = ""
         remaining.isBordered = false; remaining.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -68,6 +79,7 @@ import MediaKit
         for view in [title, subtitle, plot] { view.wantsLayer = true }
         for view in [title, subtitle, elapsed, remaining, mode, reveal, cover, plot, more, backActivity, nextActivity, cancel, indicator, spinner, hoverTime, progressOverlay] { addSubview(view) }
         addSubview(plot, positioned: .below, relativeTo: title)
+        for view in [modeScrim, previousMode, nextMode] { addSubview(view) }
         plot.onPreview = { [weak self] value in self?.refresh(preview: value) }
         plot.onHover = { [weak self] value in
             guard let self else { return }
@@ -124,6 +136,13 @@ import MediaKit
             lastPresentation = key
         }
         mode.isEnabled = track != nil
+        mode.isHidden = true
+        let canChangeView = track != nil || activity != nil || !activities.list.items.isEmpty
+        for view in [previousMode, nextMode, modeScrim] {
+            let opacity: CGFloat = hovered && canChangeView ? 1 : 0
+            fade(view, to: opacity, animated: hoverChanged)
+            if let button = view as? NSButton { button.isEnabled = opacity > 0 }
+        }
         let symbols: [PlayerLCDMode: String] = [.title: "text.alignleft", .spectrum: "chart.bar.fill", .waveform: "waveform", .lyrics: "quote.bubble"]
         mode.setSymbol(symbols[display.mode] ?? "text.alignleft", size: 10)
         mode.toolTip = "Display: \(display.mode.rawValue.capitalized)"
@@ -208,7 +227,14 @@ import MediaKit
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let animation = CABasicAnimation(keyPath: "opacity")
             animation.fromValue = start; animation.toValue = Float(opacity)
-            animation.duration = hovered ? 0.18 : 0.16
+            animation.duration = hovered ? 0.13 : 0.10
+            if view === previousMode || view === nextMode || view === modeScrim {
+                let move = CABasicAnimation(keyPath: "transform.translation.x")
+                move.fromValue = view.layer?.presentation()?.transform.m41 ?? (hovered ? -8 : 0)
+                move.toValue = hovered ? 0 : -8; move.duration = animation.duration
+                move.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                view.layer?.add(move, forKey: "modeReveal")
+            }
             animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             view.layer?.add(animation, forKey: "metadataHover")
         }
@@ -219,8 +245,11 @@ import MediaKit
         cover.frame = NSRect(x: 0, y: 0, width: height, height: height)
         let hasCover = !cover.isHidden
         let artEdge: CGFloat = hasCover ? height : 0
-        mode.frame = NSRect(x: artEdge + 2, y: (height - 18) / 2, width: 18, height: 18)
-        let left = artEdge + 24, right: CGFloat = 32
+        mode.frame = .zero
+        modeScrim.frame = NSRect(x: 0, y: 0, width: 16, height: height)
+        previousMode.frame = NSRect(x: 0, y: height - 19, width: 16, height: 16)
+        nextMode.frame = NSRect(x: 0, y: 3, width: 16, height: 16)
+        let left = artEdge + 8, right: CGFloat = 10
         let availableWidth = max(0, width - left - right)
         let actionsWidth: CGFloat = more.isHidden ? 0 : 20
         let titleWidth = min(max(0, availableWidth - actionsWidth), title.naturalWidth)
@@ -229,7 +258,7 @@ import MediaKit
         subtitle.frame = NSRect(x: left, y: height - 29, width: availableWidth, height: 12)
         if playback.track == nil && activities.list.selected == nil { title.frame.origin.y = 14 }
         elapsed.frame = NSRect(x: left, y: 3, width: playback.rate == 1 ? 48 : 84, height: 11)
-        remaining.frame = NSRect(x: width - 81, y: 2, width: 45, height: 15)
+        remaining.frame = NSRect(x: width - 54, y: 2, width: 45, height: 15)
         reveal.frame = .zero
         more.frame = NSRect(x: title.frame.maxX + 2, y: height - 18, width: 18, height: 16)
         backActivity.frame = NSRect(x: width - 70, y: 20, width: 16, height: 16)
@@ -295,12 +324,23 @@ import MediaKit
         display.choose(.spectrum); hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
         precondition(!more.isHidden && more.alphaValue == title.alphaValue && more.isEnabled)
         snapshot("spectrum-hover")
+        precondition(self.previousMode.alphaValue == 1 && nextMode.alphaValue == 1 && self.previousMode.isEnabled)
+        previousLCDMode(); nextLCDMode()
+        precondition(display.mode == .spectrum, "LCD chevrons cycle both ways")
         hovered = false; refresh(force: true)
         precondition(more.alphaValue == 0 && title.alphaValue == 0 && !more.isEnabled)
         log("PASS: edge-to-edge artwork/timeline and accent actions follow title and spectrum hover")
     }
 
     private func time(_ value: Double) -> String { let n = Int(max(0, value.isFinite ? value : 0)); return n >= 3600 ? String(format: "%d:%02d:%02d", n / 3600, n / 60 % 60, n % 60) : String(format: "%d:%02d", n / 60, n % 60) }
+    @objc private func previousLCDMode() { changeLCDMode(-1) }
+    @objc private func nextLCDMode() { changeLCDMode(1) }
+    private func changeLCDMode(_ direction: Int) {
+        if activities.list.selected != nil { activities.cycle(direction); return }
+        let modes = PlayerLCDMode.allCases.filter { $0 != .lyrics || !display.lyrics.isEmpty }
+        let index = modes.firstIndex(of: display.mode) ?? 0
+        display.choose(modes[(index + direction + modes.count) % modes.count])
+    }
     @objc private func cycleMode() { display.cycle() }
     @objc private func toggleTime() { display.toggleTime() }
     @objc private func revealTrack() { if let id = playback.track?.id, display.canReveal(id) { display.onReveal?(id) } }
@@ -359,9 +399,12 @@ import MediaKit
 }
 
 @MainActor private final class LCDModeButton: ToolbarPlaybackButton {
+    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue < 0.01 || !isEnabled ? nil : super.hitTest(point) }
     var makeMenu: () -> NSMenu = { NSMenu() }
     override func rightMouseDown(with event: NSEvent) { guard isEnabled else { return }; NSMenu.popUpContextMenu(makeMenu(), with: event, for: self) }
 }
+
+@MainActor private final class LCDPassthroughView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
 
 @MainActor private final class LCDArtworkButton: NSButton {
     var fillsArtwork = false { didSet { needsDisplay = true } }
