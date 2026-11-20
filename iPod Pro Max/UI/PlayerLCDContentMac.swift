@@ -13,7 +13,7 @@ import MediaKit
     private let remaining = ToolbarPlaybackButton()
     private let mode = LCDModeButton()
     private let reveal = ToolbarPlaybackButton()
-    private let cover = NSButton()
+    private let cover = LCDArtworkButton()
     private let more = ToolbarPlaybackButton()
     private let backActivity = ToolbarPlaybackButton()
     private let nextActivity = ToolbarPlaybackButton()
@@ -47,6 +47,7 @@ import MediaKit
             button.setSymbol(symbol, size: 10); button.isBordered = false
             button.target = self; button.action = action; button.toolTip = label; button.setAccessibilityLabel(label)
         }
+        more.usesAccentTint = true
         mode.makeMenu = { [weak self] in self?.modeMenu() ?? NSMenu() }
         remaining.title = ""
         remaining.isBordered = false; remaining.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -66,6 +67,7 @@ import MediaKit
         spinner.style = .spinning; spinner.controlSize = .mini; spinner.isDisplayedWhenStopped = false
         for view in [title, subtitle, plot] { view.wantsLayer = true }
         for view in [title, subtitle, elapsed, remaining, mode, reveal, cover, plot, more, backActivity, nextActivity, cancel, indicator, spinner, hoverTime, progressOverlay] { addSubview(view) }
+        addSubview(plot, positioned: .below, relativeTo: title)
         plot.onPreview = { [weak self] value in self?.refresh(preview: value) }
         plot.onHover = { [weak self] value in
             guard let self else { return }
@@ -127,11 +129,12 @@ import MediaKit
         mode.toolTip = "Display: \(display.mode.rawValue.capitalized)"
         let showTitle = effective == .title || (effective == .spectrum && hovered)
         let available = track != nil && playback.error.isEmpty && activity == nil
-        cover.isHidden = !available || effective != .title
-        reveal.isHidden = !available || !showTitle || !activities.list.items.isEmpty
+        cover.isHidden = !available
+        reveal.isHidden = true
         reveal.isEnabled = track.map { display.canReveal($0.id) } ?? false
         cover.isEnabled = reveal.isEnabled
-        more.isHidden = !available || !hovered || effective != .title || !activities.list.items.isEmpty
+        more.isHidden = !available || (!showTitle && effective != .spectrum)
+        more.isEnabled = available && showTitle
         elapsed.isHidden = !available || effective == .spectrum || effective == .lyrics
         remaining.isHidden = elapsed.isHidden
         plot.isHidden = !available
@@ -174,6 +177,7 @@ import MediaKit
         let metadataOpacity: CGFloat = spectrumOverlay && !hovered ? 0 : trackOpacity
         fade(title, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(subtitle, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
+        fade(more, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         elapsed.stringValue = (playback.duration > 0 ? time(position) : "--:--") + (playback.rate == 1 ? "" : " · \(playback.rate)×")
         remaining.title = playback.duration > 0 ? (display.showsRemaining ? "−" + time(max(0, playback.duration - position)) : time(playback.duration)) : "--:--"
         fade(plot, to: effective == .spectrum && hovered ? 0.2 : 1, animated: hoverChanged && spectrumOverlay)
@@ -182,19 +186,19 @@ import MediaKit
         progressOverlay.update(position: position, duration: playback.duration, activity: activity, proposed: plot.scrub.proposed, chapters: display.chapters, hovered: hovered)
         if trackID != track?.id {
             trackID = track?.id; artworkTask?.cancel()
-            cover.imageScaling = .scaleNone
+            cover.fillsArtwork = false; cover.imageScaling = .scaleNone
             cover.image = systemSymbol("music.note", pointSize: 16)
             if let key = track?.artworkKey, let folder = PlayerArtwork.folder {
                 let id = track?.id
                 artworkTask = Task { [weak self] in
-                    let image = await ThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 64)
+                    let image = await ThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 128)
                     guard !Task.isCancelled, self?.trackID == id else { return }
-                    if let image { self?.cover.imageScaling = .scaleProportionallyUpOrDown; self?.cover.image = image }
+                    if let image { self?.cover.fillsArtwork = true; self?.cover.imageScaling = .scaleProportionallyUpOrDown; self?.cover.image = image }
                 }
             }
         }
         setAccessibilityValue([activity?.title ?? track?.title ?? "", subtitle.stringValue, time(position), effective.rawValue].joined(separator: ", "))
-        if presentationChanged { needsLayout = true; layoutSubtreeIfNeeded() }
+        if presentationChanged || hoverChanged { needsLayout = true; layoutSubtreeIfNeeded() }
 
     }
     private func fade(_ view: NSView, to opacity: CGFloat, animated: Bool) {
@@ -212,25 +216,29 @@ import MediaKit
     override func layout() {
         super.layout()
         let width = bounds.width, height = bounds.height
-        mode.frame = NSRect(x: 2, y: (height - 18) / 2 - 1.5, width: 18, height: 18)
-        cover.frame = NSRect(x: 23, y: 13, width: 24, height: 24)
+        cover.frame = NSRect(x: 0, y: 0, width: height, height: height)
         let hasCover = !cover.isHidden
-        let left: CGFloat = hasCover ? 54 : 24
-        let right: CGFloat = 72
-        title.frame = NSRect(x: left, y: 24, width: max(0, width - left - right), height: 15)
-        subtitle.frame = NSRect(x: left, y: 13, width: max(0, width - left - right), height: 12)
+        let artEdge: CGFloat = hasCover ? height : 0
+        mode.frame = NSRect(x: artEdge + 2, y: (height - 18) / 2, width: 18, height: 18)
+        let left = artEdge + 24, right: CGFloat = 32
+        let availableWidth = max(0, width - left - right)
+        let actionsWidth: CGFloat = more.isHidden ? 0 : 20
+        let titleWidth = min(max(0, availableWidth - actionsWidth), title.naturalWidth)
+        let start = left + max(0, (availableWidth - titleWidth - actionsWidth) / 2)
+        title.frame = NSRect(x: start, y: height - 17, width: titleWidth, height: 15)
+        subtitle.frame = NSRect(x: left, y: height - 29, width: availableWidth, height: 12)
         if playback.track == nil && activities.list.selected == nil { title.frame.origin.y = 14 }
-        elapsed.frame = NSRect(x: hasCover ? 54 : 25, y: 3, width: playback.rate == 1 ? 48 : 84, height: 11)
-        remaining.frame = NSRect(x: width - 110, y: 2, width: 45, height: 15)
-        reveal.frame = NSRect(x: width - 52, y: 18, width: 18, height: 18)
-        more.frame = NSRect(x: width - 72, y: 23, width: 16, height: 16)
+        elapsed.frame = NSRect(x: left, y: 3, width: playback.rate == 1 ? 48 : 84, height: 11)
+        remaining.frame = NSRect(x: width - 81, y: 2, width: 45, height: 15)
+        reveal.frame = .zero
+        more.frame = NSRect(x: title.frame.maxX + 2, y: height - 18, width: 18, height: 16)
         backActivity.frame = NSRect(x: width - 70, y: 20, width: 16, height: 16)
         nextActivity.frame = NSRect(x: width - 52, y: 20, width: 16, height: 16)
         cancel.frame = NSRect(x: width - 52, y: 3, width: 16, height: 16)
         indicator.frame = NSRect(x: width - 72, y: 7, width: 26, height: 9)
         let expanded = display.resolvedMode == .waveform || display.resolvedMode == .spectrum
-        plot.frame = NSRect(x: 23, y: 0, width: max(0, width - 88), height: expanded && activities.list.selected == nil ? height - 3 : 7)
-        progressOverlay.frame = plot.frame
+        plot.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: expanded && activities.list.selected == nil ? height - 3 : 7)
+        progressOverlay.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: 7)
         spinner.frame = NSRect(x: width - 72, y: 3, width: 12, height: 12)
         hoverTime.frame = NSRect(x: max(25, min(width - 115, plot.hoverX + 3)), y: 14, width: 72, height: 15)
     }
@@ -268,6 +276,28 @@ import MediaKit
         precondition(subviews.firstIndex(of: progressOverlay)! > subviews.firstIndex(of: subtitle)!, "Progress must draw above the metadata")
         progressOverlay.checkHoverRendering()
         log("PASS: LCD vertical/horizontal scroll and click/drag without responder recursion; idle title hidden")
+    }
+
+    func checkComposition() {
+        guard playback.track != nil, activities.list.selected == nil else { return }
+        func snapshot(_ name: String) {
+            guard let root = superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
+            root.cacheDisplay(in: root.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/plr-composition-" + name + ".png"))
+        }
+        let previousMode = display.mode, previousHover = hovered
+        defer { hovered = previousHover; display.choose(previousMode); refresh(force: true) }
+        display.choose(.title); refresh(force: true); layoutSubtreeIfNeeded()
+        precondition(cover.frame == NSRect(x: 0, y: 0, width: bounds.height, height: bounds.height))
+        precondition(progressOverlay.frame.minX == cover.frame.maxX && progressOverlay.frame.maxX == bounds.maxX)
+        precondition(!more.isHidden && more.usesAccentTint && more.frame.minX == title.frame.maxX + 2)
+        snapshot("title")
+        display.choose(.spectrum); hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
+        precondition(!more.isHidden && more.alphaValue == title.alphaValue && more.isEnabled)
+        snapshot("spectrum-hover")
+        hovered = false; refresh(force: true)
+        precondition(more.alphaValue == 0 && title.alphaValue == 0 && !more.isEnabled)
+        log("PASS: edge-to-edge artwork/timeline and accent actions follow title and spectrum hover")
     }
 
     private func time(_ value: Double) -> String { let n = Int(max(0, value.isFinite ? value : 0)); return n >= 3600 ? String(format: "%d:%02d:%02d", n / 3600, n / 60 % 60, n % 60) : String(format: "%d:%02d", n / 60, n % 60) }
@@ -333,6 +363,20 @@ import MediaKit
     override func rightMouseDown(with event: NSEvent) { guard isEnabled else { return }; NSMenu.popUpContextMenu(makeMenu(), with: event, for: self) }
 }
 
+@MainActor private final class LCDArtworkButton: NSButton {
+    var fillsArtwork = false { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        guard fillsArtwork else { super.draw(dirtyRect); return }
+        guard let image, image.size.width > 0, image.size.height > 0 else { return }
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
+        let scale = max(bounds.width / image.size.width, bounds.height / image.size.height)
+        let rect = NSRect(x: (bounds.width - image.size.width * scale) / 2, y: (bounds.height - image.size.height * scale) / 2,
+                          width: image.size.width * scale, height: image.size.height * scale)
+        image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+}
+
 @MainActor private final class LCDMarquee: NSView {
     private let label = NSTextField(labelWithString: "")
     private var pendingScroll = false
@@ -345,6 +389,7 @@ import MediaKit
         label.lineBreakMode = .byClipping; label.wantsLayer = true; addSubview(label)
     }
     required init?(coder: NSCoder) { fatalError() }
+    var naturalWidth: CGFloat { label.intrinsicContentSize.width }
     func setText(_ text: String) { guard label.stringValue != text else { return }; label.stringValue = text; stop(); pendingScroll = true; needsLayout = true }
     override func layout() {
         super.layout(); label.frame = NSRect(x: 0, y: 0, width: max(bounds.width, label.intrinsicContentSize.width), height: bounds.height)
@@ -378,6 +423,7 @@ import MediaKit
     private var chapters: [PlaybackChapter] = []
     private var spectrumLink: LCDSpectrumDisplayLink?
     private var spectrumWasPlaying = false
+    private var peakRelease = PlayerSpectrumPeakRelease()
     private var spectrumRelease = PlayerSpectrumRelease()
     private var spectrumLevels = [Float](repeating: 0, count: 32)
     private var spectrumPeaks = PlayerSpectrumPeaks()
@@ -387,7 +433,7 @@ import MediaKit
         spectrumLink?.stop()
         if !PlaybackController.shared.playing {
             spectrumRelease.finish(); spectrumLevels = spectrumRelease.levels
-            spectrumPeaks = PlayerSpectrumPeaks(); spectrumWasPlaying = false; needsDisplay = true
+            spectrumPeaks = PlayerSpectrumPeaks(); spectrumWasPlaying = false; peakRelease.finish(); needsDisplay = true
         }
     }
     private func updateSpectrum() {
@@ -400,16 +446,19 @@ import MediaKit
         let time = position + (running ? max(0, now - spectrumAnchor) * PlaybackController.shared.rate : 0)
         if playing {
             spectrumRelease.show(timeline.levels(at: time))
+            peakRelease.show()
         } else if spectrumWasPlaying {
             spectrumRelease.pause(at: now, animated: visible && !reduced)
+            peakRelease.pause(at: now, animated: visible && !reduced)
         }
-        if !visible || reduced, !playing { spectrumRelease.finish() }
+        if !visible || reduced, !playing { spectrumRelease.finish(); peakRelease.finish() }
         spectrumRelease.advance(to: now)
         spectrumLevels = spectrumRelease.levels; spectrumWasPlaying = playing
-        spectrumPeaks.update(levels: spectrumLevels, elapsed: now - spectrumLast, reset: !playing || reduced)
+        if playing { spectrumPeaks.update(levels: spectrumLevels, elapsed: now - spectrumLast, reset: reduced) }
+        else { peakRelease.advance(to: now) }
         spectrumLast = now
         needsDisplay = true
-        if visible && (running || spectrumRelease.isReleasing) {
+        if visible && (running || spectrumRelease.isReleasing || peakRelease.isReleasing) {
             if spectrumLink == nil { spectrumLink = LCDSpectrumDisplayLink { [weak self] in self?.updateSpectrum() } }
             spectrumLink?.start(reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         } else { suspendSpectrum() }
@@ -492,18 +541,18 @@ import MediaKit
                 NSRect(x: CGFloat(i) * 3, y: 10 + (bounds.height - 12 - h) / 2, width: 1.5, height: h).fill()
             }
         } else if activity == nil, mode == .spectrum {
-            let barWidth = (bounds.width - 12) / 32
+            let inset: CGFloat = 28
+            let barWidth = max(0, bounds.width - 12 - 2 * inset) / 32
             for block in 0..<2 { for band in 0..<16 {
                 let index = block * 16 + band
-                let x = CGFloat(index) * barWidth + CGFloat(block) * 12
+                let x = inset + CGFloat(index) * barWidth + CGFloat(block) * 12
                 for segment in 0..<6 {
                     let lit = Float(segment + 1) / 6 <= spectrumLevels[index]
                     (lit ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor.withAlphaComponent(0.35)).setFill()
                     NSRect(x: x, y: 9 + CGFloat(segment) * 4, width: max(1, barWidth - 2), height: 2).fill()
                 }
-                // The white peak marker rests on the bottom row after release,
-                // like the unlit iTunes display; no animation is needed at rest.
-                NSColor.labelColor.withAlphaComponent(0.6).setFill()
+                // Peak marks stay above the falling levels briefly, then fade completely.
+                NSColor.labelColor.withAlphaComponent(0.6 * CGFloat(peakRelease.opacity)).setFill()
                 NSRect(x: x, y: 9 + CGFloat(spectrumPeaks.values[index]) * 24, width: max(1, barWidth - 2), height: 1).fill()
             } }
 

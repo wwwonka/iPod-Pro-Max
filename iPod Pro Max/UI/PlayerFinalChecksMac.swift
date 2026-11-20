@@ -38,6 +38,7 @@ import MediaKit
     let ready = await waitUntil { playback.duration > 0 && display.spectrum != nil }
     guard require(ready && playback.playing && playback.error.isEmpty, "real playback and spectrum readiness") else { return false }
     guard require(window.toolbar == nil, "player uses no native toolbar"), let originalLCD = findLCD(root), let originalHeader = originalLCD.superview else { return false }
+    (originalLCD as? PlayerLCD)?.checkComposition()
     let center = MPNowPlayingInfoCenter.default()
     guard require(center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == playback.track?.title, "live system Now Playing metadata") else { return false }
 

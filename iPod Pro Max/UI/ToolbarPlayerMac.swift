@@ -59,7 +59,7 @@ import SwiftCrossUI
         }
         previous.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position - 5) }
         next.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position + 5) }
-        for button in [previous, play, next] { button.animatesPress = true }
+        for button in [previous, play, next] { button.animatesPress = true; button.usesElevation = true }
         play.drawsSymbolTransition = true
         configure(mute, symbol: "speaker.wave.2.fill", label: "Mute", action: #selector(volumeButton))
         mute.frame = NSRect(x: 0, y: 0, width: 28, height: 32)
@@ -256,6 +256,7 @@ import SwiftCrossUI
         addSubview(content)
     }
     func refresh() { content.refresh() }
+    func checkComposition() { content.checkComposition() }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
         super.layout()
@@ -286,12 +287,12 @@ import SwiftCrossUI
 }
 
 @MainActor private final class PlayerVolumeCell: NSSliderCell {
-    static let thumbDiameter: CGFloat = 7
+    static let thumbDiameter: CGFloat = 12
     override var knobThickness: CGFloat { Self.thumbDiameter }
     var visibleTrackRect: NSRect {
         let bounds = controlView?.bounds ?? .zero
-        return NSRect(x: bounds.minX + Self.thumbDiameter / 2, y: bounds.midY - 1.5,
-                      width: max(0, bounds.width - Self.thumbDiameter), height: 3)
+        return NSRect(x: bounds.minX + Self.thumbDiameter / 2, y: bounds.midY - 2,
+                      width: max(0, bounds.width - Self.thumbDiameter), height: 4)
     }
     override func knobRect(flipped: Bool) -> NSRect {
         let bar = visibleTrackRect
@@ -303,12 +304,13 @@ import SwiftCrossUI
     override func drawBar(inside rect: NSRect, flipped: Bool) {
         // Keep barRect native: its metrics also drive AppKit's drag calculation.
         let bar = visibleTrackRect
-        NSColor.secondaryLabelColor.withAlphaComponent(0.2).setFill()
-        NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
+        let dark = controlView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        NSColor(white: dark ? 0.06 : 0.55, alpha: dark ? 0.8 : 0.3).setFill()
+        NSBezierPath(roundedRect: bar, xRadius: 2, yRadius: 2).fill()
         var filled = bar
         filled.size.width *= CGFloat((doubleValue - minValue) / max(0.001, maxValue - minValue))
-        NSColor.secondaryLabelColor.withAlphaComponent(0.65).setFill()
-        NSBezierPath(roundedRect: filled, xRadius: 1.5, yRadius: 1.5).fill()
+        NSColor(white: dark ? 0.7 : 0.46, alpha: 1).setFill()
+        NSBezierPath(roundedRect: filled, xRadius: 2, yRadius: 2).fill()
     }
 }
 
@@ -330,6 +332,8 @@ import SwiftCrossUI
         layer?.masksToBounds = false; layer?.addSublayer(thumb)
         thumb.cornerRadius = PlayerVolumeCell.thumbDiameter / 2
         thumb.opacity = 1
+        thumb.shadowColor = NSColor.black.cgColor; thumb.shadowOffset = CGSize(width: 0, height: -1)
+        thumb.shadowRadius = 1.5; thumb.borderWidth = 0.5
     }
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) { super.draw(dirtyRect); positionThumb() }
@@ -340,6 +344,7 @@ import SwiftCrossUI
         CATransaction.begin(); CATransaction.setDisableActions(true)
         thumb.bounds = NSRect(x: 0, y: 0, width: PlayerVolumeCell.thumbDiameter, height: PlayerVolumeCell.thumbDiameter)
         thumb.position = NSPoint(x: rect.midX, y: rect.midY)
+        thumb.shadowPath = CGPath(ellipseIn: thumb.bounds, transform: nil)
         CATransaction.commit()
         updateThumbArea()
         if hovering && !pressing, let window, !thumbHitRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) { setHovering(false) }
@@ -348,10 +353,15 @@ import SwiftCrossUI
     private func updateThumb(animated: Bool = true) {
         let active = playerControlWindow(for: self)?.isKeyWindow == true && isEnabled
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let gray: CGFloat = dark ? (active ? 0.66 : 0.44) : (active ? 0.43 : 0.62)
-        let color = active && (accented || pressing) ? NSColor.controlAccentColor.withAlphaComponent(1) : NSColor(white: gray, alpha: 1)
+        let gray: CGFloat = dark ? (active ? 0.85 : 0.64) : (active ? 0.97 : 0.9)
+        let base = NSColor(white: gray, alpha: 1)
+        let color = active && (accented || pressing) ? (NSColor.controlAccentColor.blended(withFraction: 0.65, of: base) ?? base).withAlphaComponent(1) : base
         let saved = NSAppearance.current; NSAppearance.current = effectiveAppearance
         let target = color.cgColor; NSAppearance.current = saved
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        thumb.borderColor = NSColor.white.withAlphaComponent(dark ? 0.28 : 0.8).cgColor
+        thumb.shadowOpacity = active ? 0.28 : 0.12
+        CATransaction.commit()
         let motion = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if thumb.backgroundColor != target {
             if motion {
@@ -470,6 +480,8 @@ import SwiftCrossUI
     private var pressed = false
     private var currentSymbol = ""
     private lazy var transportSymbol = TransportSymbolView()
+    var usesElevation = false
+    var usesAccentTint = false
     var animatesPress = false
     var drawsSymbolTransition = false {
         didSet {
@@ -558,8 +570,14 @@ import SwiftCrossUI
         button.mouseEntered(with: event); button.mouseExited(with: event)
         try? await Task.sleep(nanoseconds: 450_000_000)
         precondition(button.hoverLayer.opacity == 0, "Leaving cancels delayed highlight")
+        button.usesElevation = true; button.updateInteraction()
+        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.24) < 0.001)
+        button.mouseEntered(with: event)
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        precondition(button.hoverLayer.opacity == 0 && abs((button.layer?.shadowOpacity ?? 0) - 0.48) < 0.001)
         button.animatesPress = true; button.drawsSymbolTransition = true
         button.pressed = true; button.updateInteraction()
+        precondition((button.layer?.shadowOpacity ?? 1) < 0.02, "Press flattens the elevated symbol")
         precondition(abs((button.layer?.transform.m11 ?? 0) - 0.86) < 0.001, "Transport shrinks while held")
         button.pressed = false; button.updateInteraction()
         precondition(abs((button.layer?.transform.m11 ?? 0) - 1) < 0.001, "Transport restores on release")
@@ -567,7 +585,7 @@ import SwiftCrossUI
         button.setSymbol("play.fill", size: 19)
         try? await Task.sleep(nanoseconds: 450_000_000)
         precondition(button.transportSymbol.symbol == "play.fill" && button.transportSymbol.hasImage, "Rapid Play/Pause changes must settle on the latest symbol")
-        log("PASS: transport press/release scale and interrupted native SF Symbol transition retain the latest image")
+        log("PASS: transport uses delayed elevation without a hover plate, flattens on press, and settles on the latest symbol")
         let route = ToolbarRoutePicker(frame: NSRect(x: 55, y: 20, width: 24, height: 24))
         window.contentView?.addSubview(route)
         window.resignKey(); precondition(button.hoverLayer.opacity == 0)
@@ -583,10 +601,36 @@ import SwiftCrossUI
         CATransaction.begin(); CATransaction.setAnimationDuration(duration)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         hoverLayer.backgroundColor = (dark ? NSColor.white : NSColor.black).cgColor
-        hoverLayer.opacity = lit ? (pressed ? 0.13 : 0.065) : 0
+        hoverLayer.opacity = usesElevation ? 0 : lit ? (pressed ? 0.13 : 0.065) : 0
         CATransaction.commit()
         contentTintColor = !isEnabled ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : pressed || isLatched ? .white : .secondaryLabelColor
+        if usesAccentTint && active { contentTintColor = .controlAccentColor }
         if drawsSymbolTransition { transportSymbol.tint = contentTintColor }
+        if usesElevation, let layer {
+            // Shadow follows the symbol alpha, never a rounded hover plate.
+            layer.masksToBounds = false
+            let nextOpacity: Float = !active ? 0.08 : pressed ? 0.015 : hovered ? 0.48 : 0.24
+            let nextRadius: CGFloat = pressed ? 0.2 : hovered ? 2.5 : 1.1
+            let nextOffset = CGSize(width: 0, height: pressed ? 0 : hovered ? -2 : -0.75)
+            let oldOpacity = layer.presentation()?.shadowOpacity ?? layer.shadowOpacity
+            let oldRadius = layer.presentation()?.shadowRadius ?? layer.shadowRadius
+            let oldOffset = layer.presentation()?.shadowOffset ?? layer.shadowOffset
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            layer.shadowColor = NSColor.black.cgColor
+            layer.shadowOpacity = nextOpacity; layer.shadowRadius = nextRadius; layer.shadowOffset = nextOffset
+            CATransaction.commit()
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                for (key, from, to) in [("shadowOpacity", NSNumber(value: oldOpacity), NSNumber(value: nextOpacity)),
+                                        ("shadowRadius", NSNumber(value: Double(oldRadius)), NSNumber(value: Double(nextRadius)))] {
+                    let animation = CABasicAnimation(keyPath: key); animation.fromValue = from; animation.toValue = to
+                    animation.duration = pressed ? 0.06 : 0.12; animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    layer.add(animation, forKey: key)
+                }
+                let offset = CABasicAnimation(keyPath: "shadowOffset")
+                offset.fromValue = NSValue(size: oldOffset); offset.toValue = NSValue(size: nextOffset)
+                offset.duration = pressed ? 0.06 : 0.12; layer.add(offset, forKey: "shadowOffset")
+            }
+        }
         if animatesPress, let layer {
             let scale: CGFloat = active && pressed ? 0.86 : 1
             let pivot = CGPoint(x: bounds.midX - bounds.width * layer.anchorPoint.x, y: bounds.midY - bounds.height * layer.anchorPoint.y)
@@ -597,7 +641,7 @@ import SwiftCrossUI
                 if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                     let animation = CABasicAnimation(keyPath: "transform")
                     animation.fromValue = NSValue(caTransform3D: old); animation.toValue = NSValue(caTransform3D: target)
-                    animation.duration = pressed ? 0.10 : 0.18
+                    animation.duration = pressed ? 0.06 : 0.10
                     animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                     layer.add(animation, forKey: "transportPress")
                 }

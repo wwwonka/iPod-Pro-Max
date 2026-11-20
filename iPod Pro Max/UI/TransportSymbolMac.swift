@@ -30,9 +30,9 @@ import Symbols
         }
         if #available(macOS 15, *) {
             // This automatically gains SF Symbols' Draw transitions on macOS 26.
-            current.setSymbolImage(image, contentTransition: .replace.magic(fallback: .replace))
+            current.setSymbolImage(image, contentTransition: .replace.magic(fallback: .replace), options: .speed(3))
         } else if #available(macOS 14, *) {
-            current.setSymbolImage(image, contentTransition: .replace)
+            current.setSymbolImage(image, contentTransition: .replace, options: .speed(3))
         } else { current.image = image }
     }
 }

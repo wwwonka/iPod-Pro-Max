@@ -3,6 +3,19 @@ import XCTest
 import iPodKit
 
 final class PlayerLCDTests: XCTestCase {
+    func testPeaksWaitUntilLevelsAreOffThenFadeAndStop() {
+        var levels = PlayerSpectrumRelease(), peaks = PlayerSpectrumPeakRelease()
+        levels.show([1]); peaks.show()
+        levels.pause(at: 10, animated: true); peaks.pause(at: 10, animated: true)
+        levels.advance(to: 10.46); peaks.advance(to: 10.46)
+        XCTAssertFalse(levels.isReleasing); XCTAssertEqual(levels.levels[0], 0)
+        XCTAssertEqual(peaks.opacity, 1); XCTAssertTrue(peaks.isReleasing)
+        peaks.advance(to: 10.65); XCTAssertEqual(peaks.opacity, 0.5, accuracy: 0.001)
+        peaks.advance(to: 10.74); XCTAssertEqual(peaks.opacity, 0); XCTAssertFalse(peaks.isReleasing)
+        peaks.show(); peaks.pause(at: 20, animated: true); peaks.show(); peaks.advance(to: 21)
+        XCTAssertEqual(peaks.opacity, 1); XCTAssertFalse(peaks.isReleasing)
+        peaks.pause(at: 22, animated: false); XCTAssertEqual(peaks.opacity, 0)
+    }
     func testSpectrumPauseReleasesToDarkAndStops() {
         var release = PlayerSpectrumRelease()
         release.show([1, 0.6])

@@ -46,9 +46,9 @@ import MediaKit
         fill.backgroundColor = NSColor.controlAccentColor.cgColor
         markers.fillColor = NSColor.labelColor.withAlphaComponent(0.55).cgColor
         thumb.backgroundColor = NSColor.controlAccentColor.cgColor
-        track.frame = NSRect(x: 0, y: 1, width: bounds.width, height: thickness)
-        fill.frame = NSRect(x: 0, y: 1, width: bounds.width * fraction, height: thickness)
-        track.cornerRadius = thickness / 2; fill.cornerRadius = thickness / 2
+        track.frame = NSRect(x: 0, y: 0, width: bounds.width, height: thickness)
+        fill.frame = NSRect(x: 0, y: 0, width: bounds.width * fraction, height: thickness)
+        track.cornerRadius = 0; fill.cornerRadius = 0
         let path = CGMutablePath()
         if duration > 0 { for chapter in chapters { path.addRect(CGRect(x: bounds.width * chapter.time / duration, y: 0, width: 1, height: thickness + 2)) } }
         markers.path = path
@@ -62,7 +62,7 @@ import MediaKit
             height.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             bar.add(height, forKey: "hoverHeight")
             let position = CABasicAnimation(keyPath: "position.y")
-            position.fromValue = oldTrackY; position.toValue = 1 + thickness / 2; position.duration = 0.18
+            position.fromValue = oldTrackY; position.toValue = thickness / 2; position.duration = 0.18
             position.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             bar.add(position, forKey: "hoverPosition")
         }

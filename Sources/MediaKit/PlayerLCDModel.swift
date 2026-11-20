@@ -166,3 +166,26 @@ public struct PlayerSpectrumRelease: Sendable {
     }
     public mutating func finish() { began = nil; levels = Array(repeating: 0, count: 32) }
 }
+
+
+/// Peak marks linger briefly after the levels settle, then disappear without an idle clock.
+public struct PlayerSpectrumPeakRelease: Sendable {
+    public static let holdDuration = 0.12
+    public static let fadeDuration = 0.16
+    public private(set) var opacity = 0.0
+    private var began: Double?
+    public var isReleasing: Bool { began != nil }
+    public init() {}
+    public mutating func show() { began = nil; opacity = 1 }
+    public mutating func pause(at now: Double, animated: Bool) {
+        guard animated else { finish(); return }
+        began = now; opacity = 1
+    }
+    public mutating func advance(to now: Double) {
+        guard let began else { return }
+        let elapsed = max(0, now - began - PlayerSpectrumRelease.duration - Self.holdDuration)
+        opacity = max(0, 1 - elapsed / Self.fadeDuration)
+        if opacity == 0 { finish() }
+    }
+    public mutating func finish() { began = nil; opacity = 0 }
+}
