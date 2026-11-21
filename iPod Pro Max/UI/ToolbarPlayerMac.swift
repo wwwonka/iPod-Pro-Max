@@ -37,6 +37,8 @@ import SwiftCrossUI
     private var keyMonitor: Any?
     private var speakerImages: [Int: NSImage] = [:]
     private var speakerLevel = -1
+    var trailingControlsWidth: CGFloat = 194
+    private(set) var volumeSliderWidth: CGFloat = 132
     private var compact = false
     private(set) var fullScreenLayout = false
     private(set) var trafficLightsRevealed = false
@@ -124,14 +126,7 @@ import SwiftCrossUI
         }
         let transportWidth = 102 + transportLeadingSpace
         transport.setFrameSize(NSSize(width: transportWidth, height: transport.frame.height))
-        let narrow = (playerControlWindow(for: volumeView)?.frame.width ?? 1200) < 1000
-        compact = narrow
-        volumeView.setFrameSize(NSSize(width: narrow ? 28 : 100, height: 32))
-        if !popover.isShown {
-            slider.removeFromSuperview()
-            if !narrow { volumeView.addSubview(slider); slider.frame = NSRect(x: 28, y: 6, width: 72, height: 20) }
-        }
-        transport.centerControls(); volumeView.centerControls()
+        transport.centerControls()
     }
     func setFullScreenLayout(_ enabled: Bool) {
         guard fullScreenLayout != enabled else { return }
@@ -164,8 +159,21 @@ import SwiftCrossUI
         let nextRight = next.convert(nextInk, to: header).maxX
         let muteInk = mute.cell?.imageRect(forBounds: mute.bounds) ?? mute.bounds
         volumeView.frame.origin = NSPoint(x: nextRight + gap - muteInk.minX, y: 6)
-        let minimumSide = 80 + transport.bounds.width + volumeView.bounds.width + 32
-        let lcdWidth = min(460, max(280, header.bounds.width - 2 * minimumSide))
+        // Share the available width with the LCD, rather than dropping the slider
+        // at a fixed window-width threshold. Reserve the actual search control.
+        let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 28
+        compact = budget < 280 + 52
+        volumeSliderWidth = compact ? 0 : min(132, max(52, 132 - max(0, 460 + 132 - budget) * 0.4))
+        volumeView.setFrameSize(NSSize(width: 28 + volumeSliderWidth, height: 32))
+        if !popover.isShown {
+            if compact { slider.removeFromSuperview() }
+            else {
+                if slider.superview !== volumeView { slider.removeFromSuperview(); volumeView.addSubview(slider) }
+                slider.frame = NSRect(x: 28, y: 6, width: volumeSliderWidth, height: 20)
+            }
+        }
+        volumeView.centerControls()
+        let lcdWidth = min(460, max(280, budget - volumeSliderWidth))
         let lcdX = max((header.bounds.width - lcdWidth) / 2, volumeView.frame.maxX + 59)
         lcd.frame = NSRect(x: lcdX, y: 3, width: lcdWidth, height: 41)
         route.frame = NSRect(x: lcdX - 47, y: 9, width: 39, height: 26)

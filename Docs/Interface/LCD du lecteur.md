@@ -178,3 +178,10 @@ Les chevrons haut/bas du LCD se révèlent par fondu et translation de 8 pt en 1
 La recherche conserve le bezel natif et son ombre. Son focus ajoute un contour d’accent serré, sans halo externe, et une échelle de 1,025 en 120 ms. Le véritable éditeur AppKit défile horizontalement jusqu’au curseur pour une longue saisie ; ses réglages sont restaurés au départ du focus. Échap conserve la requête et retire le focus ; un clic extérieur le retire sans absorber le clic. La perte d’activation retire également le focus. Les animations sont finies et ne créent aucun travail au repos.
 
 Validation macOS : volumes 0/25/50/75/100 %, clic animé et survol réversible, géométrie entre 820 et 1 600 pt, recherche longue de 540 caractères, Échap/clic extérieur, contrôles système révélés en plein écran et continuité de lecture. La disposition synchrone du build de développement mesurée sur cette fenêtre de contrôle donne une médiane de 2,51 ms et un maximum de 2,96 ms ; ce relevé court ne mesure pas une bibliothèque volumineuse.
+
+
+## Largeur adaptative du volume — 20 novembre 2026
+
+Le slider atteint 132 pt, contre 72 pt auparavant. Sa largeur partage le budget horizontal avec le LCD : elle descend progressivement jusqu’à 52 pt selon la place réellement disponible, après réservation d’AirPlay, de la file et du champ de recherche ou de sa loupe. Le passage compact ne dépend plus du seuil fixe de 1 000 pt ; il intervient uniquement lorsque le slider minimal et le LCD de 280 pt ne tiennent plus ensemble. Les espacements des commandes et la taille du bouton de volume sont conservés. Le redimensionnement réutilise la vue native et ne réinstalle pas le slider à chaque passe de disposition.
+
+Contrôle natif sombre : slider de 132 pt à 1 240/1 600 pt, 94,6 pt à 1 000 pt et 77 pt à 820 pt avec recherche réduite. Les assertions vérifient la plage 52–132 pt et l’absence de chevauchement avec AirPlay et les contrôles à droite, y compris après le plein écran.

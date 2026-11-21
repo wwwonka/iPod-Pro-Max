@@ -123,12 +123,15 @@
                     }
                 }
                 if let root = window.contentView?.superview {
-                    let lcdRect = player.lcd.convert(player.lcd.bounds, to: root)
                     let leftGap = player.nextToVolumeGap(in: root)
                     let reference = player.trafficToBackGap(in: root)
                     log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
                     precondition(abs(leftGap - reference) <= 1, "Next/volume margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
+                precondition((player.volumeSliderWidth == 0 || (52...132).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
+                precondition(player.volumeView.frame.maxX + 12 <= player.route.frame.minX + 0.5, "Adaptive volume clears AirPlay")
+                precondition(player.lcd.frame.maxX + 47 <= (playerHeader?.bounds.width ?? 0) - player.trailingControlsWidth + 0.5, "Adaptive LCD clears search and queue")
+                log(String(format: "Adaptive volume %.0f pt: slider %.2f pt", width, player.volumeSliderWidth))
                 precondition(player.route.bounds.size == NSSize(width: 39, height: 26) && abs(player.route.frame.maxX + 8 - player.lcd.frame.minX) < 0.1, "AirPlay mirrors Queue outside the LCD")
                 precondition(window.toolbar == nil && player.lcd.window === window, "Player stays in the content window without NSToolbar")
                 if let root = window.contentView?.superview {
@@ -671,6 +674,7 @@
 
         private func layoutPlayerHeader() {
             guard let header = playerHeader else { return }
+            player.trailingControlsWidth = !searchField.isHidden ? 194 : !searchButton.isHidden ? 63 : 12
             player.layout(in: header)
             queueButton.frame = NSRect(x: player.lcd.frame.maxX + 8, y: 9, width: 39, height: 26)
             searchField.frame = NSRect(x: header.bounds.width - 182, y: 8, width: 170, height: 28)
