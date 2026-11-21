@@ -197,7 +197,7 @@ Spotify change régulièrement les hash de ses requêtes persistées. Il faut po
 
 ### Règles d'interaction
 
-- `plugin.json` → `config.pathfinder` : `{"fetchPlaylist": {"sha256": "a65e1219…"}, "getAlbum": {"sha256": "b9bfabef…"}, …}`. Les valeurs de départ sont celles de `pathfinder.ts`. Le code ne contient que la construction des variables.
+- `plugin.json` → `config.pathfinder` : `fetchPlaylist`, `getAlbum`, `moveItemsInPlaylist` et `searchDesktop` (`{"<op>": {"sha256": "…"}}`). En complément, `SpotifySource.resolvePersistedHash` inspecte dynamiquement les bundles JS de `open.spotify.com` (y compris `/assets/*.js`, avec coalescence des découvertes concurrentes et jusqu'à 12 bundles mis en cache) pour résoudre `searchDesktop` ou `removeItemsFromPlaylist` si un hash vient à tourner.
 - Une réponse `PersistedQueryNotFound` (ou un champ attendu absent, comme `playlistV2`) donne l'erreur `apiChanged`, et `$/status` passe à `{state: "error", message: "Spotify changed how it works. Update the Spotify plug-in."}`.
 - Le `README.md` du plug-in explique comment retrouver un hash : open.spotify.com, outils de développement, onglet Réseau, filtre `pathfinder`, champ `sha256Hash`.
 
@@ -260,7 +260,16 @@ Plug-ins/Spotify/
 
 ## Hors périmètre / Évolutions
 
-- **Session Web authentifiée (macOS + repli manuel)** : implémentée sans clé développeur ni compte Premium via `SpotifyWebBridge` (`WKWebView` avec UA Safari authentique et hook limité à `open.spotify.com`), **Import from Browser…** (`BrowserCookieImporter` sur Firefox/Zen/LibreWolf en clair, Chrome/Brave/Arc/Edge/Vivaldi/Dia/Opera via Trousseau + PBKDF2/AES-128-CBC + préfixe SHA-256 `host_key` sur DB v24+, et Safari si Full Disk Access), ou champ secret `sp_dc`. Permet l’accès aux playlists privées, l’ajout de titres depuis la librairie personnelle (`PlaylistEditable` / `source/addTracks` : `/v1/search` + `POST /v1/playlists/{id}/items` ou `/tracks`) et le réordonnancement distant (`PlaylistReorderable` / `source/reorder` : `moveItemsInPlaylist` v2/v1 + fallback `PUT /v1/playlists/{id}/items`) **uniquement sur les playlists possédées par l’utilisateur** (sinon alerte `exclamationmark.triangle.fill`).
+- **Session Web authentifiée (macOS + repli manuel `sp_dc`)** : implémentée sans clé développeur ni compte Premium via `SpotifyWebBridge` (`WKWebView` avec UA Safari authentique et hook limité à `open.spotify.com`), **Import from Browser…** (`BrowserCookieImporter` sur Firefox/Zen/LibreWolf en clair, Chrome/Brave/Arc/Edge/Vivaldi/Dia/Opera via Trousseau + PBKDF2/AES-128-CBC + préfixe SHA-256 `host_key` sur DB v24+, et Safari si Full Disk Access), ou champ secret `sp_dc`. Au lancement de l'app (sur macOS), `PluginController` pré-injecte le `sp_dc` enregistré si besoin et rafraîchit silencieusement le jeton Web en arrière-plan (QoS `.utility`) pour réduire les reconnexions manuelles.
+- **Édition complète des playlists Spotify possédées (`PlaylistReorderable` + `PlaylistEditable`)** :
+  - **Réordonner (`source/reorder`)** : `moveItemsInPlaylist` Pathfinder v2/v1 avec repli `PUT /v1/playlists/{id}/items` ;
+  - **Créer une playlist (`source/createPlaylist`)** : `POST spclient.wg.spotify.com/playlist/v2/playlist` puis ajout en rootlist utilisateur (`POST .../user/{username}/rootlist/changes`) après résolution préalable du nom canonique pour garantir l'idempotence en cas de réessai d'authentification ;
+  - **Renommer (`source/rename`)** : delta `spclient` `UPDATE_LIST_ATTRIBUTES` sur `/playlist/v2/playlist/{id}/changes` (repli Web API `PUT /v1/playlists/{id}`) ;
+  - **Rechercher et ajouter des morceaux (`source/addTracks`)** : recherche parallèle bornée (au plus 4 travailleurs selon `activeProcessorCount`) via Pathfinder `searchDesktop` (repli `/v1/search`, propagation explicite des `429`), puis delta `spclient` `ADD` (lots de 100 URI, repli `POST /v1/playlists/{id}/items`) ;
+  - **Retirer des morceaux (`source/removeTracks`)** : suppression ciblée de l'occurrence par UID via `removeItemsFromPlaylist` (repli delta `spclient` `REM` puis `DELETE /v1/playlists/{id}/items`) ;
+  - **Changer la pochette (`source/setArtwork`)** : conversion en JPEG carré sRGB 1:1 de 300 à 640 px ≤ 256 Ko (`ImageLoading.spotifyCoverJPEG` dans `MediaKit`), envoi sur `https://image-upload.spotify.com/v4/playlist`, `register-image`, puis delta `spclient` `UPDATE_LIST_ATTRIBUTES` (`picture`) ;
+  - Les playlists non possédées renvoient HTTP 403/429 explicite ou restent locales uniquement.
+- **Portage Windows et Linux de la session Web** : `SpotifyWebBridge` / UI avancée restent volontairement ciblés macOS pour l'instant avant le portage multiplateforme complet.
 - Recherche libre globale dans Spotify, pages d'artiste, podcasts.
 - Rôle `metadataProvider` (Spotify comme source de tags pour le Metadata Editor). Possible plus tard avec le même code.
 

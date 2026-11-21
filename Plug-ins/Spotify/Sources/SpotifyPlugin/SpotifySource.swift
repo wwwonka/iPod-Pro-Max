@@ -11,6 +11,9 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
     private var config = Pathfinder.Config()
     private var runtimeContext: (any PluginRuntimeContext)?
     private var apiChangedReported = false
+    private var discoveredHashes: [String: String] = [:]
+    private var scannedBundleURLs: Set<String> = []
+    private var inFlightHashDiscovery: Task<Void, Never>?
 
     public init(transport: any HTTPTransport = URLSessionTransport()) {
         self.transport = transport
@@ -58,8 +61,14 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         }
 
         let resolvedInputName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if Self.needsAccountNameResolution(resolvedInputName), !accessToken.isEmpty {
-            if let fetched = await fetchProfileDisplayName(accessToken: accessToken, clientToken: clientToken) {
+        var resolvedUsername = fields["username"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !accessToken.isEmpty && (Self.needsAccountNameResolution(resolvedInputName) || (resolvedUsername?.isEmpty ?? true)) {
+            let profile = await fetchProfileInfo(accessToken: accessToken, clientToken: clientToken)
+            if let uname = profile.username, !uname.isEmpty {
+                resolvedUsername = uname
+            }
+            if Self.needsAccountNameResolution(resolvedInputName),
+               let fetched = profile.displayName, !fetched.isEmpty {
                 displayName = fetched
             }
         }
@@ -67,6 +76,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         let resolvedName = (displayName?.isEmpty == false) ? displayName! : "Spotify Web"
         let webSession = UserWebSession(
             spDC: spDC?.isEmpty == false ? spDC : nil,
+            username: resolvedUsername?.isEmpty == false ? resolvedUsername : nil,
             displayName: resolvedName,
             accessToken: accessToken.isEmpty ? nil : accessToken,
             clientToken: clientToken?.isEmpty == false ? clientToken : nil,
@@ -88,10 +98,20 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
     public func status() async throws -> PluginAccountStatus {
         if var cur = await tokenManager.currentUserSession(),
            cur.isSignedIn,
-           Self.needsAccountNameResolution(cur.displayName),
+           (Self.needsAccountNameResolution(cur.displayName) || (cur.username?.isEmpty ?? true)),
            let tok = cur.accessToken, !tok.isEmpty {
-            if let uname = await fetchProfileDisplayName(accessToken: tok, clientToken: cur.clientToken), !uname.isEmpty {
-                cur.displayName = uname
+            let profile = await fetchProfileInfo(accessToken: tok, clientToken: cur.clientToken)
+            var updated = false
+            if let uname = profile.username, !uname.isEmpty, cur.username != uname {
+                cur.username = uname
+                updated = true
+            }
+            if Self.needsAccountNameResolution(cur.displayName),
+               let dname = profile.displayName, !dname.isEmpty {
+                cur.displayName = dname
+                updated = true
+            }
+            if updated {
                 await tokenManager.setUserSession(cur)
             }
         }
@@ -110,38 +130,82 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         return false
     }
 
-    private func fetchProfileDisplayName(accessToken: String, clientToken: String?) async -> String? {
-        guard let url = URL(string: "https://api.spotify.com/v1/me") else { return nil }
-        let attempts: [URLRequest] = [
-            Pathfinder.makeAuthorizedRequest(
-                url: url,
+    private func fetchProfileInfo(accessToken: String, clientToken: String?) async -> (username: String?, displayName: String?) {
+        if let url = URL(string: "https://api.spotify.com/v1/me") {
+            let attempts: [URLRequest] = [
+                Pathfinder.makeAuthorizedRequest(
+                    url: url,
+                    token: accessToken,
+                    clientToken: clientToken,
+                    userAgent: config.userAgent
+                ),
+                {
+                    var req = URLRequest(url: url, timeoutInterval: 15)
+                    req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+                    req.setValue("application/json", forHTTPHeaderField: "Accept")
+                    req.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
+                    return req
+                }(),
+            ]
+            for req in attempts {
+                guard let res = try? await transport.send(req) else { continue }
+                guard res.statusCode == 200 else {
+                    await runtimeContext?.log(.warning, "Spotify /v1/me returned HTTP \(res.statusCode).")
+                    continue
+                }
+                guard let json = (try? JSONSerialization.jsonObject(with: res.body)) as? [String: Any] else {
+                    continue
+                }
+                let id = (json["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let dname = (json["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if (id?.isEmpty == false) || (dname?.isEmpty == false) {
+                    return (
+                        username: (id?.isEmpty == false) ? id : nil,
+                        displayName: (dname?.isEmpty == false) ? dname : ((id?.isEmpty == false) ? id : nil)
+                    )
+                }
+            }
+        }
+
+        // Fallback via Pathfinder profileAttributes if /v1/me is rate-limited.
+        if let hash = await resolvePersistedHash(operationName: "profileAttributes", defaultHash: "", allowBundleDiscovery: true),
+           !hash.isEmpty,
+           let body = Pathfinder.buildPersistedMutationBody(operationName: "profileAttributes", variables: [:], sha256Hash: hash),
+           let pfURL = URL(string: Pathfinder.mutationEndpointV2) {
+            let req = Pathfinder.makeAuthorizedPostRequest(
+                url: pfURL,
                 token: accessToken,
                 clientToken: clientToken,
-                userAgent: config.userAgent
-            ),
-            {
-                var req = URLRequest(url: url, timeoutInterval: 15)
-                req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-                req.setValue("application/json", forHTTPHeaderField: "Accept")
-                req.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
-                return req
-            }(),
-        ]
-        for req in attempts {
-            guard let res = try? await transport.send(req) else { continue }
-            guard res.statusCode == 200 else {
-                await runtimeContext?.log(.warning, "Spotify /v1/me returned HTTP \(res.statusCode).")
-                continue
+                userAgent: config.userAgent,
+                body: body
+            )
+            if let res = try? await transport.send(req),
+               res.statusCode == 200,
+               let json = (try? JSONSerialization.jsonObject(with: res.body)) as? [String: Any],
+               let data = json["data"] as? [String: Any],
+               let profile = (data["me"] as? [String: Any])?["profile"] as? [String: Any]
+                    ?? (data["profile"] as? [String: Any]) {
+                let uname = (profile["username"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = (profile["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (
+                    username: (uname?.isEmpty == false) ? uname : nil,
+                    displayName: (name?.isEmpty == false) ? name : ((uname?.isEmpty == false) ? uname : nil)
+                )
             }
-            guard let json = (try? JSONSerialization.jsonObject(with: res.body)) as? [String: Any] else {
-                continue
-            }
-            if let name = (json["display_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-                return name
-            }
-            if let id = (json["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
-                return id
-            }
+        }
+
+        return (nil, nil)
+    }
+
+    private func resolveCanonicalUsername(accessToken: String, clientToken: String?) async -> String? {
+        if let cached = await tokenManager.currentUserSession()?.username?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cached.isEmpty {
+            return cached
+        }
+        let info = await fetchProfileInfo(accessToken: accessToken, clientToken: clientToken)
+        if let uname = info.username, !uname.isEmpty {
+            await tokenManager.setResolvedAccountInfo(username: uname, displayName: info.displayName)
+            return uname
         }
         return nil
     }
@@ -221,6 +285,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
 
     // MARK: - PlaylistEditable
 
+    /// Searches Spotify for each input track in bounded parallel batches and appends matching URIs via `spclient`.
     public func addTracks(request: PlaylistAddTracksRequest) async throws -> PlaylistAddTracksResult {
         try Task.checkCancellation()
         guard !request.playlistID.isEmpty else {
@@ -231,14 +296,57 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         }
 
         let creds = try await tokenManager.getUserWriteCredentials()
+        let searchHash = await resolvePersistedHash(
+            operationName: "searchDesktop",
+            defaultHash: config.searchDesktopHash,
+            allowBundleDiscovery: true
+        ) ?? config.searchDesktopHash
+
+        // Keep concurrency bounded to active cores (max 4) to utilize cores cleanly without triggering Spotify 429s.
+        let tracks = request.tracks
+        let maxWorkers = min(min(4, max(1, ProcessInfo.processInfo.activeProcessorCount)), tracks.count)
+        var matchesByIndex = [TrackRef?](repeating: nil, count: tracks.count)
+
+        try await withThrowingTaskGroup(of: (Int, TrackRef?).self) { group in
+            var nextIndex = 0
+            for _ in 0..<maxWorkers {
+                let idx = nextIndex
+                nextIndex += 1
+                let input = tracks[idx]
+                group.addTask {
+                    let match = try await self.searchBestTrack(
+                        input: input,
+                        accessToken: creds.accessToken,
+                        clientToken: creds.clientToken,
+                        preResolvedSearchHash: searchHash
+                    )
+                    return (idx, match)
+                }
+            }
+            for try await (idx, match) in group {
+                matchesByIndex[idx] = match
+                if nextIndex < tracks.count {
+                    let idxToQueue = nextIndex
+                    nextIndex += 1
+                    let input = tracks[idxToQueue]
+                    group.addTask {
+                        let nextMatch = try await self.searchBestTrack(
+                            input: input,
+                            accessToken: creds.accessToken,
+                            clientToken: creds.clientToken,
+                            preResolvedSearchHash: searchHash
+                        )
+                        return (idxToQueue, nextMatch)
+                    }
+                }
+            }
+        }
+
         var added: [PlaylistAddedTrackResult] = []
         var urisToAdd: [String] = []
         var notFound: [String] = []
-
-        for (index, input) in request.tracks.enumerated() {
-            try Task.checkCancellation()
-            if let match = try await searchBestTrack(input: input, accessToken: creds.accessToken, clientToken: creds.clientToken),
-               !match.sourceID.isEmpty {
+        for (index, input) in tracks.enumerated() {
+            if let match = matchesByIndex[index], !match.sourceID.isEmpty {
                 added.append(PlaylistAddedTrackResult(index: index, matchedTrack: match))
                 urisToAdd.append("spotify:track:\(match.sourceID)")
             } else {
@@ -250,7 +358,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
             throw PluginError(code: .notFound, message: "Could not find matching tracks on Spotify.")
         }
 
-        // Spotify allows up to 100 URIs per POST.
+        // Spotify allows up to 100 URIs per delta/POST.
         var cursor = 0
         while cursor < urisToAdd.count {
             let chunk = Array(urisToAdd[cursor..<min(cursor + 100, urisToAdd.count)])
@@ -266,10 +374,287 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         return PlaylistAddTracksResult(added: added, notFoundTitles: notFound)
     }
 
+    public func removeTracks(request: PlaylistRemoveTracksRequest) async throws {
+        try Task.checkCancellation()
+        guard !request.playlistID.isEmpty else {
+            throw PluginError(code: .unsupported, message: "Missing Spotify playlist ID.")
+        }
+
+        let uris: [String] = request.trackIDs.compactMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed.hasPrefix("spotify:track:") { return trimmed }
+            let id = SpotifyURL.idFromURI(trimmed)
+            return id.isEmpty ? nil : "spotify:track:\(id)"
+        }
+        guard !uris.isEmpty || !request.itemUIDs.isEmpty else { return }
+
+        let creds = try await tokenManager.getUserWriteCredentials()
+
+        // Prefer Pathfinder `removeItemsFromPlaylist` with exact occurrence UIDs when we have them + a hash.
+        if !request.itemUIDs.isEmpty && request.itemUIDs.count == uris.count,
+           let hash = await resolvePersistedHash(operationName: "removeItemsFromPlaylist", defaultHash: "", allowBundleDiscovery: true),
+           !hash.isEmpty,
+           let body = Pathfinder.buildRemoveItemsBody(playlistID: request.playlistID, uids: request.itemUIDs, sha256Hash: hash),
+           let v2URL = URL(string: Pathfinder.mutationEndpointV2) {
+            let req = Pathfinder.makeAuthorizedPostRequest(
+                url: v2URL,
+                token: creds.accessToken,
+                clientToken: creds.clientToken,
+                userAgent: config.userAgent,
+                body: body
+            )
+            let resp = try await transport.send(req)
+            try await handleCommonWriteErrors(response: resp, operation: "removing tracks")
+            if (200..<300).contains(resp.statusCode),
+               !isPersistedQueryNotFound(resp.body) {
+                if let json = (try? JSONSerialization.jsonObject(with: resp.body)) as? [String: Any],
+                   let data = json["data"] as? [String: Any],
+                   let payload = data["removeItemsFromPlaylist"] as? [String: Any],
+                   (payload["__typename"] as? String) == "RemoveItemsFromPlaylistPayload" {
+                    return
+                }
+            }
+        }
+
+        var cursor = 0
+        while cursor < uris.count {
+            let chunk = Array(uris[cursor..<min(cursor + 100, uris.count)])
+            cursor += chunk.count
+            try await sendSpClientPlaylistChanges(
+                playlistID: request.playlistID,
+                requestBuilder: {
+                    Pathfinder.makeSpClientRemoveItemsRequest(
+                        playlistID: request.playlistID,
+                        uris: chunk,
+                        token: creds.accessToken,
+                        clientToken: creds.clientToken,
+                        userAgent: config.userAgent
+                    )
+                },
+                operation: "removing tracks",
+                fallback: {
+                    guard let fallbackReq = Pathfinder.makeWebAPIRemoveItemsRequest(
+                        playlistID: request.playlistID,
+                        uris: chunk,
+                        token: creds.accessToken,
+                        clientToken: creds.clientToken,
+                        userAgent: self.config.userAgent
+                    ) else {
+                        throw PluginError(code: .internal, message: "Failed to construct Spotify remove-tracks request.")
+                    }
+                    let resp = try await self.transport.send(fallbackReq)
+                    try await self.handleCommonWriteErrors(response: resp, operation: "removing tracks")
+                    guard (200..<300).contains(resp.statusCode) else {
+                        throw PluginError(code: .network, message: "Spotify remove tracks returned HTTP \(resp.statusCode).")
+                    }
+                }
+            )
+        }
+    }
+
+    public func renamePlaylist(request: PlaylistRenameRequest) async throws {
+        try Task.checkCancellation()
+        let trimmed = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw PluginError(code: .unsupported, message: "Playlist name cannot be empty.")
+        }
+
+        let creds = try await tokenManager.getUserWriteCredentials()
+        try await sendSpClientPlaylistChanges(
+            playlistID: request.playlistID,
+            requestBuilder: {
+                Pathfinder.makeSpClientRenamePlaylistRequest(
+                    playlistID: request.playlistID,
+                    name: trimmed,
+                    token: creds.accessToken,
+                    clientToken: creds.clientToken,
+                    userAgent: config.userAgent
+                )
+            },
+            operation: "renaming playlists",
+            fallback: {
+                guard let req = Pathfinder.makeWebAPIUpdatePlaylistRequest(
+                    playlistID: request.playlistID,
+                    name: trimmed,
+                    token: creds.accessToken,
+                    clientToken: creds.clientToken,
+                    userAgent: self.config.userAgent
+                ) else {
+                    throw PluginError(code: .internal, message: "Failed to construct Spotify rename fallback request.")
+                }
+                let resp = try await self.transport.send(req)
+                try await self.handleCommonWriteErrors(response: resp, operation: "renaming playlists")
+                guard (200..<300).contains(resp.statusCode) else {
+                    throw PluginError(code: .network, message: "Spotify rename playlist returned HTTP \(resp.statusCode).")
+                }
+            }
+        )
+    }
+
+    /// Creates a new Spotify playlist and registers it at the top of the user's library rootlist.
+    /// Resolves the canonical username beforehand so any expired token fails before creating an upstream playlist.
+    public func createPlaylist(request: PlaylistCreateRequest) async throws -> PlaylistCreateResult {
+        try Task.checkCancellation()
+        let trimmed = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw PluginError(code: .unsupported, message: "Playlist name cannot be empty.")
+        }
+
+        let creds = try await tokenManager.getUserWriteCredentials()
+        let username = await resolveCanonicalUsername(accessToken: creds.accessToken, clientToken: creds.clientToken)
+
+        guard let createReq = Pathfinder.makeSpClientCreatePlaylistRequest(
+            name: trimmed,
+            description: request.description,
+            token: creds.accessToken,
+            clientToken: creds.clientToken,
+            userAgent: config.userAgent
+        ) else {
+            throw PluginError(code: .internal, message: "Failed to construct Spotify create-playlist request.")
+        }
+
+        let createResp = try await transport.send(createReq)
+        try await handleCommonWriteErrors(response: createResp, operation: "creating playlists")
+        guard (200..<300).contains(createResp.statusCode),
+              let createJSON = (try? JSONSerialization.jsonObject(with: createResp.body)) as? [String: Any],
+              let uri = createJSON["uri"] as? String, !uri.isEmpty else {
+            throw PluginError(code: .network, message: "Spotify create playlist returned HTTP \(createResp.statusCode).")
+        }
+
+        let newID = SpotifyURL.idFromURI(uri)
+        guard SpotifyURL.isValidSpotifyID(newID) else {
+            throw PluginError(code: .apiChanged, message: "Spotify returned an unrecognized playlist URI: \(uri)")
+        }
+
+        // Adding to rootlist is best-effort after playlist creation: never re-throw `.unauthorized` or `.network`
+        // so the host retry wrapper cannot accidentally create a second duplicate playlist on Spotify.
+        if let username,
+           let rootReq = Pathfinder.makeSpClientAddToRootlistRequest(
+               username: username,
+               playlistURI: uri,
+               timestampMs: Int64(Date().timeIntervalSince1970 * 1000),
+               token: creds.accessToken,
+               clientToken: creds.clientToken,
+               userAgent: config.userAgent
+           ) {
+            if let rootResp = try? await transport.send(rootReq), !(200..<300).contains(rootResp.statusCode) {
+                await runtimeContext?.log(.warning, "Spotify rootlist add returned HTTP \(rootResp.statusCode) for \(uri).")
+            }
+        } else {
+            await runtimeContext?.log(.warning, "Could not resolve Spotify canonical username; playlist \(uri) created without rootlist link.")
+        }
+
+        let session = await tokenManager.currentUserSession()
+        let ownerName = session?.displayName ?? session?.username
+        let playlist = Playlist(
+            source: "spotify",
+            sourceID: newID,
+            title: trimmed,
+            owner: ownerName,
+            artworkURL: nil,
+            revision: SpotifyParsers.computeRevision(title: trimmed, trackIDs: [])
+        )
+        let webURL = URL(string: "https://open.spotify.com/playlist/\(newID)")!
+        return PlaylistCreateResult(playlist: playlist, url: webURL)
+    }
+
+    public func setPlaylistArtwork(request: PlaylistArtworkRequest) async throws {
+        try Task.checkCancellation()
+        guard !request.playlistID.isEmpty else {
+            throw PluginError(code: .unsupported, message: "Missing Spotify playlist ID.")
+        }
+
+        let creds = try await tokenManager.getUserWriteCredentials()
+        let op: [String: Any]
+        if let jpegData = request.jpegData, !jpegData.isEmpty {
+            guard let uploadReq = Pathfinder.makeUploadPlaylistImageRequest(
+                jpegData: jpegData,
+                token: creds.accessToken,
+                clientToken: creds.clientToken,
+                userAgent: config.userAgent
+            ) else {
+                throw PluginError(code: .internal, message: "Failed to construct Spotify image upload request.")
+            }
+            let uploadResp = try await transport.send(uploadReq)
+            try await handleCommonWriteErrors(response: uploadResp, operation: "uploading playlist cover")
+            guard (200..<300).contains(uploadResp.statusCode),
+                  let uploadJSON = (try? JSONSerialization.jsonObject(with: uploadResp.body)) as? [String: Any],
+                  let uploadToken = uploadJSON["uploadToken"] as? String, !uploadToken.isEmpty else {
+                throw PluginError(code: .network, message: "Spotify cover upload returned HTTP \(uploadResp.statusCode).")
+            }
+
+            guard let regReq = Pathfinder.makeRegisterPlaylistImageRequest(
+                playlistID: request.playlistID,
+                uploadToken: uploadToken,
+                token: creds.accessToken,
+                clientToken: creds.clientToken,
+                userAgent: config.userAgent
+            ) else {
+                throw PluginError(code: .internal, message: "Failed to construct Spotify register-image request.")
+            }
+            let regResp = try await transport.send(regReq)
+            try await handleCommonWriteErrors(response: regResp, operation: "registering playlist cover")
+            guard (200..<300).contains(regResp.statusCode),
+                  let regJSON = (try? JSONSerialization.jsonObject(with: regResp.body)) as? [String: Any],
+                  let picture = regJSON["picture"] as? String, !picture.isEmpty else {
+                throw PluginError(code: .network, message: "Spotify register image returned HTTP \(regResp.statusCode).")
+            }
+            op = Pathfinder.updateListAttributesOp(values: ["picture": picture])
+        } else {
+            op = Pathfinder.updateListAttributesOp(values: [:], cleared: ["LIST_PICTURE"])
+        }
+
+        try await sendSpClientPlaylistChanges(
+            playlistID: request.playlistID,
+            requestBuilder: {
+                Pathfinder.makeSpClientChangesRequest(
+                    playlistID: request.playlistID,
+                    ops: [op],
+                    token: creds.accessToken,
+                    clientToken: creds.clientToken,
+                    userAgent: config.userAgent
+                )
+            },
+            operation: "updating playlist cover",
+            fallback: nil
+        )
+    }
+
+    private func sendSpClientPlaylistChanges(
+        playlistID: String,
+        requestBuilder: () -> URLRequest?,
+        operation: String,
+        fallback: (() async throws -> Void)?
+    ) async throws {
+        guard let spReq = requestBuilder() else {
+            throw PluginError(code: .internal, message: "Failed to construct Spotify request for \(operation).")
+        }
+        let spResp = try await transport.send(spReq)
+        try await handleCommonWriteErrors(response: spResp, operation: operation)
+        if (200..<300).contains(spResp.statusCode) {
+            if let json = (try? JSONSerialization.jsonObject(with: spResp.body)) as? [String: Any],
+               let errors = json["errors"] as? [[String: Any]], !errors.isEmpty {
+                let msg = errors.compactMap { $0["message"] as? String }.joined(separator: "; ")
+                throw PluginError(code: .network, message: msg.isEmpty ? "Spotify rejected playlist change." : msg)
+            }
+            return
+        }
+
+        if let fallback, [404, 405, 415, 501].contains(spResp.statusCode) {
+            try await fallback()
+            return
+        }
+        throw PluginError(code: .network, message: "Spotify \(operation) returned HTTP \(spResp.statusCode).")
+    }
+
+    /// Searches Spotify using Pathfinder `searchDesktop` first, falling back to `/v1/search`.
+    /// Propagates `.unauthorized` immediately and surfaces `.rateLimited` if all search backends rate-limit.
     private func searchBestTrack(
         input: PlaylistAddTrackInput,
         accessToken: String,
-        clientToken: String?
+        clientToken: String?,
+        preResolvedSearchHash: String? = nil
     ) async throws -> TrackRef? {
         var queries: [String] = []
         if let isrc = input.isrc?.trimmingCharacters(in: .whitespacesAndNewlines), !isrc.isEmpty {
@@ -278,13 +663,99 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         let cleanTitle = input.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanArtist = input.artist.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanTitle.isEmpty && !cleanArtist.isEmpty {
-            queries.append("track:\"\(cleanTitle)\" artist:\"\(cleanArtist)\"")
             queries.append("\(cleanTitle) \(cleanArtist)")
         } else if !cleanTitle.isEmpty {
             queries.append(cleanTitle)
         }
 
-        for query in queries {
+        var lastRateLimitError: PluginError?
+
+        // 1. Prefer Pathfinder `searchDesktop` (Web Player endpoint; avoids /v1/search 429 quotas).
+        var hash: String
+        if let preResolvedSearchHash {
+            hash = preResolvedSearchHash
+        } else {
+            hash = await resolvePersistedHash(
+                operationName: "searchDesktop",
+                defaultHash: config.searchDesktopHash,
+                allowBundleDiscovery: true
+            ) ?? config.searchDesktopHash
+        }
+        var didRefreshHash = false
+
+        if !hash.isEmpty, let pfURL = URL(string: Pathfinder.mutationEndpointV2) {
+            for query in queries {
+                guard let body = Pathfinder.buildSearchDesktopBody(query: query, limit: 10, sha256Hash: hash) else { continue }
+                let req = Pathfinder.makeAuthorizedPostRequest(
+                    url: pfURL,
+                    token: accessToken,
+                    clientToken: clientToken,
+                    userAgent: config.userAgent,
+                    body: body
+                )
+                let res = try await transport.send(req)
+                if res.statusCode == 401 {
+                    await tokenManager.invalidate(isUserToken: true)
+                    throw PluginError(code: .unauthorized, message: "Spotify session expired.")
+                }
+                if res.statusCode == 429 {
+                    lastRateLimitError = Self.rateLimitError(from: res, operation: "searching Spotify")
+                    await runtimeContext?.log(.warning, "Spotify searchDesktop returned HTTP 429 for query: \(query)")
+                    continue
+                }
+                if res.statusCode == 200,
+                   isPersistedQueryNotFound(res.body),
+                   !didRefreshHash {
+                    didRefreshHash = true
+                    if let updatedHash = await resolvePersistedHash(
+                        operationName: "searchDesktop",
+                        defaultHash: "",
+                        allowBundleDiscovery: true,
+                        forceRefresh: true
+                    ), !updatedHash.isEmpty {
+                        hash = updatedHash
+                        if let retryBody = Pathfinder.buildSearchDesktopBody(query: query, limit: 10, sha256Hash: hash) {
+                            let retryReq = Pathfinder.makeAuthorizedPostRequest(
+                                url: pfURL,
+                                token: accessToken,
+                                clientToken: clientToken,
+                                userAgent: config.userAgent,
+                                body: retryBody
+                            )
+                            let retryRes = try await transport.send(retryReq)
+                            if retryRes.statusCode == 429 {
+                                lastRateLimitError = Self.rateLimitError(from: retryRes, operation: "searching Spotify")
+                                continue
+                            }
+                            if retryRes.statusCode == 200,
+                               let json = (try? JSONSerialization.jsonObject(with: retryRes.body)) as? [String: Any],
+                               let data = json["data"] as? [String: Any] {
+                                let candidates = SpotifyParsers.parseSearchDesktopTracks(data: data)
+                                if let best = pickBestTrackMatch(candidates: candidates, input: input) {
+                                    return best
+                                }
+                            }
+                        }
+                    }
+                    continue
+                }
+                if res.statusCode == 200,
+                   let json = (try? JSONSerialization.jsonObject(with: res.body)) as? [String: Any],
+                   let data = json["data"] as? [String: Any] {
+                    let candidates = SpotifyParsers.parseSearchDesktopTracks(data: data)
+                    if let best = pickBestTrackMatch(candidates: candidates, input: input) {
+                        return best
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: Web API /v1/search (structured track/artist filters + offline test mocks).
+        var webQueries = queries
+        if !cleanTitle.isEmpty && !cleanArtist.isEmpty {
+            webQueries.insert("track:\"\(cleanTitle)\" artist:\"\(cleanArtist)\"", at: 0)
+        }
+        for query in webQueries {
             guard let req = Pathfinder.makeSearchTracksRequest(
                 query: query,
                 limit: 10,
@@ -297,6 +768,11 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
                 await tokenManager.invalidate(isUserToken: true)
                 throw PluginError(code: .unauthorized, message: "Spotify session expired.")
             }
+            if res.statusCode == 429 {
+                lastRateLimitError = Self.rateLimitError(from: res, operation: "searching Spotify")
+                await runtimeContext?.log(.warning, "Spotify /v1/search returned HTTP 429 for query: \(query)")
+                continue
+            }
             if res.statusCode == 403 {
                 await runtimeContext?.log(.warning, "Spotify /v1/search returned HTTP 403 for query: \(query)")
                 continue
@@ -307,14 +783,53 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
                   let items = tracksObj["items"] as? [[String: Any]], !items.isEmpty else {
                 continue
             }
-            if let best = pickBestSearchMatch(items: items, input: input) {
+            let candidates = items.compactMap(Self.trackRefFromWebAPISearchItem)
+            if let best = pickBestTrackMatch(candidates: candidates, input: input) {
                 return best
             }
+        }
+        if let lastRateLimitError {
+            throw lastRateLimitError
         }
         return nil
     }
 
-    private func pickBestSearchMatch(items: [[String: Any]], input: PlaylistAddTrackInput) -> TrackRef? {
+    private static func trackRefFromWebAPISearchItem(_ item: [String: Any]) -> TrackRef? {
+        guard let title = item["name"] as? String, !title.isEmpty else { return nil }
+        let uri = (item["uri"] as? String) ?? ""
+        let rawID = (item["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? SpotifyURL.idFromURI(uri)
+        guard !rawID.isEmpty else { return nil }
+        let artists = (item["artists"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+        let albumObj = item["album"] as? [String: Any]
+        let albumName = albumObj?["name"] as? String
+        let releaseDate = albumObj?["release_date"] as? String
+        let durationMs = (item["duration_ms"] as? NSNumber)?.intValue
+        let trackNum = (item["track_number"] as? NSNumber)?.intValue
+        let discNum = (item["disc_number"] as? NSNumber)?.intValue
+        let isrc = (item["external_ids"] as? [String: Any])?["isrc"] as? String
+        let explicit = (item["explicit"] as? Bool) ?? false
+        let artworkURL = ((albumObj?["images"] as? [[String: Any]])?
+            .max { (($0["width"] as? NSNumber)?.intValue ?? 0) < (($1["width"] as? NSNumber)?.intValue ?? 0) }?["url"] as? String)
+            .flatMap(URL.init(string:))
+
+        return TrackRef(
+            source: "spotify",
+            sourceID: rawID,
+            title: title,
+            artists: artists,
+            album: albumName,
+            albumArtist: artists.first,
+            trackNumber: trackNum,
+            discNumber: discNum,
+            durationMs: durationMs,
+            isrc: isrc,
+            releaseDate: releaseDate,
+            artworkURL: artworkURL,
+            explicit: explicit
+        )
+    }
+
+    private func pickBestTrackMatch(candidates: [TrackRef], input: PlaylistAddTrackInput) -> TrackRef? {
         let targetTitle = Self.normalizeSearchText(input.title)
         let targetArtist = Self.normalizeSearchText(input.artist)
         let targetAlbum = Self.normalizeSearchText(input.album ?? "")
@@ -322,35 +837,18 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         var bestScore = -1
         var bestRef: TrackRef?
 
-        for item in items {
-            guard let title = item["name"] as? String, !title.isEmpty else { continue }
-            let uri = (item["uri"] as? String) ?? ""
-            let rawID = (item["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? SpotifyURL.idFromURI(uri)
-            guard !rawID.isEmpty else { continue }
-            let artists = (item["artists"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
-            let albumObj = item["album"] as? [String: Any]
-            let albumName = albumObj?["name"] as? String
-            let releaseDate = albumObj?["release_date"] as? String
-            let durationMs = (item["duration_ms"] as? NSNumber)?.intValue
-            let trackNum = (item["track_number"] as? NSNumber)?.intValue
-            let discNum = (item["disc_number"] as? NSNumber)?.intValue
-            let isrc = (item["external_ids"] as? [String: Any])?["isrc"] as? String
-            let explicit = (item["explicit"] as? Bool) ?? false
-            let artworkURL = ((albumObj?["images"] as? [[String: Any]])?
-                .max { (($0["width"] as? NSNumber)?.intValue ?? 0) < (($1["width"] as? NSNumber)?.intValue ?? 0) }?["url"] as? String)
-                .flatMap(URL.init(string:))
-
-            let normTitle = Self.normalizeSearchText(title)
-            let normArtists = Self.normalizeSearchText(artists.joined(separator: " "))
-            let normAlbum = Self.normalizeSearchText(albumName ?? "")
+        for ref in candidates {
+            let normTitle = Self.normalizeSearchText(ref.title)
+            let normArtists = Self.normalizeSearchText(ref.artists.joined(separator: " "))
+            let normAlbum = Self.normalizeSearchText(ref.album ?? "")
 
             var score = 0
-            if let inputISRC = input.isrc?.lowercased(), let isrc = isrc?.lowercased(), !inputISRC.isEmpty, inputISRC == isrc {
+            if let inputISRC = input.isrc?.lowercased(), let isrc = ref.isrc?.lowercased(), !inputISRC.isEmpty, inputISRC == isrc {
                 score += 100
             }
             if normTitle == targetTitle {
                 score += 50
-            } else if normTitle.contains(targetTitle) || targetTitle.contains(normTitle) {
+            } else if !targetTitle.isEmpty && (normTitle.contains(targetTitle) || targetTitle.contains(normTitle)) {
                 score += 25
             }
             if !targetArtist.isEmpty {
@@ -366,7 +864,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
             if !targetAlbum.isEmpty && (normAlbum == targetAlbum || normAlbum.contains(targetAlbum)) {
                 score += 10
             }
-            if let expectedDur = input.durationMs, expectedDur > 0, let actualDur = durationMs, actualDur > 0 {
+            if let expectedDur = input.durationMs, expectedDur > 0, let actualDur = ref.durationMs, actualDur > 0 {
                 let diff = abs(expectedDur - actualDur)
                 if diff <= 3000 { score += 15 }
                 else if diff <= 8000 { score += 5 }
@@ -375,21 +873,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
 
             if score > bestScore {
                 bestScore = score
-                bestRef = TrackRef(
-                    source: "spotify",
-                    sourceID: rawID,
-                    title: title,
-                    artists: artists,
-                    album: albumName,
-                    albumArtist: artists.first,
-                    trackNumber: trackNum,
-                    discNumber: discNum,
-                    durationMs: durationMs,
-                    isrc: isrc,
-                    releaseDate: releaseDate,
-                    artworkURL: artworkURL,
-                    explicit: explicit
-                )
+                bestRef = ref
             }
         }
         return bestScore >= 25 ? bestRef : nil
@@ -401,33 +885,143 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PluginConfigu
         accessToken: String,
         clientToken: String?
     ) async throws {
-        for suffix in ["items", "tracks"] {
-            guard let req = Pathfinder.makeWebAPIAddItemsRequest(
-                playlistID: playlistID,
-                uris: uris,
-                pathSuffix: suffix,
-                token: accessToken,
-                clientToken: clientToken,
-                userAgent: config.userAgent
-            ) else {
-                throw PluginError(code: .internal, message: "Failed to construct Spotify add-tracks request.")
+        try await sendSpClientPlaylistChanges(
+            playlistID: playlistID,
+            requestBuilder: {
+                Pathfinder.makeSpClientAddItemsRequest(
+                    playlistID: playlistID,
+                    uris: uris,
+                    token: accessToken,
+                    clientToken: clientToken,
+                    userAgent: config.userAgent
+                )
+            },
+            operation: "adding tracks",
+            fallback: {
+                for suffix in ["items", "tracks"] {
+                    guard let req = Pathfinder.makeWebAPIAddItemsRequest(
+                        playlistID: playlistID,
+                        uris: uris,
+                        pathSuffix: suffix,
+                        token: accessToken,
+                        clientToken: clientToken,
+                        userAgent: self.config.userAgent
+                    ) else {
+                        throw PluginError(code: .internal, message: "Failed to construct Spotify add-tracks request.")
+                    }
+                    let resp = try await self.transport.send(req)
+                    try await self.handleCommonWriteErrors(response: resp, operation: "adding tracks")
+                    if (resp.statusCode == 404 || resp.statusCode == 405) && suffix == "items" {
+                        continue
+                    }
+                    guard (200..<300).contains(resp.statusCode) else {
+                        throw PluginError(code: .network, message: "Spotify add tracks returned HTTP \(resp.statusCode).")
+                    }
+                    return
+                }
             }
-            let resp = try await transport.send(req)
-            if resp.statusCode == 401 {
-                await tokenManager.invalidate(isUserToken: true)
-                throw PluginError(code: .unauthorized, message: "Spotify session expired.")
-            }
-            if resp.statusCode == 403 {
-                throw PluginError(code: .unsupported, message: "Only playlists that you own can be modified on Spotify.")
-            }
-            if (resp.statusCode == 404 || resp.statusCode == 405) && suffix == "items" {
-                continue
-            }
-            guard (200..<300).contains(resp.statusCode) else {
-                throw PluginError(code: .network, message: "Spotify add tracks returned HTTP \(resp.statusCode).")
-            }
-            return
+        )
+    }
+
+    private func isPersistedQueryNotFound(_ body: Data) -> Bool {
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let errors = json["errors"] as? [[String: Any]] else { return false }
+        return errors.contains { ($0["message"] as? String) == "PersistedQueryNotFound" }
+    }
+
+    /// Resolves a persisted GraphQL SHA-256 hash by checking cache, config defaults, then Spotify's live JS bundles.
+    /// Concurrent callers share one in-flight discovery task so bundles are never downloaded redundantly.
+    private func resolvePersistedHash(
+        operationName: String,
+        defaultHash: String,
+        allowBundleDiscovery: Bool,
+        forceRefresh: Bool = false
+    ) async -> String? {
+        if !forceRefresh, let cached = discoveredHashes[operationName], !cached.isEmpty {
+            return cached
         }
+        if !forceRefresh, !defaultHash.isEmpty {
+            return defaultHash
+        }
+        guard allowBundleDiscovery else {
+            return defaultHash.isEmpty ? nil : defaultHash
+        }
+
+        if let existing = inFlightHashDiscovery {
+            await existing.value
+            if let hit = discoveredHashes[operationName], !hit.isEmpty {
+                return hit
+            }
+            if !forceRefresh {
+                return defaultHash.isEmpty ? nil : defaultHash
+            }
+        }
+
+        let targetOp = operationName
+        let discovery = Task<Void, Never> {
+            await self.fetchBundleHashes(stoppingOnceFound: targetOp, rescanAll: forceRefresh)
+        }
+        inFlightHashDiscovery = discovery
+        await discovery.value
+        inFlightHashDiscovery = nil
+
+        if let hit = discoveredHashes[operationName], !hit.isEmpty {
+            return hit
+        }
+        return defaultHash.isEmpty ? nil : defaultHash
+    }
+
+    private func fetchBundleHashes(stoppingOnceFound targetOp: String, rescanAll: Bool) async {
+        guard let homeURL = URL(string: "https://open.spotify.com/") else { return }
+        var homeReq = URLRequest(url: homeURL, timeoutInterval: 15)
+        homeReq.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
+        guard let homeResp = try? await transport.send(homeReq),
+              homeResp.statusCode == 200,
+              let html = String(data: homeResp.body, encoding: .utf8) else { return }
+
+        let jsURLs = Pathfinder.extractJSBundleURLs(fromHTML: html)
+            .filter { rescanAll || !scannedBundleURLs.contains($0) }
+            .sorted { a, b in (a.contains("web-player") ? 0 : 1) < (b.contains("web-player") ? 0 : 1) }
+            .prefix(12)
+
+        for jsURLString in jsURLs {
+            scannedBundleURLs.insert(jsURLString)
+            guard let jsURL = URL(string: jsURLString) else { continue }
+            var jsReq = URLRequest(url: jsURL, timeoutInterval: 15)
+            jsReq.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
+            guard let jsResp = try? await transport.send(jsReq),
+                  jsResp.statusCode == 200,
+                  let jsSource = String(data: jsResp.body, encoding: .utf8) else { continue }
+            for (k, v) in Pathfinder.extractQueryHashes(fromJS: jsSource) {
+                discoveredHashes[k] = v
+            }
+            if let hit = discoveredHashes[targetOp], !hit.isEmpty {
+                return
+            }
+        }
+    }
+
+    private func handleCommonWriteErrors(response: HTTPResponseData, operation: String) async throws {
+        if response.statusCode == 401 {
+            await tokenManager.invalidate(isUserToken: true)
+            throw PluginError(code: .unauthorized, message: "Spotify session expired.")
+        }
+        if response.statusCode == 403 {
+            throw PluginError(code: .unsupported, message: "Only playlists that you own can be modified on Spotify.")
+        }
+        if response.statusCode == 429 {
+            throw Self.rateLimitError(from: response, operation: operation)
+        }
+    }
+
+    private static func rateLimitError(from response: HTTPResponseData, operation: String) -> PluginError {
+        let raw = response.headerValue("Retry-After").flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 5
+        let clamped = min(max(raw, 1), 30)
+        return PluginError(
+            code: .rateLimited,
+            message: "Spotify rate-limited \(operation) (HTTP 429). Please wait a moment and try again.",
+            retryAfterSeconds: clamped
+        )
     }
 
     private static func normalizeSearchText(_ raw: String) -> String {

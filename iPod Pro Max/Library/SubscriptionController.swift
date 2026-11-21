@@ -31,6 +31,10 @@ final class SubscriptionController {
     private var showPlaylistHandler: (String) -> Void = { _ in }
 
     private var activeTasks: [UUID: Task<Void, Never>] = [:]
+    private var activeActivityCounts: [UUID: Int] = [:]
+    private var recentTitleOverrides: [UUID: (value: String, expiresAt: Date)] = [:]
+    private var recentCoverOverrides: [UUID: (key: String, expiresAt: Date)] = [:]
+    private var verifiedArtworkKeys: Set<String> = []
     private var launchSyncTask: Task<Void, Never>?
     private var didScheduleLaunchSync = false
     private var didWarnDownloadFallback = false
@@ -44,7 +48,29 @@ final class SubscriptionController {
     func artworkURL(for sub: SubscriptionEntry) -> URL? {
         guard let key = sub.artworkKey, !key.isEmpty, let store else { return nil }
         let url = store.artwork.appendingPathComponent("\(key).jpg")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        if verifiedArtworkKeys.contains(key) {
+            return url
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        verifiedArtworkKeys.insert(key)
+        return url
+    }
+
+    private func beginActivity(_ subscriptionID: UUID) {
+        activeActivityCounts[subscriptionID, default: 0] += 1
+        syncingSubIDs.insert(subscriptionID)
+        notify()
+    }
+
+    private func endActivity(_ subscriptionID: UUID) {
+        let remaining = max(0, (activeActivityCounts[subscriptionID] ?? 1) - 1)
+        if remaining == 0 {
+            activeActivityCounts.removeValue(forKey: subscriptionID)
+            syncingSubIDs.remove(subscriptionID)
+        } else {
+            activeActivityCounts[subscriptionID] = remaining
+        }
+        notify()
     }
 
     func observe(_ key: AnyHashable, _ handler: @escaping () -> Void) {
@@ -187,6 +213,7 @@ final class SubscriptionController {
         guard let sub = subscription(forPlaylistID: playlistID) else { return }
         activeTasks[sub.id]?.cancel()
         activeTasks[sub.id] = nil
+        activeActivityCounts.removeValue(forKey: sub.id)
         syncingSubIDs.remove(sub.id)
         activeDownloadStats.removeValue(forKey: sub.id)
         notify()
@@ -202,6 +229,7 @@ final class SubscriptionController {
             await task.value
         }
         activeTasks.removeAll()
+        activeActivityCounts.removeAll()
         syncingSubIDs.removeAll()
         await saveChain?.value
         if let store {
@@ -274,6 +302,68 @@ final class SubscriptionController {
         } catch {
             throw SubscribeError.fetchFailed(error.localizedDescription)
         }
+
+        return await registerNewSubscription(
+            plugin: plugin,
+            resolvedURL: resolvedURL,
+            fetched: fetched,
+            store: store
+        )
+    }
+
+    func createUpstreamPlaylist(
+        name: String,
+        description: String? = nil,
+        pluginID: String = "spotify"
+    ) async throws -> SubscriptionEntry {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw SubscribeError.fetchFailed("Enter a playlist name.")
+        }
+        guard let store, let registry = PluginController.shared.registry else {
+            throw SubscribeError.noLibrary
+        }
+        guard let plugin = PluginController.shared.plugins.first(where: { $0.id == pluginID && !$0.overriddenByUnpacked }),
+              plugin.isEnabledEligible else {
+            throw SubscribeError.pluginUnavailable("Spotify")
+        }
+        guard PluginController.shared.isEnabled(plugin.id) else {
+            throw SubscribeError.pluginDisabled(plugin)
+        }
+        guard let runtime = registry.runtime(for: plugin.id) else {
+            throw SubscribeError.fetchFailed("Could not start \(plugin.name) plug-in.")
+        }
+
+        let created: PlaylistCreateResult
+        do {
+            created = try await executeWithAuthRetry(
+                pluginID: plugin.id,
+                preferredPlaylistID: nil,
+                runtime: runtime,
+                operation: {
+                    try await runtime.createPlaylist(request: PlaylistCreateRequest(name: trimmed, description: description))
+                }
+            )
+        } catch let pErr as PluginError {
+            throw SubscribeError.fetchFailed(pErr.message)
+        } catch {
+            throw SubscribeError.fetchFailed(error.localizedDescription)
+        }
+
+        return await registerNewSubscription(
+            plugin: plugin,
+            resolvedURL: created.url,
+            fetched: PlaylistFetchResult(playlist: created.playlist, tracks: []),
+            store: store
+        )
+    }
+
+    private func registerNewSubscription(
+        plugin: DiscoveredPlugin,
+        resolvedURL: URL,
+        fetched: PlaylistFetchResult,
+        store: PortableLibraryStore
+    ) async -> SubscriptionEntry {
 
         let subID = UUID()
         let playlistID = UUID()
@@ -496,6 +586,8 @@ final class SubscriptionController {
             insertBefore: clamped
         )
 
+        beginActivity(subID)
+
         Task(priority: .utility) { [weak self] in
             await self?.pushReorderUpstream(
                 subscriptionID: subID,
@@ -518,76 +610,59 @@ final class SubscriptionController {
         afterKey: String?,
         request: inout PlaylistReorderRequest
     ) async {
-        guard let runtime = PluginController.shared.registry?.runtime(for: pluginID) else {
-            setReorderNotice(
-                for: subscriptionID,
-                message: "Order changed manually (local only). Only playlists that you own can be modified on Spotify."
-            )
-            return
-        }
-
-        // If the subscription existed before `remoteItemUID` tracking was added, resolve UIDs on demand.
-        if request.movedItemUIDs.count != movedKeys.count, let url = URL(string: sourceURLString) {
-            if let fetched = try? await runtime.fetch(url: url) {
-                var uidByKey: [String: String] = [:]
-                for (idx, ref) in fetched.tracks.enumerated() {
-                    if let uid = ref.remoteItemUID {
-                        uidByKey[SubscribedTrackEntry.makeKey(for: ref, position: idx)] = uid
+        // Resolve `remoteItemUID` values on demand if the subscription predates UID tracking.
+        if request.movedItemUIDs.count != movedKeys.count,
+           let runtime = PluginController.shared.registry?.runtime(for: pluginID),
+           let url = URL(string: sourceURLString),
+           let fetched = try? await runtime.fetch(url: url) {
+            var uidByKey: [String: String] = [:]
+            for (idx, ref) in fetched.tracks.enumerated() {
+                if let uid = ref.remoteItemUID {
+                    uidByKey[SubscribedTrackEntry.makeKey(for: ref, position: idx)] = uid
+                }
+            }
+            if let subIdx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
+                for i in subscriptions[subIdx].tracks.indices {
+                    if let uid = uidByKey[subscriptions[subIdx].tracks[i].key] {
+                        subscriptions[subIdx].tracks[i].trackRef.remoteItemUID = uid
                     }
                 }
-                if let subIdx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
-                    for i in subscriptions[subIdx].tracks.indices {
-                        let k = subscriptions[subIdx].tracks[i].key
-                        if let uid = uidByKey[k] {
-                            subscriptions[subIdx].tracks[i].trackRef.remoteItemUID = uid
-                        }
-                    }
-                    saveSubscriptionsAsync()
-                }
-                let updatedMoved = movedKeys.compactMap { uidByKey[$0] }
-                if updatedMoved.count == movedKeys.count {
-                    request.movedItemUIDs = updatedMoved
-                    if let beforeKey { request.beforeItemUID = uidByKey[beforeKey] }
-                    if let afterKey { request.afterItemUID = uidByKey[afterKey] }
-                }
+                saveSubscriptionsAsync()
+            }
+            let updatedMoved = movedKeys.compactMap { uidByKey[$0] }
+            if updatedMoved.count == movedKeys.count {
+                request.movedItemUIDs = updatedMoved
+                if let beforeKey { request.beforeItemUID = uidByKey[beforeKey] }
+                if let afterKey { request.afterItemUID = uidByKey[afterKey] }
             }
         }
 
-        do {
-            try await runtime.reorderPlaylist(request: request)
-            clearReorderError(for: subscriptionID)
-        } catch let err as PluginError where err.code == .unauthorized {
-            if pluginID == "spotify",
-               await PluginController.shared.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: request.playlistID) {
-                do {
-                    try await runtime.reorderPlaylist(request: request)
-                    clearReorderError(for: subscriptionID)
-                    return
-                } catch let retryErr as PluginError {
-                    setReorderNotice(for: subscriptionID, message: Self.reorderFailureMessage(retryErr.message))
-                    return
-                } catch {
-                    setReorderNotice(for: subscriptionID, message: Self.reorderFailureMessage(error.localizedDescription))
-                    return
-                }
+        let finalRequest = request
+        await runSubscriptionMutation(
+            subscriptionID: subscriptionID,
+            pluginID: pluginID,
+            preferredPlaylistID: finalRequest.playlistID,
+            failurePrefix: "Order changed manually (local only)",
+            unauthAction: "reorder tracks",
+            operation: { runtime in
+                try await runtime.reorderPlaylist(request: finalRequest)
             }
-            setReorderNotice(
-                for: subscriptionID,
-                message: "Order changed manually (local only). Sign in to Spotify in Settings › Plug-ins to sync — only playlists that you own can be modified on Spotify."
-            )
-        } catch let err as PluginError where err.code == .unsupported {
-            setReorderNotice(for: subscriptionID, message: Self.reorderFailureMessage(err.message))
-        } catch {
-            setReorderNotice(for: subscriptionID, message: Self.reorderFailureMessage(error.localizedDescription))
-        }
+        )
     }
 
     private static func reorderFailureMessage(_ detail: String) -> String {
+        failureNoticeMessage(detail, prefix: "Order changed manually (local only)")
+    }
+
+    private static func failureNoticeMessage(_ detail: String, prefix: String) -> String {
         let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.localizedCaseInsensitiveContains("only playlists") && trimmed.localizedCaseInsensitiveContains("own") {
             return trimmed
         }
-        return "Order changed manually (local only) — \(trimmed). Only playlists that you own can be modified on Spotify."
+        if trimmed.isEmpty {
+            return prefix
+        }
+        return "\(prefix) — \(trimmed)"
     }
 
     private func clearReorderError(for subscriptionID: UUID) {
@@ -681,8 +756,7 @@ final class SubscriptionController {
         let subID = sub.id
         let pluginID = sub.sourcePluginID
         let sourcePlaylistID = sub.sourcePlaylistID
-        syncingSubIDs.insert(subID)
-        notify()
+        beginActivity(subID)
 
         Task(priority: .utility) { [weak self] in
             await self?.performAddLibraryTracks(
@@ -700,10 +774,7 @@ final class SubscriptionController {
         sourcePlaylistID: String,
         tracks: [LibraryTrack]
     ) async {
-        defer {
-            syncingSubIDs.remove(subscriptionID)
-            notify()
-        }
+        defer { endActivity(subscriptionID) }
 
         guard let runtime = PluginController.shared.registry?.runtime(for: pluginID) else {
             setReorderNotice(
@@ -726,26 +797,20 @@ final class SubscriptionController {
 
         let result: PlaylistAddTracksResult
         do {
-            result = try await runtime.addTracksToPlaylist(request: request)
-        } catch let err as PluginError where err.code == .unauthorized {
-            if pluginID == "spotify",
-               await PluginController.shared.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: sourcePlaylistID) {
-                do {
-                    result = try await runtime.addTracksToPlaylist(request: request)
-                } catch let retryErr as PluginError {
-                    setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(retryErr.message))
-                    return
-                } catch {
-                    setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(error.localizedDescription))
-                    return
+            result = try await executeWithAuthRetry(
+                pluginID: pluginID,
+                preferredPlaylistID: sourcePlaylistID,
+                runtime: runtime,
+                operation: {
+                    try await runtime.addTracksToPlaylist(request: request)
                 }
-            } else {
-                setReorderNotice(
-                    for: subscriptionID,
-                    message: "Sign in to Spotify in Settings › Plug-ins to add songs — only playlists that you own can be modified on Spotify."
-                )
-                return
-            }
+            )
+        } catch let err as PluginError where err.code == .unauthorized {
+            setReorderNotice(
+                for: subscriptionID,
+                message: "Sign in to Spotify in Settings › Plug-ins to add songs — only playlists that you own can be modified on Spotify."
+            )
+            return
         } catch let err as PluginError {
             setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(err.message))
             return
@@ -799,14 +864,309 @@ final class SubscriptionController {
                 }
             }
         }
+        await refreshAfterMutation(subscriptionID: subscriptionID, pluginID: pluginID, runtime: runtime)
     }
 
     private static func addFailureMessage(_ detail: String) -> String {
-        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.localizedCaseInsensitiveContains("only playlists") && trimmed.localizedCaseInsensitiveContains("own") {
-            return trimmed
+        failureNoticeMessage(detail, prefix: "Couldn't add song(s) to Spotify")
+    }
+
+    // MARK: - Remove Tracks Upstream
+
+    func removeTracks(_ rowIDs: [String], fromPlaylistID playlistID: String) {
+        let removeSet = Set(rowIDs)
+        guard !removeSet.isEmpty,
+              let subIdx = subscriptions.firstIndex(where: { $0.playlistID.uuidString == playlistID }) else { return }
+
+        var sub = subscriptions[subIdx]
+        var removedEntries: [SubscribedTrackEntry] = []
+        var remaining: [SubscribedTrackEntry] = []
+        remaining.reserveCapacity(sub.tracks.count)
+
+        // Match exact occurrence keys first; fall back to `libraryTrackID` only for callers passing UUIDs.
+        let matchedAnyExactKey = sub.tracks.contains { removeSet.contains($0.key) }
+        for entry in sub.tracks {
+            let matches = removeSet.contains(entry.key)
+                || (!matchedAnyExactKey && (entry.libraryTrackID.map { removeSet.contains($0.uuidString) } ?? false))
+            if matches {
+                removedEntries.append(entry)
+            } else {
+                var updated = entry
+                updated.position = remaining.count
+                remaining.append(updated)
+            }
         }
-        return "Couldn't add song(s) to Spotify — \(trimmed). Only playlists that you own can be modified on Spotify."
+        guard !removedEntries.isEmpty else { return }
+
+        sub.tracks = remaining
+        subscriptions[subIdx] = sub
+        liveStatesBySubID[sub.id] = Self.initialStates(for: sub)
+        saveSubscriptionsAsync()
+
+        let playlistUUID = sub.playlistID
+        let updatedTrackIDs = remaining.compactMap(\.libraryTrackID)
+        applyLibraryMutation { cache in
+            if let pIdx = cache.playlists.firstIndex(where: { $0.id == playlistUUID }) {
+                cache.playlists[pIdx].trackIDs = updatedTrackIDs
+            }
+        }
+
+        let subID = sub.id
+        let pluginID = sub.sourcePluginID
+        let sourcePlaylistID = sub.sourcePlaylistID
+        let trackIDs = removedEntries.map(\.trackRef.sourceID).filter { !$0.isEmpty }
+        let uids = removedEntries.compactMap(\.trackRef.remoteItemUID)
+        beginActivity(subID)
+
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            guard !trackIDs.isEmpty || !uids.isEmpty else {
+                self.endActivity(subID)
+                return
+            }
+            let request = PlaylistRemoveTracksRequest(
+                playlistID: sourcePlaylistID,
+                trackIDs: trackIDs,
+                itemUIDs: uids
+            )
+            await self.runSubscriptionMutation(
+                subscriptionID: subID,
+                pluginID: pluginID,
+                preferredPlaylistID: sourcePlaylistID,
+                failurePrefix: "Removed locally",
+                unauthAction: "remove tracks",
+                operation: { runtime in
+                    try await runtime.removeTracksFromPlaylist(request: request)
+                }
+            )
+        }
+    }
+
+    // MARK: - Rename Playlist Upstream
+
+    func renamePlaylist(playlistID: String, to rawName: String) {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let subIdx = subscriptions.firstIndex(where: { $0.playlistID.uuidString == playlistID }) else { return }
+
+        subscriptions[subIdx].title = trimmed
+        let subID = subscriptions[subIdx].id
+        recentTitleOverrides[subID] = (trimmed, Date().addingTimeInterval(10))
+        saveSubscriptionsAsync()
+
+        let playlistUUID = subscriptions[subIdx].playlistID
+        applyLibraryMutation { cache in
+            if let pIdx = cache.playlists.firstIndex(where: { $0.id == playlistUUID }) {
+                cache.playlists[pIdx].name = trimmed
+            }
+        }
+
+        let pluginID = subscriptions[subIdx].sourcePluginID
+        let sourcePlaylistID = subscriptions[subIdx].sourcePlaylistID
+        beginActivity(subID)
+
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let request = PlaylistRenameRequest(playlistID: sourcePlaylistID, name: trimmed)
+            await self.runSubscriptionMutation(
+                subscriptionID: subID,
+                pluginID: pluginID,
+                preferredPlaylistID: sourcePlaylistID,
+                failurePrefix: "Renamed locally",
+                unauthAction: "rename playlists",
+                expectedTitle: trimmed,
+                operation: { runtime in
+                    try await runtime.renamePlaylist(request: request)
+                }
+            )
+        }
+    }
+
+    // MARK: - Update Playlist Cover Upstream
+
+    func setPlaylistArtwork(playlistID: String, imageURL: URL) {
+        guard let sub = subscription(forPlaylistID: playlistID),
+              let store else { return }
+        let subID = sub.id
+        let pluginID = sub.sourcePluginID
+        let sourcePlaylistID = sub.sourcePlaylistID
+        let previousArtworkKey = sub.artworkKey
+        beginActivity(subID)
+
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let prepared: (key: String, jpegData: Data)? = await Task.detached(priority: .utility) {
+                guard let jpeg = ImageLoading.spotifyCoverJPEG(from: imageURL) else {
+                    return nil
+                }
+                let key = "subcover-\(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(16))"
+                try? FileManager.default.createDirectory(at: store.artwork, withIntermediateDirectories: true)
+                let dest = store.artwork.appendingPathComponent("\(key).jpg")
+                try? jpeg.write(to: dest, options: .atomic)
+                // Prune the superseded custom playlist cover (never touch shared album track covers).
+                if let previousArtworkKey, previousArtworkKey.hasPrefix("subcover-") {
+                    let oldFile = store.artwork.appendingPathComponent("\(previousArtworkKey).jpg")
+                    try? FileManager.default.removeItem(at: oldFile)
+                }
+                return (String(key), jpeg)
+            }.value
+
+            guard let prepared else {
+                await MainActor.run {
+                    self.setReorderNotice(for: subID, message: "Could not encode the selected cover image as JPEG.")
+                    self.endActivity(subID)
+                }
+                return
+            }
+
+            await MainActor.run {
+                if let idx = self.subscriptions.firstIndex(where: { $0.id == subID }) {
+                    self.subscriptions[idx].artworkKey = prepared.key
+                    self.verifiedArtworkKeys.insert(prepared.key)
+                    if let previousArtworkKey, previousArtworkKey.hasPrefix("subcover-") {
+                        self.verifiedArtworkKeys.remove(previousArtworkKey)
+                    }
+                    self.recentCoverOverrides[subID] = (prepared.key, Date().addingTimeInterval(10))
+                    self.saveSubscriptionsAsync()
+                    self.notify()
+                }
+            }
+
+            let request = PlaylistArtworkRequest(playlistID: sourcePlaylistID, jpegData: prepared.jpegData)
+            await self.runSubscriptionMutation(
+                subscriptionID: subID,
+                pluginID: pluginID,
+                preferredPlaylistID: sourcePlaylistID,
+                failurePrefix: "Cover updated locally",
+                unauthAction: "update covers",
+                expectedArtworkKey: prepared.key,
+                operation: { runtime in
+                    try await runtime.setPlaylistArtwork(request: request)
+                }
+            )
+        }
+    }
+
+    // MARK: - Shared Upstream Runner, Auth Retry & Post-Mutation Refresh
+
+    private func runSubscriptionMutation(
+        subscriptionID: UUID,
+        pluginID: String,
+        preferredPlaylistID: String?,
+        failurePrefix: String,
+        unauthAction: String,
+        expectedTitle: String? = nil,
+        expectedArtworkKey: String? = nil,
+        operation: (ExternalPlugin) async throws -> Void
+    ) async {
+        defer { endActivity(subscriptionID) }
+        guard let runtime = PluginController.shared.registry?.runtime(for: pluginID) else {
+            setReorderNotice(for: subscriptionID, message: "\(failurePrefix) (plug-in '\(pluginID)' is not running).")
+            return
+        }
+
+        do {
+            try await executeWithAuthRetry(
+                pluginID: pluginID,
+                preferredPlaylistID: preferredPlaylistID,
+                runtime: runtime,
+                operation: { try await operation(runtime) }
+            )
+            clearReorderError(for: subscriptionID)
+            await refreshAfterMutation(
+                subscriptionID: subscriptionID,
+                pluginID: pluginID,
+                runtime: runtime,
+                expectedTitle: expectedTitle,
+                expectedArtworkKey: expectedArtworkKey
+            )
+        } catch let err as PluginError where err.code == .unauthorized {
+            setReorderNotice(
+                for: subscriptionID,
+                message: "\(failurePrefix). Sign in to Spotify in Settings › Plug-ins to \(unauthAction) — only playlists that you own can be modified on Spotify."
+            )
+        } catch let err as PluginError {
+            setReorderNotice(for: subscriptionID, message: Self.failureNoticeMessage(err.message, prefix: failurePrefix))
+        } catch {
+            setReorderNotice(for: subscriptionID, message: Self.failureNoticeMessage(error.localizedDescription, prefix: failurePrefix))
+        }
+    }
+
+    private func executeWithAuthRetry<T>(
+        pluginID: String,
+        preferredPlaylistID: String?,
+        runtime: ExternalPlugin,
+        operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch let err as PluginError where err.code == .unauthorized {
+            if pluginID == "spotify",
+               await PluginController.shared.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: preferredPlaylistID) {
+                return try await operation()
+            }
+            throw err
+        }
+    }
+
+    /// Refreshes remote playlist metadata / UIDs after an upstream edit so `lastSyncedAt` and UI reflect the sync,
+    /// while preserving confirmed local title / cover overrides against short GraphQL cache propagation delays.
+    private func refreshAfterMutation(
+        subscriptionID: UUID,
+        pluginID _: String,
+        runtime: ExternalPlugin,
+        expectedTitle: String? = nil,
+        expectedArtworkKey: String? = nil
+    ) async {
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        guard let idx = subscriptions.firstIndex(where: { $0.id == subscriptionID }),
+              let url = URL(string: subscriptions[idx].sourceURL) else { return }
+
+        if let fetched = try? await runtime.fetch(url: url),
+           let freshIdx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
+            var uidByTrackID: [String: [String]] = [:]
+            for ref in fetched.tracks {
+                if let uid = ref.remoteItemUID, !uid.isEmpty {
+                    uidByTrackID[ref.sourceID, default: []].append(uid)
+                }
+            }
+            for i in subscriptions[freshIdx].tracks.indices {
+                let sid = subscriptions[freshIdx].tracks[i].trackRef.sourceID
+                if var list = uidByTrackID[sid], !list.isEmpty {
+                    subscriptions[freshIdx].tracks[i].trackRef.remoteItemUID = list.removeFirst()
+                    uidByTrackID[sid] = list
+                }
+            }
+            if let owner = fetched.playlist.owner, !owner.isEmpty {
+                subscriptions[freshIdx].owner = owner
+            }
+            if let expectedTitle, !expectedTitle.isEmpty {
+                subscriptions[freshIdx].title = expectedTitle
+            } else if !fetched.playlist.title.isEmpty {
+                subscriptions[freshIdx].title = fetched.playlist.title
+            }
+            if let expectedArtworkKey, !expectedArtworkKey.isEmpty {
+                subscriptions[freshIdx].artworkKey = expectedArtworkKey
+            } else if let remoteArt = fetched.playlist.artworkURL {
+                subscriptions[freshIdx].artworkURL = remoteArt
+            }
+            subscriptions[freshIdx].revision = Self.safeRevision(
+                title: subscriptions[freshIdx].title,
+                trackIDs: subscriptions[freshIdx].tracks.map(\.trackRef.sourceID)
+            )
+            subscriptions[freshIdx].lastSyncedAt = Date()
+            saveSubscriptionsAsync()
+            notify()
+        } else if let fallbackIdx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
+            subscriptions[fallbackIdx].lastSyncedAt = Date()
+            saveSubscriptionsAsync()
+            notify()
+        }
+    }
+
+    private static func safeRevision(title: String, trackIDs: [String]) -> String {
+        let canonical = ([title] + trackIDs).joined(separator: "\n")
+        return SHA256.hex(Data(canonical.utf8))
     }
 
     private nonisolated static func trackRow(from track: LibraryTrack, subscriptionKey: String?) -> TrackRow {
@@ -887,8 +1247,7 @@ final class SubscriptionController {
             acceptYouTubeFallback: PluginController.shared.acceptYouTubeFallback
         )
 
-        syncingSubIDs.insert(subscriptionID)
-        notify()
+        beginActivity(subscriptionID)
 
         // Ensure any files already written in the Download folder (e.g. interrupted prior session)
         // are indexed in memory & library before resolving missing tracks so nothing is downloaded twice.
@@ -930,18 +1289,33 @@ final class SubscriptionController {
         )
 
         let wasCancelled = Task.isCancelled
+        var finalEntry = result.updatedEntry
+        let now = Date()
+        if let titleOverride = recentTitleOverrides[subscriptionID], now < titleOverride.expiresAt {
+            finalEntry.title = titleOverride.value
+        } else {
+            recentTitleOverrides.removeValue(forKey: subscriptionID)
+        }
+        if let coverOverride = recentCoverOverrides[subscriptionID], now < coverOverride.expiresAt {
+            finalEntry.artworkKey = coverOverride.key
+        } else {
+            recentCoverOverrides.removeValue(forKey: subscriptionID)
+        }
+        if let key = finalEntry.artworkKey, !key.isEmpty {
+            verifiedArtworkKeys.insert(key)
+        }
         if let idx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
-            subscriptions[idx] = result.updatedEntry
+            subscriptions[idx] = finalEntry
         }
         liveStatesBySubID[subscriptionID] = result.liveStates
-        syncingSubIDs.remove(subscriptionID)
         activeDownloadStats.removeValue(forKey: subscriptionID)
         if !wasCancelled {
             activeTasks.removeValue(forKey: subscriptionID)
         }
+        endActivity(subscriptionID)
         saveSubscriptionsAsync()
 
-        let playlistUUID = result.updatedEntry.playlistID
+        let playlistUUID = finalEntry.playlistID
         let newTracks = result.newlyImportedTracks
         for track in newTracks {
             readyTracksByID[track.id] = track
@@ -951,7 +1325,7 @@ final class SubscriptionController {
             readyTracksByID.removeValue(forKey: oldID)
         }
         let finalTrackIDs = result.playlistTrackIDs
-        let finalTitle = result.updatedEntry.title
+        let finalTitle = finalEntry.title
         let allPlaylistsSnapshot = getPlaylistsSnapshot()
         let otherReferencedIDs = Set(
             allPlaylistsSnapshot

@@ -7,7 +7,9 @@ import SwiftCrossUI
 struct SubscriptionHeaderView: View {
     var playlistID: String
     var revision: Int
-    var onAddFromLibrary: (() -> Void)? = nil
+    var onChangeCover: (() -> Void)? = nil
+
+    @State private var coverHovered = false
 
     private var controller: SubscriptionController { .shared }
     private var sub: SubscriptionEntry? { controller.subscription(forPlaylistID: playlistID) }
@@ -26,7 +28,21 @@ struct SubscriptionHeaderView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    Cover(url: controller.artworkURL(for: sub), size: 56, symbol: "music.note")
+                    ZStack(alignment: .bottomTrailing) {
+                        Cover(url: controller.artworkURL(for: sub), size: 56, symbol: "music.note")
+                        if coverHovered, !syncing, onChangeCover != nil {
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(Color(white: 0, opacity: 0.45))
+                                .frame(width: 56, height: 56)
+                            Symbol(name: "photo.badge.plus", size: 18, pointSize: 13, tint: .color(SystemColor(light: 0xFFFFFF, dark: 0xFFFFFF)))
+                                .padding(5)
+                        }
+                    }
+                    .onHover { inside in coverHovered = inside }
+                    .onTapGesture {
+                        if !syncing { onChangeCover?() }
+                    }
+                    .help(syncing ? "Sync in progress" : "Click to change cover (1:1 JPEG, min 300×300 px)")
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(sub.title)
@@ -44,22 +60,17 @@ struct SubscriptionHeaderView: View {
 
                     Spacer()
 
-                    if let onAddFromLibrary {
-                        Button("Add Songs…") {
-                            onAddFromLibrary()
-                        }
-                        .disabled(syncing)
-                    }
-
                     if syncing {
                         ProgressView()
                         Button("Stop") {
                             controller.stop(playlistID: playlistID)
                         }
                     } else {
-                        Button("Refresh") {
-                            controller.refresh(playlistID: playlistID)
+                        Button(action: { controller.refresh(playlistID: playlistID) }) {
+                            Symbol(name: "arrow.clockwise", size: 22, pointSize: 14, tint: .secondary)
                         }
+                        .buttonStyle(.borderless)
+                        .help("Refresh Playlist")
                     }
                 }
                 .padding(.horizontal, 16)
@@ -152,112 +163,5 @@ struct SubscriptionHeaderView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
         .background(Color(red: 0.96, green: 0.76, blue: 0.16, opacity: 0.16))
-    }
-}
-
-/// Sheet letting the user search their personal music library and add tracks upstream to a subscribed playlist.
-struct AddLibrarySongsSheet: View {
-    var playlistTitle: String
-    var sourceName: String
-    var libraryRows: [TrackRow]
-    var existingLibraryIDs: Set<String>
-    var onAdd: ([String]) -> Void
-    var onClose: () -> Void
-
-    @State private var query = ""
-    @State private var selectedIDs: Set<String> = []
-
-    private var filteredRows: [TrackRow] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let available = libraryRows.filter { !existingLibraryIDs.contains($0.id) }
-        guard !q.isEmpty else { return Array(available.prefix(120)) }
-        let matched = available.filter { row in
-            row.title.localizedCaseInsensitiveContains(q)
-                || row.artist.localizedCaseInsensitiveContains(q)
-                || row.album.localizedCaseInsensitiveContains(q)
-        }
-        return Array(matched.prefix(120))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Add Library Songs to \(playlistTitle)")
-                .font(.system(size: 16, weight: .semibold))
-
-            Text("Selected songs will be searched on \(sourceName) and added to this playlist (only playlists that you own can be modified on Spotify).")
-                .font(.system(size: 12))
-                .foregroundColor(MacColor.secondaryText)
-
-            TextField("Filter your library by title, artist, or album…", text: $query)
-                .frame(maxWidth: .infinity)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    if filteredRows.isEmpty {
-                        Text(libraryRows.isEmpty ? "No songs in your library yet." : "No matching songs available to add.")
-                            .font(.system(size: 12))
-                            .foregroundColor(MacColor.secondaryText)
-                            .padding(.vertical, 20)
-                    } else {
-                        ForEach(filteredRows, id: \.id) { row in
-                            let chosen = selectedIDs.contains(row.id)
-                            HStack(spacing: 10) {
-                                Symbol(
-                                    name: chosen ? "checkmark.circle.fill" : "plus",
-                                    size: 14,
-                                    pointSize: 13,
-                                    tint: chosen ? .accent : .secondary
-                                )
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(row.title)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .lineLimit(1)
-                                    let subtitle = [row.artist, row.album].filter { !$0.isEmpty }.joined(separator: " — ")
-                                    if !subtitle.isEmpty {
-                                        Text(subtitle)
-                                            .font(.system(size: 11))
-                                            .foregroundColor(MacColor.secondaryText)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                Spacer()
-                                if !row.duration.isEmpty {
-                                    Text(row.duration)
-                                        .font(.system(size: 11))
-                                        .foregroundColor(MacColor.secondaryText)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 1, opacity: chosen ? 0.12 : 0.03)))
-                            .onTapGesture {
-                                if chosen {
-                                    selectedIDs.remove(row.id)
-                                } else {
-                                    selectedIDs.insert(row.id)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(minHeight: 240, maxHeight: 340)
-
-            HStack {
-                Text(selectedIDs.isEmpty ? "Click songs to select" : "\(selectedIDs.count) selected")
-                    .font(.system(size: 11))
-                    .foregroundColor(MacColor.secondaryText)
-                Spacer()
-                Button("Cancel") { onClose() }
-                Button("Search & Add") {
-                    let chosenOrder = libraryRows.map(\.id).filter { selectedIDs.contains($0) }
-                    onAdd(chosenOrder)
-                    onClose()
-                }
-                .disabled(selectedIDs.isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 480)
     }
 }

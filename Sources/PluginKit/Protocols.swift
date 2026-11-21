@@ -13,9 +13,13 @@ public protocol PlaylistReorderable: PlaylistSource {
     func reorder(request: PlaylistReorderRequest) async throws
 }
 
-/// Optional capability on a `PlaylistSource` plug-in that can search and append tracks to a remote playlist.
+/// Optional capability on a `PlaylistSource` plug-in that can search, edit, create, and update artwork for remote playlists.
 public protocol PlaylistEditable: PlaylistSource {
     func addTracks(request: PlaylistAddTracksRequest) async throws -> PlaylistAddTracksResult
+    func removeTracks(request: PlaylistRemoveTracksRequest) async throws
+    func renamePlaylist(request: PlaylistRenameRequest) async throws
+    func createPlaylist(request: PlaylistCreateRequest) async throws -> PlaylistCreateResult
+    func setPlaylistArtwork(request: PlaylistArtworkRequest) async throws
 }
 
 /// Searches for downloadable candidates matching a `TrackRef` and a `QualityPolicy`.

@@ -41,15 +41,18 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         let subscriptionItem = NSMenuItem(title: "New Subscription…", action: #selector(newSubscription(_:)), keyEquivalent: "n")
         subscriptionItem.keyEquivalentModifierMask = [.command, .option]
         subscriptionItem.target = self
+        let spotifyPlaylistItem = NSMenuItem(title: "New Spotify Playlist…", action: #selector(newSpotifyPlaylist(_:)), keyEquivalent: "")
+        spotifyPlaylistItem.target = self
         let infoItem = NSMenuItem(title: "Track Info", action: #selector(openTrackInfo(_:)), keyEquivalent: "i")
         infoItem.keyEquivalentModifierMask = [.command]
         infoItem.target = self
         fileMenu.insertItem(playlistItem, at: 0)
         fileMenu.insertItem(folderItem, at: 1)
         fileMenu.insertItem(subscriptionItem, at: 2)
-        fileMenu.insertItem(infoItem, at: 3)
-        if fileMenu.items.count > 4 {
-            fileMenu.insertItem(.separator(), at: 4)
+        fileMenu.insertItem(spotifyPlaylistItem, at: 3)
+        fileMenu.insertItem(infoItem, at: 4)
+        if fileMenu.items.count > 5 {
+            fileMenu.insertItem(.separator(), at: 5)
         }
     }
 
@@ -92,6 +95,7 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     @objc private func newPlaylist(_ sender: Any?) { AppCommands.createPlaylist?(false) }
     @objc private func newPlaylistFolder(_ sender: Any?) { AppCommands.createPlaylist?(true) }
     @objc private func newSubscription(_ sender: Any?) { AppCommands.newSubscription?() }
+    @objc private func newSpotifyPlaylist(_ sender: Any?) { AppCommands.newSpotifyPlaylist?() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(openSettings(_:)) {
@@ -105,6 +109,9 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         }
         if item.action == #selector(newSubscription(_:)) {
             return AppCommands.newSubscription != nil
+        }
+        if item.action == #selector(newSpotifyPlaylist(_:)) {
+            return AppCommands.newSpotifyPlaylist != nil
         }
         if item.action == #selector(toggleSidebar(_:)) {
             item.title = MacChrome.shared.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"

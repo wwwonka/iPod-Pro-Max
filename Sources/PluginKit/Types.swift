@@ -153,6 +153,58 @@ public struct PlaylistAddTracksResult: Codable, Sendable, Equatable {
     }
 }
 
+public struct PlaylistRenameRequest: Codable, Sendable, Equatable {
+    public var playlistID: String
+    public var name: String
+
+    public init(playlistID: String, name: String) {
+        self.playlistID = playlistID
+        self.name = name
+    }
+}
+
+public struct PlaylistRemoveTracksRequest: Codable, Sendable, Equatable {
+    public var playlistID: String
+    public var trackIDs: [String]
+    public var itemUIDs: [String]
+
+    public init(playlistID: String, trackIDs: [String], itemUIDs: [String] = []) {
+        self.playlistID = playlistID
+        self.trackIDs = trackIDs
+        self.itemUIDs = itemUIDs
+    }
+}
+
+public struct PlaylistCreateRequest: Codable, Sendable, Equatable {
+    public var name: String
+    public var description: String?
+
+    public init(name: String, description: String? = nil) {
+        self.name = name
+        self.description = description
+    }
+}
+
+public struct PlaylistCreateResult: Codable, Sendable, Equatable {
+    public var playlist: Playlist
+    public var url: URL
+
+    public init(playlist: Playlist, url: URL) {
+        self.playlist = playlist
+        self.url = url
+    }
+}
+
+public struct PlaylistArtworkRequest: Codable, Sendable, Equatable {
+    public var playlistID: String
+    public var jpegData: Data?
+
+    public init(playlistID: String, jpegData: Data?) {
+        self.playlistID = playlistID
+        self.jpegData = jpegData
+    }
+}
+
 public struct Availability: Codable, Sendable, Equatable, Hashable {
     public var freeSlot: Bool
     public var queueLength: Int

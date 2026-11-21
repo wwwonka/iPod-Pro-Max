@@ -27,10 +27,12 @@
         var onAddMusicFolder: () -> Void = {}
         var onCreatePlaylist: (Bool) -> Void = { _ in }
         var onNewSubscription: () -> Void = {}
+        var onNewSpotifyPlaylist: () -> Void = {}
         var onRenamePlaylist: (String, String) -> Void = { _, _ in }
         var onDeletePlaylist: (String) -> Void = { _ in }
         var onRefreshSubscription: (String) -> Void = { _ in }
         var onStopSubscription: (String) -> Void = { _ in }
+        var onAddTracksToPlaylist: ([String], String) -> Void = { _, _ in }
         var onUnsubscribePlaylist: (String) -> Void = { _ in }
         var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
         var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
@@ -97,10 +99,12 @@
             coordinator.onAddMusicFolder = onAddMusicFolder
             coordinator.onCreatePlaylist = onCreatePlaylist
             coordinator.onNewSubscription = onNewSubscription
+            coordinator.onNewSpotifyPlaylist = onNewSpotifyPlaylist
             coordinator.onRenamePlaylist = onRenamePlaylist
             coordinator.onDeletePlaylist = onDeletePlaylist
             coordinator.onRefreshSubscription = onRefreshSubscription
             coordinator.onStopSubscription = onStopSubscription
+            coordinator.onAddTracksToPlaylist = onAddTracksToPlaylist
             coordinator.onUnsubscribePlaylist = onUnsubscribePlaylist
             coordinator.onMovePlaylistToFolder = onMovePlaylistToFolder
             coordinator.onSendPlaylistToDevice = onSendPlaylistToDevice
@@ -666,10 +670,12 @@
             var onAddMusicFolder: () -> Void = {}
             var onCreatePlaylist: (Bool) -> Void = { _ in }
             var onNewSubscription: () -> Void = {}
+            var onNewSpotifyPlaylist: () -> Void = {}
             var onRenamePlaylist: (String, String) -> Void = { _, _ in }
             var onDeletePlaylist: (String) -> Void = { _ in }
             var onRefreshSubscription: (String) -> Void = { _ in }
             var onStopSubscription: (String) -> Void = { _ in }
+            var onAddTracksToPlaylist: ([String], String) -> Void = { _, _ in }
             var onUnsubscribePlaylist: (String) -> Void = { _ in }
             var onMovePlaylistToFolder: (String, String?, Int?) -> Void = { _, _, _ in }
         var onSendPlaylistToDevice: (String, String) -> Void = { _, _ in }
@@ -706,9 +712,12 @@
                 newFolder.target = self
                 let newSub = NSMenuItem(title: "New Subscription…", action: #selector(menuNewSubscription), keyEquivalent: "")
                 newSub.target = self
+                let newSpotify = NSMenuItem(title: "New Spotify Playlist…", action: #selector(menuNewSpotifyPlaylist), keyEquivalent: "")
+                newSpotify.target = self
                 menu.addItem(newPlaylist)
                 menu.addItem(newFolder)
                 menu.addItem(newSub)
+                menu.addItem(newSpotify)
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
                 cell.keepPlusVisible = false
                 if let window = cell.window {
@@ -724,6 +733,7 @@
             @objc private func menuNewPlaylist() { onCreatePlaylist(false) }
             @objc private func menuNewPlaylistFolder() { onCreatePlaylist(true) }
             @objc private func menuNewSubscription() { onNewSubscription() }
+            @objc private func menuNewSpotifyPlaylist() { onNewSpotifyPlaylist() }
 
             @MainActor func refreshFavoriteIcon() {
                 let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"
@@ -906,7 +916,7 @@
                         sidebarCell.onPlus = { [weak self] in self?.onAdd(target) }
                     }
                 }
-                if case .playlist(let id) = node.item, node.subscriptionID == nil {
+                if case .playlist(let id) = node.item {
                     (cell as? SidebarCell)?.onRenameCommit = { [weak self] name in
                         self?.onRenamePlaylist(id, name)
                     }
@@ -1169,6 +1179,9 @@
                     open.target = self
                     menu.addItem(open)
                 }
+                let rename = NSMenuItem(title: "Rename", action: #selector(contextRenamePlaylist), keyEquivalent: "")
+                rename.target = self
+                menu.addItem(rename)
                 menu.addItem(.separator())
                 let unsub = NSMenuItem(title: "Unsubscribe…", action: #selector(contextUnsubscribePlaylist), keyEquivalent: "")
                 unsub.target = self
@@ -1269,7 +1282,6 @@
                     if wasAlreadySelected,
                        next.clickCount == 1,
                        case .playlist = node.item,
-                       node.subscriptionID == nil,
                        let cell = view(atColumn: 0, row: clickedRow, makeIfNecessary: false) as? Sidebar.SidebarCell,
                        let textField = cell.textField {
                         let textPt = cell.convert(currentPoint, from: self)
@@ -1660,7 +1672,6 @@
             if (event.keyCode == 36 || event.keyCode == 76), selectedRow >= 0,
                let node = item(atRow: selectedRow) as? Sidebar.Node,
                case .playlist = node.item,
-               node.subscriptionID == nil,
                let cell = view(atColumn: 0, row: selectedRow, makeIfNecessary: false) as? Sidebar.SidebarCell {
                 cell.beginInlineEdit()
                 return
@@ -1713,26 +1724,47 @@
         // The table itself never handles the drag. Its own drop feedback (a rounded shape around the whole
         // row, wider than the row, which no setting turns off in the source-list style) only appears when
         // it validates a drop, so this view answers the drag events directly and draws the one highlight.
-        private func device(for sender: any NSDraggingInfo) -> (row: Int, id: String)? {
+        private enum DropTarget {
+            case device(String)
+            case playlist(String)
+        }
+
+        private func dropTarget(for sender: any NSDraggingInfo) -> (row: Int, target: DropTarget)? {
             let row = self.row(at: convert(sender.draggingLocation, from: nil))
-            guard row >= 0, let node = item(atRow: row) as? Sidebar.Node, case .device(let id) = node.item,
-                  let payload = TrackDrag.payload, musicDragPayload(in: sender.draggingPasteboard) == payload else { return nil }
-            return (row, id)
+            guard row >= 0, let node = item(atRow: row) as? Sidebar.Node,
+                  let payload = TrackDrag.payload, musicDragPayload(in: sender.draggingPasteboard) == payload,
+                  !TrackDrag.ids.isEmpty else { return nil }
+            switch node.item {
+            case .device(let id):
+                return (row, .device(id))
+            case .playlist(let id) where !node.isFolder:
+                return (row, .playlist(id))
+            default:
+                return nil
+            }
         }
         private func operation(for sender: any NSDraggingInfo) -> NSDragOperation {
-            guard let target = device(for: sender) else { highlightDrop(row: nil); return [] }
-            highlightDrop(row: target.row)
+            guard let hit = dropTarget(for: sender) else { highlightDrop(row: nil); return [] }
+            highlightDrop(row: hit.row)
             return .copy
         }
         override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { operation(for: sender) }
         override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { operation(for: sender) }
         override func draggingExited(_ sender: (any NSDraggingInfo)?) { highlightDrop(row: nil) }
         override func draggingEnded(_ sender: any NSDraggingInfo) { highlightDrop(row: nil) }
-        override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { device(for: sender) != nil }
+        override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { dropTarget(for: sender) != nil }
         override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
             defer { highlightDrop(row: nil) }
-            guard let target = device(for: sender) else { return false }
-            return TrackDrag.accept(musicDragPayload(in: sender.draggingPasteboard), device: target.id)
+            guard let hit = dropTarget(for: sender) else { return false }
+            let pasteboardPayload = musicDragPayload(in: sender.draggingPasteboard)
+            switch hit.target {
+            case .device(let id):
+                return TrackDrag.accept(pasteboardPayload, device: id)
+            case .playlist(let id):
+                guard let pasteboardPayload, pasteboardPayload == TrackDrag.payload, !TrackDrag.ids.isEmpty else { return false }
+                coordinator?.onAddTracksToPlaylist(TrackDrag.ids, id)
+                return true
+            }
         }
         override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) { highlightDrop(row: nil) }
     }

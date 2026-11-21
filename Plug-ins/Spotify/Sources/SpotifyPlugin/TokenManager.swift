@@ -112,6 +112,7 @@ public struct EmbedSession: Equatable, Sendable {
 /// Optional authenticated Spotify Web session captured by the native login WebView or pasted manually (`sp_dc`).
 public struct UserWebSession: Codable, Equatable, Sendable {
     public var spDC: String?
+    public var username: String?
     public var displayName: String?
     public var accessToken: String?
     public var clientToken: String?
@@ -119,12 +120,14 @@ public struct UserWebSession: Codable, Equatable, Sendable {
 
     public init(
         spDC: String? = nil,
+        username: String? = nil,
         displayName: String? = nil,
         accessToken: String? = nil,
         clientToken: String? = nil,
         expiresAtMs: Int64 = 0
     ) {
         self.spDC = spDC
+        self.username = username
         self.displayName = displayName
         self.accessToken = accessToken
         self.clientToken = clientToken
@@ -199,6 +202,23 @@ public actor TokenManager {
 
     public func currentUserSession() -> UserWebSession? {
         userSession
+    }
+
+    public func setResolvedAccountInfo(username: String?, displayName: String?) {
+        guard var cur = userSession else { return }
+        var changed = false
+        if let username, !username.isEmpty, cur.username != username {
+            cur.username = username
+            changed = true
+        }
+        if let displayName, !displayName.isEmpty, cur.displayName != displayName {
+            cur.displayName = displayName
+            changed = true
+        }
+        if changed {
+            userSession = cur
+            persistUserSession(cur)
+        }
     }
 
     public func currentAccountStatus() -> PluginAccountStatus {

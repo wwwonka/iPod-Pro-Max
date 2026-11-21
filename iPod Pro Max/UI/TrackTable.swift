@@ -433,6 +433,7 @@ extension Array {
                 guard isActive else { return nil }
                 if dragPayload == nil {
                     let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
+                    // Only resolved local/downloaded tracks carry a UUID suitable for iPod sync or playlist matching.
                     let downloadedIDs = indexes.compactMap { rows.indices.contains($0) && rows[$0].path != nil ? rows[$0].id : nil }
                     let allSelectedIDs = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
                     let reorderTargets = canReorderPlaylist && subscriptionPlaylistID != nil ? allSelectedIDs : downloadedIDs
@@ -529,6 +530,12 @@ extension Array {
                 copy.representedObject = clickedRow.artist.isEmpty ? clickedRow.title : "\(clickedRow.artist) - \(clickedRow.title)"
                 copy.target = self
                 menu.addItem(copy)
+                if coordinator.currentPlaylistID != nil {
+                    menu.addItem(.separator())
+                    let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
+                    remove.target = self
+                    menu.addItem(remove)
+                }
                 return menu
             }
             if !selectedRowIndexes.contains(clicked) { selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false) }
@@ -553,7 +560,7 @@ extension Array {
                 parent.submenu = choices
                 menu.addItem(parent)
             }
-            if coordinator.currentPlaylistID != nil && coordinator.subscriptionPlaylistID == nil {
+            if coordinator.currentPlaylistID != nil {
                 let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
                 remove.target = self
                 menu.addItem(remove)
@@ -588,6 +595,12 @@ extension Array {
                 showTrackInfo()
                 return
             }
+            if (event.keyCode == 51 || event.keyCode == 117),
+               let coordinator, coordinator.isActive, coordinator.currentPlaylistID != nil,
+               !selectedRowIndexes.isEmpty {
+                removeFromPlaylist()
+                return
+            }
             super.keyDown(with: event)
         }
 
@@ -612,7 +625,12 @@ extension Array {
         }
         @objc private func removeFromPlaylist() {
             guard let coordinator, let playlist = coordinator.currentPlaylistID else { return }
-            let ids = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].id : nil }
+            let isSubscribed = coordinator.subscriptionPlaylistID != nil
+            let ids = selectedRowIndexes.compactMap { row -> String? in
+                guard coordinator.rows.indices.contains(row) else { return nil }
+                // Use the per-position occurrence key on subscribed playlists so duplicate songs don't get bulk-deleted.
+                return isSubscribed ? (coordinator.rows[row].subscriptionKey ?? coordinator.rows[row].id) : coordinator.rows[row].id
+            }
             coordinator.onRemoveFromPlaylist(ids, playlist)
         }
 

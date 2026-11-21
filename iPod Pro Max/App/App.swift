@@ -6,6 +6,7 @@ import iPodKit
 import MediaKit
 #if canImport(AppKitBackend)
     import AppKit
+    import UniformTypeIdentifiers
 #endif
 #if os(Windows)
     import WinSDK
@@ -71,9 +72,9 @@ struct ContentView: View {
     @State private var subscriptionRevision = 0
     @State private var subscriptionsLoaded = false
     @State private var newSubscriptionVisible = false
+    @State private var newSpotifyPlaylistVisible = false
     @State private var newSubscriptionInitialURL = ""
     @State private var subscriptionNotice: String?
-    @State private var libraryPickerPlaylistID: String? = nil
     private let appearanceToken = AppearanceObserverToken()
     @State var selectedAlbumID: String?
     @State var playlistEditorVisible = false
@@ -146,6 +147,9 @@ struct ContentView: View {
             AppCommands.newSubscription = {
                 newSubscriptionInitialURL = ""
                 newSubscriptionVisible = true
+            }
+            AppCommands.newSpotifyPlaylist = {
+                newSpotifyPlaylistVisible = true
             }
             AppCommands.newSubscriptionWithURL = { url in
                 newSubscriptionInitialURL = url
@@ -360,27 +364,6 @@ struct ContentView: View {
         ) {
             PluginInstallSheet()
         }
-        .sheet(
-            isPresented: Binding(
-                get: { libraryPickerPlaylistID != nil },
-                set: { if !$0 { libraryPickerPlaylistID = nil } }
-            )
-        ) {
-            if let targetPlaylistID = libraryPickerPlaylistID,
-               let sub = SubscriptionController.shared.subscription(forPlaylistID: targetPlaylistID) {
-                let existingIDs = Set(sub.tracks.compactMap { $0.libraryTrackID?.uuidString })
-                AddLibrarySongsSheet(
-                    playlistTitle: sub.title,
-                    sourceName: sub.sourceName,
-                    libraryRows: library?.allRows ?? [],
-                    existingLibraryIDs: existingIDs,
-                    onAdd: { chosenIDs in
-                        SubscriptionController.shared.addLibraryTracks(chosenIDs, toPlaylistID: targetPlaylistID)
-                    },
-                    onClose: { libraryPickerPlaylistID = nil }
-                )
-            }
-        }
         .sheet(isPresented: $newSubscriptionVisible) {
             NewSubscriptionSheet(
                 isPresented: $newSubscriptionVisible,
@@ -392,6 +375,12 @@ struct ContentView: View {
                         subscriptionNotice = "Playlist Subscribed\n\nNo download source plug-in is currently enabled. Missing tracks will remain as unavailable placeholders until you enable a download source plug-in in Settings › Plug-ins."
                     }
                 }
+            )
+        }
+        .sheet(isPresented: $newSpotifyPlaylistVisible) {
+            NewSpotifyPlaylistSheet(
+                isPresented: $newSpotifyPlaylistVisible,
+                pluginRevision: pluginSheetRevision
             )
         }
     }
@@ -670,6 +659,10 @@ struct ContentView: View {
     }
 
     private func removeTracksFromPlaylist(_ ids: [String], _ playlistID: String) {
+        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
+            SubscriptionController.shared.removeTracks(ids, fromPlaylistID: playlistID)
+            return
+        }
         guard let id = UUID(uuidString: playlistID) else { return }
         let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
         updatePlaylists { playlists in
@@ -677,6 +670,24 @@ struct ContentView: View {
                   playlists[index].subscriptionID == nil else { return }
             playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
         }
+    }
+
+    private func pickCoverImage(forPlaylistID id: String) {
+        #if canImport(AppKitBackend)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if #available(macOS 11.0, *) {
+            panel.allowedContentTypes = [.image]
+        } else {
+            panel.allowedFileTypes = ["jpg", "jpeg", "png", "heic", "tiff", "webp", "bmp", "gif"]
+        }
+        panel.prompt = "Choose Cover"
+        panel.message = "Choose an image (converted to 1:1 sRGB JPEG, 300–640 px, ≤ 256 KB per Spotify requirements)."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        SubscriptionController.shared.setPlaylistArtwork(playlistID: id, imageURL: url)
+        #endif
     }
 
     private func createNewPlaylist(isFolder: Bool) {
@@ -696,15 +707,19 @@ struct ContentView: View {
     }
 
     private func renamePlaylist(_ id: String, to name: String) {
-        guard let uuid = UUID(uuidString: id) else { return }
-        if let idx = library?.playlists.firstIndex(where: { $0.id == id }),
-           library?.playlists[idx].subscriptionID == nil {
-            library?.playlists[idx].name = name
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let uuid = UUID(uuidString: id) else { return }
+        if let idx = library?.playlists.firstIndex(where: { $0.id == id }) {
+            library?.playlists[idx].name = trimmed
+        }
+        if SubscriptionController.shared.subscription(forPlaylistID: id) != nil {
+            SubscriptionController.shared.renamePlaylist(playlistID: id, to: trimmed)
+            return
         }
         updatePlaylists { playlists in
             guard let index = playlists.firstIndex(where: { $0.id == uuid }),
                   playlists[index].subscriptionID == nil else { return }
-            playlists[index].name = name
+            playlists[index].name = trimmed
         }
     }
 
@@ -865,18 +880,12 @@ struct ContentView: View {
     }
 
     private func renamePlaylist(_ id: String) {
-        guard let playlist = library?.playlists.first(where: { $0.id == id }),
-              playlist.subscriptionID == nil,
-              let uuid = UUID(uuidString: id) else { return }
+        guard let playlist = library?.playlists.first(where: { $0.id == id }) else { return }
         let alert = NSAlert(); alert.messageText = "Rename Playlist"
         let field = NSTextField(string: playlist.name); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = field; alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        updatePlaylists { playlists in
-            if let index = playlists.firstIndex(where: { $0.id == uuid }) { playlists[index].name = name }
-        }
+        renamePlaylist(id, to: field.stringValue)
     }
 
     private func deletePlaylist(_ id: String) {
@@ -1318,10 +1327,12 @@ struct ContentView: View {
                 onAddMusicFolder: { AppCommands.addMusicFolder?() },
                 onCreatePlaylist: { isFolder in createNewPlaylist(isFolder: isFolder) },
                 onNewSubscription: { AppCommands.newSubscription?() },
+                onNewSpotifyPlaylist: { AppCommands.newSpotifyPlaylist?() },
                 onRenamePlaylist: { id, name in renamePlaylist(id, to: name) },
                 onDeletePlaylist: { id in deletePlaylist(id) },
                 onRefreshSubscription: { id in SubscriptionController.shared.refresh(playlistID: id) },
                 onStopSubscription: { id in SubscriptionController.shared.stop(playlistID: id) },
+                onAddTracksToPlaylist: { ids, playlistID in addTracksToPlaylist(ids, playlistID) },
                 onUnsubscribePlaylist: { id in unsubscribePlaylist(id) },
                 onMovePlaylistToFolder: { id, folderID, index in movePlaylist(id, toFolder: folderID, atIndex: index) },
                 onSendPlaylistToDevice: { id, device in sendPlaylist(id, toDevice: device) },
@@ -1400,7 +1411,7 @@ struct ContentView: View {
                         SubscriptionHeaderView(
                             playlistID: subPlaylistID,
                             revision: subscriptionRevision,
-                            onAddFromLibrary: { libraryPickerPlaylistID = subPlaylistID }
+                            onChangeCover: { pickCoverImage(forPlaylistID: subPlaylistID) }
                         )
                         Divider()
                     }
