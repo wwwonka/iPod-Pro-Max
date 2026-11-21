@@ -49,6 +49,9 @@ struct AlbumBrowser: NSViewRepresentable {
         let changed = !c.source.sameStorage(as: albums) || c.query != query || c.folder != artworkFolder
         // An unrelated update must not restore the pre-gesture size over a live pinch.
         let sizeChanged = !c.zoomActive && abs(c.artworkSize - artworkSize) > 0.5
+        defer {
+            if let id = NativePlaybackReveal.pendingAlbumID { c.revealPlaybackTrack(id, in: collection) }
+        }
         guard changed || sizeChanged else { return }
         c.source = albums; c.query = query; c.folder = artworkFolder
         if !c.zoomActive { c.artworkSize = artworkSize }
@@ -187,6 +190,16 @@ struct AlbumBrowser: NSViewRepresentable {
         func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt paths: Set<IndexPath>) {
             guard !mouseTracking, let path = paths.first else { return }
             activate(path, in: collectionView)
+        }
+        @MainActor func revealPlaybackTrack(_ id: String, in collection: NSCollectionView) {
+            guard let index = albums.firstIndex(where: { $0.rows.contains(where: { $0.id == id }) }) else { return }
+            if selectedID != albums[index].id {
+                selectedID = albums[index].id; selectedIndex = index; selectedIDs = [albums[index].id]
+                reflow(collection, reload: true)
+            }
+            collection.layoutSubtreeIfNeeded()
+            if let detail = collection.supplementaryView(forElementKind: NSCollectionView.elementKindSectionFooter, at: IndexPath(item: 0, section: 0)) as? AlbumExpansion,
+               detail.revealPlaybackTrack(id) { NativePlaybackReveal.completeAlbum() }
         }
         func activate(_ path: IndexPath, in collectionView: NSCollectionView) {
             let index = path.item + (path.section == 0 ? 0 : split)
@@ -388,6 +401,7 @@ struct AlbumBrowser: NSViewRepresentable {
         func collectionView(_ collectionView: NSCollectionView, viewForSupplementaryElementOfKind kind: NSCollectionView.SupplementaryElementKind, at indexPath: IndexPath) -> NSView {
             let detail = collectionView.makeSupplementaryView(ofKind: kind, withIdentifier: .init("detail"), for: indexPath) as! AlbumExpansion
             if let album = selectedAlbum { detail.show(album, folder: folder, onPlay: onPlay) }
+            if let id = NativePlaybackReveal.pendingAlbumID, detail.revealPlaybackTrack(id) { NativePlaybackReveal.completeAlbum() }
             return detail
         }
     }
@@ -588,7 +602,7 @@ private final class BlurredArtworkCache {
     }
 }
 
-private final class AlbumExpansion: NSView {
+private final class AlbumExpansion: NSView, NSCollectionViewElement {
     private let backgroundArtwork = NSImageView()
     private let artworkMask = CAGradientLayer()
     private let veil = NSView()
@@ -669,6 +683,12 @@ private final class AlbumExpansion: NSView {
         table.tableColumns[5].width = timeColW
         table.tableColumns[1].width = max(50, available - trackColW - timeColW - spacing - 8)
         table.frame.size.width = available
+    }
+    @discardableResult func revealPlaybackTrack(_ id: String) -> Bool {
+        guard let index = tableCoordinator.rows.firstIndex(where: { $0.id == id }) else { return false }
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+        return true
     }
     func show(_ album: AlbumInfo, folder: URL?, onPlay: @escaping (TrackRow, [TrackRow]) -> Void) {
         self.album = album; tableCoordinator.onPlay = onPlay; tableCoordinator.artworkFolder = folder
@@ -1092,7 +1112,8 @@ private final class AlbumTile: NSCollectionViewItem {
     let scroll = AlbumBrowser.makeScroll(coordinator: coordinator)
     let collection = scroll.documentView as! NSCollectionView
     let tile = coordinator.collectionView(collection, itemForRepresentedObjectAt: IndexPath(item: 0, section: 0))
-    precondition(tile.view.subviews.count == 3)
+    func includesArtwork(_ view: NSView) -> Bool { view is NSImageView || view.subviews.contains(where: includesArtwork) }
+    precondition(includesArtwork(tile.view), "Album tiles must retain their artwork view")
     scroll.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
     let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.contentView = scroll

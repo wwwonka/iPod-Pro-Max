@@ -1,5 +1,6 @@
 import Foundation
 import iPodKit
+import MediaKit
 
 /// The subset of the real app's `LibraryTrack` the prototype needs. Unknown keys in
 /// `library.json` are ignored, so the real file decodes as is.
@@ -16,6 +17,7 @@ struct Track: Decodable {
     var durationMs: Int?
     var genre: String?
     var artworkKey: String?
+    var lyrics: String? = nil
     var hasLyrics: Bool? = nil
     var dateAdded: Date? = nil
     var isFavorite: Bool? = nil
@@ -41,6 +43,8 @@ private struct LibraryDocument: Decodable {
 }
 
 /// Preformatted row for `Table`, whose columns only take `String` key paths.
+enum PlaybackContentKind: String, Sendable { case music, podcast, audiobook }
+
 struct TrackRow: Equatable {
     var id: String = ""
     var title: String
@@ -50,6 +54,10 @@ struct TrackRow: Equatable {
     var year: String
     var duration: String
     var path: String? = nil
+    var lyrics: String? = nil
+    var playbackTitle: String? = nil
+    var playbackSubtitle: String? = nil
+    var playbackKind: PlaybackContentKind = .music
     var hasLyrics = false
     var artworkKey: String? = nil
     var dateAdded: Date? = nil
@@ -100,6 +108,7 @@ struct Library {
     var videoRows: [TrackRow] = []
     var videoRowsByCategory: [VideoCategory: [TrackRow]] = [:]
     var rowsByVideoPlaylist: [String: [TrackRow]] = [:]
+    var trackIDs: Set<String> = []
     var loadMs: Int
     var indexMs: Int
     var favoriteRows: [TrackRow] = []
@@ -111,7 +120,7 @@ struct Library {
         let tracks = cache.tracks.filter { $0.kind == nil || $0.kind == .song }.map {
             Track(id: $0.id.uuidString, title: $0.title, path: $0.path, artist: $0.artist, album: $0.album,
                   albumArtist: $0.albumArtist, year: $0.year, trackNumber: $0.trackNumber,
-                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded, isFavorite: $0.isFavorite)
+                  discNumber: $0.discNumber, durationMs: $0.durationMs, genre: $0.genre, artworkKey: $0.artworkKey, lyrics: $0.lyrics, hasLyrics: $0.hasLyrics, dateAdded: $0.dateAdded, isFavorite: $0.isFavorite)
         }
         let playlists = cache.playlists.map {
             Playlist(
@@ -159,6 +168,7 @@ struct Library {
                 return artist
             }
         }
+        library.trackIDs = Set(library.allRows.map(\.id))
         return library
     }
 
@@ -242,7 +252,7 @@ struct Library {
                 album: t.album ?? "Unknown Album",
                 number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "",
                 year: (t.year ?? 0) > 0 ? "\(t.year!)" : "",
-                duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false
+                duration: formatDuration(t.durationMs ?? 0), path: t.path, lyrics: t.lyrics, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false
             )
             all.append(row)
             byArtist[t.albumArtist ?? row.artist, default: []].append(row)
@@ -298,6 +308,7 @@ struct Library {
         }
         datedAlbums.sort { $0.latest == $1.latest ? $0.index < $1.index : $0.latest > $1.latest }
         library.recentAlbums = datedAlbums.map { $0.album }
+        library.trackIDs = Set(library.allRows.map(\.id))
         return library
     }
 
@@ -319,7 +330,7 @@ struct Library {
                 artworkKey: songs.compactMap(\.artworkKey).first,
                 rows: songs.map { t in
                     TrackRow(id: t.id, title: t.title, artist: t.artist ?? "Unknown Artist", album: t.album ?? "Unknown Album",
-                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0), path: t.path, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false)
+                             number: (t.trackNumber ?? 0) > 0 ? "\(t.trackNumber!)" : "", year: "", duration: formatDuration(t.durationMs ?? 0), path: t.path, lyrics: t.lyrics, hasLyrics: t.hasLyrics ?? false, artworkKey: t.artworkKey, dateAdded: t.dateAdded, isFavorite: t.isFavorite ?? false)
                 },
                 durationMs: songs.reduce(0) { $0 + ($1.durationMs ?? 0) })
         }

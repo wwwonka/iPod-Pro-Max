@@ -25,7 +25,10 @@ struct AudiobookEntry: Identifiable {
             book.chapters.map { chapter in
                 TrackRow(id: chapter.id.uuidString, title: chapter.title, artist: book.author, album: book.title,
                          number: chapter.trackNumber > 0 ? "\(chapter.trackNumber)" : "", year: "",
-                         duration: duration(chapter.durationMs))
+                         duration: duration(chapter.durationMs), path: chapter.path,
+                         lyrics: chapter.lyrics,
+                         playbackSubtitle: book.title + (chapter.trackNumber > 0 ? " — Chapter \(chapter.trackNumber)" : ""),
+                         playbackKind: .audiobook, artworkKey: chapter.artworkKey)
             }
         }
     }

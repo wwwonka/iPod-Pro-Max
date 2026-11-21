@@ -89,6 +89,8 @@ final class MusicTransfer {
     private func start(_ device: IPodDevice) {
         guard tasks[device.id] == nil else { return }
         cancelled.remove(device.id)
+        let activityID = "sync-" + device.id
+        PlayerActivityController.shared.begin(activityID, kind: .sync, title: "Synchronizing \(device.displayName)", cancel: { [weak self] in self?.cancel(device) })
         tasks[device.id] = Task {
             var changed = false
             var failures: [String] = []
@@ -104,7 +106,7 @@ final class MusicTransfer {
                         let grouping = DeviceDataFolder(mountPoint: device.mountPoint).read(DeviceOptions.self, from: DeviceOptions.fileName)?.useAlbumArtistForGrouping ?? true
                         if let result = try await transfer(device, prepare: {
                             try await PortableMusicTransfer.prepare(tracks: tracks, device: device, store: loaded.store, albumArtistGrouping: grouping)
-                        }) { changed = changed || result.added > 0 }
+                        }) { changed = changed || result.added > 0; failures.append(contentsOf: result.failed) }
                     } else if let (shows, loaded) = podcastJobs.removeValue(forKey: device.id) {
                         job = "Podcasts"
                         onStatus("Preparing podcast episodes…")
@@ -112,6 +114,7 @@ final class MusicTransfer {
                             try PortablePodcastTransfer.prepare(shows: shows, device: device, store: loaded.store)
                         }) {
                             changed = changed || result.added > 0
+                            failures.append(contentsOf: result.failed)
                             onPodcastResult(result)
                         }
                     } else if let (selection, loaded) = photoJobs.removeValue(forKey: device.id) {
@@ -120,7 +123,7 @@ final class MusicTransfer {
                         if let result = try await transfer(device, prepare: {
                             try PortablePhotoTransfer.prepare(device: device, store: loaded.store,
                                 library: PortablePhotoTransfer.library(store: loaded.store), selection: selection)
-                        }) { changed = changed || result.photosWritten > 0 }
+                        }) { changed = changed || result.photosWritten > 0; failures.append(contentsOf: result.failed) }
                     } else { break }
                 } catch {
                     if Task.isCancelled || cancelled.contains(device.id) {
@@ -132,6 +135,7 @@ final class MusicTransfer {
                     failures.append("\(job): \(error.localizedDescription)")
                 }
             }
+            PlayerActivityController.shared.finish(activityID, error: failures.isEmpty || cancelled.contains(device.id) ? nil : failures.joined(separator: " · "), cancelled: cancelled.contains(device.id))
             if !failures.isEmpty, !cancelled.contains(device.id) { onStatus("Transfer failed: " + failures.joined(separator: " · ")) }
         }
         onActivityChanged(runningDeviceIDs)
@@ -151,7 +155,10 @@ final class MusicTransfer {
         let gate = TransferProgressGate()
         let engine = SyncEngine(request: prepared.request) { progress in
             guard gate.shouldPublish() else { return }
-            Task { @MainActor in handler("\(progress.phase): \(progress.detail)") }
+            Task { @MainActor in
+                handler("\(progress.phase): \(progress.detail)")
+                PlayerActivityController.shared.progress("sync-" + device.id, detail: "\(progress.phase): \(progress.detail)", fraction: progress.fraction)
+            }
         }
         let task = Task.detached(priority: .userInitiated) { try await engine.run() }
         engines[device.id] = task

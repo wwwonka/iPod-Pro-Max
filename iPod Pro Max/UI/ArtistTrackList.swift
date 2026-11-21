@@ -21,7 +21,8 @@ struct ArtistTrackList: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
-        let table = NSTableView()
+        let table = ArtistQueueTable()
+        table.artistCoordinator = context.coordinator
         context.coordinator.table = table
         // The favorite icon or a pending favorite changed: redraw the visible songs only.
         ListAppearance.shared.observe(context.coordinator) { [weak coordinator = context.coordinator] in
@@ -47,6 +48,7 @@ struct ArtistTrackList: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let c = context.coordinator
+        defer { NativePlaybackReveal.applyArtist(c) }
         c.onSend = onSend
         c.onPlay = onPlay
         c.onToggleFavorite = onToggleFavorite
@@ -71,6 +73,30 @@ struct ArtistTrackList: NSViewRepresentable {
             table.reloadData()
             let kept = IndexSet(c.entries.indices.filter { if case .song(let song) = c.entries[$0] { selected.contains(song.id) } else { false } })
             if kept.isEmpty { table.deselectAll(nil) } else { table.selectRowIndexes(kept, byExtendingSelection: false) }
+        }
+    }
+
+    private final class ArtistQueueTable: NSTableView {
+        weak var artistCoordinator: Coordinator?
+        override func menu(for event: NSEvent) -> NSMenu? {
+            let row = self.row(at: convert(event.locationInWindow, from: nil))
+            guard let c = artistCoordinator, c.entries.indices.contains(row), case .song(let song) = c.entries[row], song.path != nil else { return nil }
+            if !selectedRowIndexes.contains(row) { selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+            let menu = NSMenu()
+            for (title, action) in [("Play Next", #selector(nextInQueue)), ("Add to Queue", #selector(appendQueue))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
+            }
+            return menu
+        }
+        @objc private func nextInQueue() { enqueue(next: true) }
+        @objc private func appendQueue() { enqueue(next: false) }
+        private func enqueue(next: Bool) {
+            guard let c = artistCoordinator else { return }
+            let rows = selectedRowIndexes.compactMap { index -> TrackRow? in
+                guard c.entries.indices.contains(index), case .song(let song) = c.entries[index] else { return nil }; return song
+            }
+            PlayerArtwork.folder = c.artworkFolder
+            PlaybackController.shared.enqueue(rows, next: next)
         }
     }
 

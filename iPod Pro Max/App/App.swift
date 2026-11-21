@@ -83,12 +83,22 @@ struct ContentView: View {
     /// The launch found an iPod, whose page opens first (the last page shown is not restored over it).
     @State var launchedOnDevice = false
 
+    private var floatingPlayerBottomPadding: Int {
+        #if canImport(AppKitBackend)
+        return 0
+        #else
+        return playerVisible ? 124 : 0
+        #endif
+    }
+
     var body: some View {
         let _ = appearanceRevision
         let _ = subscriptionRevision
         #if canImport(AppKitBackend)
         // Before the layout of this pass, so the sidebar and the page change in the same frame.
         let _: Void = MacChrome.shared.setSidebarAvailable(!isDevicePage)
+        let _: Void = PlayerDisplayController.shared.setIdleDevices(ipods, selectedID: { if case .device(let id) = selection { return id }; return nil }())
+        let _: Void = MacChrome.shared.setPlaybackSelection(rows: library.flatMap { tableRows($0) } ?? [], selectedIDs: selectedSongIDs, onStart: { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } })
         #endif
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .bottom) {
@@ -118,8 +128,10 @@ struct ContentView: View {
                         detail
                     }
                     #endif
-                }.padding(.bottom, playerVisible ? 124 : 0)
+                }.padding(.bottom, floatingPlayerBottomPadding)
+                #if !canImport(AppKitBackend)
                 if playerVisible { PlayerDock() }
+                #endif
             }
             if drawsWindowControls {
                 WindowControls()
@@ -142,6 +154,25 @@ struct ContentView: View {
                 else { await chooseAndAdd(.audiobooks, title: "Choose Audiobooks Folder") }
             } }
             AppCommands.addPhotosFolder = { Task { await addPhotosFolder() } }
+            PlaybackController.shared.onQueueReset = { PlayerDisplayController.shared.clearSources() }
+            PlaybackController.shared.onEnqueue = { rows in recordPlaybackSource(rows) }
+            PlaybackController.shared.startSelection = { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } }
+            PlayerDisplayController.shared.canReveal = { id in
+                library?.trackIDs.contains(id) == true || audiobookRows.contains(where: { $0.id == id }) || PodcastController.shared.episodeIDs.contains(UUID(uuidString: id) ?? UUID())
+            }
+            PlayerDisplayController.shared.favoriteValue = { id in library?.allRows.first { $0.id == id }?.isFavorite }
+            PlayerDisplayController.shared.onFavorite = { id, favorite in setFavorite(favorite, ids: [id]) }
+            PlaybackController.shared.libraryRowsProvider = { ids in
+                let wanted = Set(ids)
+                let candidates = (library?.allRows ?? []) + audiobookRows + PodcastController.shared.shows.flatMap { show in
+                    show.episodes.compactMap { episode -> TrackRow? in
+                        guard let path = episode.localPath else { return nil }
+                        return TrackRow(id: episode.id.uuidString, title: episode.title, artist: show.author ?? show.title, album: show.title, number: "", year: "", duration: "", path: path, playbackKind: .podcast, artworkKey: show.artworkKey)
+                    }
+                }
+                let byID = Dictionary(candidates.filter { wanted.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                return ids.compactMap { byID[$0] }
+            }
             AppCommands.openSettings = { openWindow(id: "settings") }
             AppCommands.createPlaylist = { isFolder in createNewPlaylist(isFolder: isFolder) }
             AppCommands.newSubscription = {
@@ -171,6 +202,9 @@ struct ContentView: View {
                 if settingsLoaded, let store = portableLibrary?.store { PortablePreferences.shared.stageSidebarWidth(Double(points), store: store) }
             }
             #endif
+            if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_ANALYSIS"] {
+                let passed = await checkDerivedAudio(path); flushLog(); exit(passed ? 0 : 1)
+            }
             if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
                 let passed = await checkPlatformAudio(path)
                 logQueue.sync {}
@@ -183,6 +217,28 @@ struct ContentView: View {
                 exit(0)
             }
             #endif
+            if ProcessInfo.processInfo.environment["IPPM_SETTINGS_SNAPSHOT"] != nil { AppCommands.openSettings?() }
+            if let mode = ProcessInfo.processInfo.environment["IPPM_PLAYER_PREVIEW"], let path = ProcessInfo.processInfo.environment["IPPM_PLAYER_FIXTURE"] {
+                library = Library.portable(PortableLibraryCache(tracks: []), source: "Player preview")
+                settingsLoaded = true
+                #if canImport(AppKitBackend)
+                _ = MacChrome.shared.restoreSidebar(open: true, width: 210, onChange: { _ in })
+                #endif
+                await previewPlayerLCD(mode, path: path)
+                return
+            }
+            if ProcessInfo.processInfo.environment["IPPM_CHECK_PLAYER"] != nil {
+                checkPlaybackController()
+                #if canImport(AppKitBackend)
+                MacChrome.shared.checkPlayerToolbarLayout()
+                await checkPlayerDisplayOwnership()
+                guard await ToolbarPlaybackButton.checkHoverFeedback() else { flushLog(); exit(2) }
+                checkMacMediaSession()
+                #endif
+                await checkPlayerActivityDeadlines()
+                flushLog()
+                exit(0)
+            }
             if ProcessInfo.processInfo.environment["IPPM_CHECK_INTERACTIONS"] != nil {
                 #if canImport(AppKitBackend)
                 await checkNativeMusicInteractions()
@@ -192,6 +248,7 @@ struct ContentView: View {
                 exit(0)
                 #endif
             }
+            #if !canImport(AppKitBackend)
             PlaybackController.shared.onPresenceChanged = { visible in
                 if visible { playerVisible = true }
                 else {
@@ -201,6 +258,8 @@ struct ContentView: View {
                     }
                 }
             }
+            #endif
+            await TemporaryCacheController.shared.startup()
             ApplicationLifecycle.shared.onError = { transferStatus = $0 }
             ApplicationLifecycle.shared.savePreferences = { try await flushPreferences() }
             ApplicationLifecycle.shared.beforeExit = {
@@ -212,6 +271,8 @@ struct ContentView: View {
                 await MusicTransfer.shared.finishActiveTransfers()
                 await PluginController.shared.registry?.shutdownAll(timeoutSeconds: 2.0)
                 try await flushPreferences()
+                await PlaybackController.shared.prepareForExit()
+                await TemporaryCacheController.shared.exitCleanup()
             }
             SubscriptionController.shared.observe("main") {
                 subscriptionRevision += 1
@@ -430,6 +491,19 @@ struct ContentView: View {
     private func startPlayback(_ row: TrackRow, displayed: [TrackRow], library: Library) {
         PlayerArtwork.folder = library.artworkFolder
         PlaybackController.shared.start(row, in: displayed)
+    }
+
+    private func recordPlaybackSource(_ rows: [TrackRow]) {
+        #if canImport(AppKitBackend)
+        let origin = selection, originMode = mode, album = selectedAlbumID, artists = selectedArtists, show = selectedShowID
+        PlayerDisplayController.shared.registerSource(rows.map(\.id)) { id in
+            guard PlayerDisplayController.shared.canReveal(id) else { return }
+            selection = origin; mode = originMode; selectedAlbumID = album; selectedArtists = artists
+            if origin == .podcasts || origin == .recentPodcasts { selectedShowID = show; addingPodcast = false }
+            search = ""; selectedSongIDs = [id]
+            NativePlaybackReveal.request(id, kind: origin == .albums ? .album : origin == .music && originMode == .byArtist ? .artist : .table)
+        }
+        #endif
     }
 
     /// Opt-in integration check: stage changes and close in the same event turn, before debounce.
@@ -1213,7 +1287,15 @@ struct ContentView: View {
             if configuredFolder == nil, let i = CommandLine.arguments.firstIndex(of: "--music-folder"), i + 1 < CommandLine.arguments.count {
                 configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             }
-            let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind, removedSourcePath: removedSourcePath)
+            let gate = LCDImportProgressGate()
+            let scan = Task { try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind, removedSourcePath: removedSourcePath, progress: { done, total in
+                guard gate.publish() else { return }
+                Task { @MainActor in PlayerActivityController.shared.progress("library-import", detail: "\(done) of \(total) files", fraction: total > 0 ? Double(done) / Double(total) : nil) }
+            }) }
+            PlayerActivityController.shared.begin("library-import", kind: .importing, title: "Importing library", cancel: { scan.cancel() })
+            let loaded: LoadedPortableLibrary
+            do { loaded = try await scan.value; PlayerActivityController.shared.finish("library-import") }
+            catch { PlayerActivityController.shared.finish("library-import", error: error is CancellationError ? nil : error.localizedDescription, cancelled: error is CancellationError); throw error }
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
             SettingsController.shared.attach(loaded.store)
@@ -2048,6 +2130,14 @@ struct IPodProMaxApp: App {
         #endif
     }
 
+    private var initialWindowWidth: Int {
+        #if canImport(AppKitBackend)
+        return 1240
+        #else
+        return 1100
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("iPod Pro Max") {
             if let path = ProcessInfo.processInfo.environment["IPPM_CHECK_AUDIO"] {
@@ -2056,7 +2146,7 @@ struct IPodProMaxApp: App {
                 ContentView()
             }
         }
-        .defaultSize(width: 1100, height: 700)
+        .defaultSize(width: initialWindowWidth, height: 700)
         .commands {
             // Merged into the system File menu by the backend.
             CommandMenu("File") {
@@ -2091,5 +2181,15 @@ struct IPodProMaxApp: App {
             PluginLogWindowView()
         }
         .defaultSize(width: 680, height: 420)
+    }
+}
+
+private final class LCDImportProgressGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date.distantPast
+    func publish() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard Date().timeIntervalSince(last) >= 0.5 else { return false }
+        last = Date(); return true
     }
 }

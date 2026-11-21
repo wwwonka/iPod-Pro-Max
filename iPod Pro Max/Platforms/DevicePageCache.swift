@@ -42,7 +42,10 @@ final class DevicePageCache {
             for await _ in group { next() }
         }
     }
-    func invalidate(_ device: IPodDevice) { snapshots.invalidate(device) }
+    func invalidate(_ device: IPodDevice) {
+        snapshots.invalidate(device)
+        PlayerDisplayController.shared.invalidateIdleSpace(for: device.id)
+    }
     func forget(_ device: IPodDevice) {
         invalidate(device)
         #if canImport(AppKitBackend)

@@ -23,10 +23,28 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     }
 
     private func updateMenus() {
+        addPlaybackMenu()
         addSettingsItem()
         addFileMenuItems()
         addViewMenu()
     }
+
+    private func addPlaybackMenu() {
+        guard let menu = NSApp.mainMenu, !menu.items.contains(where: { $0.title == "Controls" }) else { return }
+        let root = NSMenuItem(title: "Controls", action: nil, keyEquivalent: "")
+        let controls = NSMenu(title: "Controls")
+        for (title, action) in [("Play/Pause", #selector(playPause)), ("Previous", #selector(previousTrack)), ("Next", #selector(nextTrack)), ("Stop", #selector(stopPlayback)), ("Shuffle", #selector(shufflePlayback)), ("Repeat", #selector(repeatPlayback))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; controls.addItem(item)
+        }
+        root.submenu = controls; menu.addItem(root)
+    }
+    @objc private func playPause() { if PlaybackController.shared.track == nil { MacChrome.shared.startSelectionPlayback() } else { PlaybackController.shared.toggle() } }
+    @objc private func previousTrack() { PlaybackController.shared.previous() }
+    @objc private func nextTrack() { PlaybackController.shared.next() }
+    @objc private func stopPlayback() { PlaybackController.shared.close() }
+    @objc private func shufflePlayback() { PlaybackController.shared.toggleShuffle() }
+    @objc private func repeatPlayback() { PlaybackController.shared.cycleRepeat() }
 
     private func addFileMenuItems() {
         guard let mainMenu = NSApp.mainMenu,
@@ -98,6 +116,11 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
     @objc private func newSpotifyPlaylist(_ sender: Any?) { AppCommands.newSpotifyPlaylist?() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let playback = PlaybackController.shared
+        if item.action == #selector(playPause) { item.title = playback.playing ? "Pause" : "Play"; return playback.track != nil || MacChrome.shared.canStartSelectionPlayback }
+        if item.action == #selector(shufflePlayback) { item.state = playback.shuffled ? .on : .off; return true }
+        if item.action == #selector(repeatPlayback) { item.title = "Repeat: " + (playback.repeatMode == .off ? "Off" : playback.repeatMode == .one ? "One" : "All"); return true }
+        if item.action == #selector(nextTrack) || item.action == #selector(previousTrack) || item.action == #selector(stopPlayback) { return playback.track != nil }
         if item.action == #selector(openSettings(_:)) {
             return AppCommands.openSettings != nil
         }

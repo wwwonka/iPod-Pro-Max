@@ -62,34 +62,23 @@ func checkNativeSidebarPersistence() async {
         let closed = makeSplit()
         let closedWindow = window(closed)
         let chrome = MacChrome.sidebarCheckChrome(window: closedWindow)
-        chrome.setSidebarAvailable(false) // The iPod may be selected before the toolbar is created.
-        let toolbar = NSToolbar(identifier: "sidebar-state-check")
-        let toggle = chrome.toolbar(toolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
-        if #available(macOS 15.0, *) { precondition(toggle.isHidden, "late toolbar must start hidden on iPod") }
-        func pressToolbar() {
-            precondition(toggle.isEnabled, "toolbar sidebar control must be enabled on Music")
-            guard let action = toggle.action else { preconditionFailure("toolbar sidebar control has no action") }
-            precondition(NSApp.sendAction(action, to: toggle.target, from: toggle), "toolbar sidebar control did not dispatch")
-        }
+        chrome.setSidebarAvailable(false) // The iPod may be selected before the chrome is installed.
         var userChoices: [Bool] = []
         var reportedWidths: [Double] = []
         chrome.onSidebarChange = { userChoices.append($0) }
         chrome.setSidebarAvailable(false) // iPod page on launch
         chrome.restoreSidebar(open: false, width: 325) { reportedWidths.append($0) }
         precondition(!closed.isSidebarOpen && !closed.dividerDragEnabled, "closed preference on iPod")
-        precondition(!toggle.isEnabled, "toolbar control must be disabled on iPod")
         chrome.setSidebarAvailable(true) // Music, while the saved preference is closed
-        precondition(toggle.isEnabled, "toolbar control must become enabled on Music")
-        if #available(macOS 15.0, *) { precondition(!toggle.isHidden, "toolbar must reappear on Music") }
         precondition(!closed.isSidebarOpen && !closed.dividerDragEnabled, "return to Music must respect closed preference")
         closedWindow.setContentSize(NSSize(width: 1100, height: 700))
         closedWindow.layoutIfNeeded()
         precondition(!closed.isSidebarOpen && backend.sidebarWidth(ofSplitView: closed) == 0, "window resize must keep sidebar closed")
-        pressToolbar()
+        chrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         precondition(closed.isSidebarOpen && closed.dividerDragEnabled, "user toggle must open sidebar")
         verifyWidth(closed, 325, "MacChrome toggle must restore saved width")
-        pressToolbar()
+        chrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         chrome.setSidebarAvailable(false)
         chrome.setSidebarAvailable(true)
@@ -103,20 +92,18 @@ func checkNativeSidebarPersistence() async {
         let savedOpen = makeSplit()
         let savedOpenWindow = window(savedOpen)
         let openChrome = MacChrome.sidebarCheckChrome(window: savedOpenWindow)
-        let openToolbar = NSToolbar(identifier: "sidebar-open-check")
-        let openToggle = openChrome.toolbar(openToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
         openChrome.setSidebarAvailable(false)
         openChrome.restoreSidebar(open: true, width: 295) { _ in preconditionFailure("restoring a width must not persist it") }
-        precondition(!savedOpen.isSidebarOpen && !openToggle.isEnabled, "iPod temporarily hides open preference")
+        precondition(!savedOpen.isSidebarOpen, "iPod temporarily hides open preference")
         openChrome.setSidebarAvailable(true)
-        precondition(savedOpen.isSidebarOpen && openToggle.isEnabled, "Music must restore open preference")
+        precondition(savedOpen.isSidebarOpen, "Music must restore open preference")
         verifyWidth(savedOpen, 295, "Music restores open preference width")
-        precondition(NSApp.sendAction(openToggle.action!, to: openToggle.target, from: openToggle))
+        openChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
-        precondition(!savedOpen.isSidebarOpen, "first toolbar click after iPod must close sidebar")
-        precondition(NSApp.sendAction(openToggle.action!, to: openToggle.target, from: openToggle))
+        precondition(!savedOpen.isSidebarOpen, "first sidebar action after iPod must close sidebar")
+        openChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
-        precondition(savedOpen.isSidebarOpen, "second toolbar click after iPod must reopen sidebar")
+        precondition(savedOpen.isSidebarOpen, "second sidebar action after iPod must reopen sidebar")
         verifyWidth(savedOpen, 295, "toolbar reopens at saved width")
         savedOpenWindow.close()
 
@@ -125,20 +112,18 @@ func checkNativeSidebarPersistence() async {
         deferredWindow.isReleasedWhenClosed = false
         deferredWindow.contentView = NSView()
         let deferred = MacChrome.sidebarCheckChrome(window: deferredWindow)
-        let deferredToolbar = NSToolbar(identifier: "sidebar-deferred-check")
-        let deferredToggle = deferred.toolbar(deferredToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
+
         deferred.setSidebarAvailable(false)
         deferred.restoreSidebar(open: false, width: 312) { _ in preconditionFailure("restore is not a drag") }
         deferred.setSidebarAvailable(true)
-        precondition(!deferredToggle.isEnabled, "button must be disabled until the split is ready")
-        _ = NSApp.sendAction(deferredToggle.action!, to: deferredToggle.target, from: deferredToggle)
+        deferred.toggleSidebar() // No split yet: the action must leave the saved choice unchanged.
         let deferredSplit = makeSplit()
         deferredWindow.contentView = deferredSplit
         deferredWindow.layoutIfNeeded()
         deferredSplit.layoutSubtreeIfNeeded()
         deferred.sidebarHierarchyDidChange()
-        precondition(deferredToggle.isEnabled && !deferredSplit.isSidebarOpen, "late split must retain the requested closed state")
-        precondition(NSApp.sendAction(deferredToggle.action!, to: deferredToggle.target, from: deferredToggle))
+        precondition(!deferredSplit.isSidebarOpen, "late split must retain the requested closed state")
+        deferred.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         precondition(deferredSplit.isSidebarOpen, "first enabled click must open the late split")
         verifyWidth(deferredSplit, 312, "late split restores saved width")
@@ -148,17 +133,15 @@ func checkNativeSidebarPersistence() async {
         let earlySplit = makeSplit()
         let earlyWindow = window(earlySplit)
         let earlyChrome = MacChrome.sidebarCheckChrome(window: earlyWindow)
-        let earlyToolbar = NSToolbar(identifier: "sidebar-early-check")
-        let earlyToggle = earlyChrome.toolbar(earlyToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
         earlyChrome.setSidebarAvailable(true)
         earlySplit.onDragEnd?(337)
-        precondition(NSApp.sendAction(earlyToggle.action!, to: earlyToggle.target, from: earlyToggle))
+        earlyChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         var earlyWidths: [Double] = []
         let chosen = earlyChrome.restoreSidebar(open: true, width: 240) { earlyWidths.append($0) }
         precondition(!chosen && !earlySplit.isSidebarOpen, "late settings must not undo the user's early close")
         precondition(earlyWidths == [337], "early resize must be saved after settings load")
-        precondition(NSApp.sendAction(earlyToggle.action!, to: earlyToggle.target, from: earlyToggle))
+        earlyChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         verifyWidth(earlySplit, 337, "early user width must override the older saved width")
         earlyWindow.close()
@@ -170,8 +153,6 @@ func checkNativeSidebarPersistence() async {
         backend.setSidebarWidthBounds(ofSplitView: dragSplit, minimum: 0, maximum: 400)
         let dragWindow = window(dragSplit)
         let dragChrome = MacChrome.sidebarCheckChrome(window: dragWindow)
-        let dragToolbar = NSToolbar(identifier: "sidebar-drag-check")
-        let dragToggle = dragChrome.toolbar(dragToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
         var dragChoices: [Bool] = []
         var dragWidths: [Double] = []
         dragChrome.onSidebarChange = { dragChoices.append($0) }
@@ -197,20 +178,29 @@ func checkNativeSidebarPersistence() async {
         dragDivider(through: [250])
         verifyWidth(dragSplit, 250, "dragged back out")
         dragWidths = []
-        // Past 64 pt it closes (the hidden divider keeps its 1 pt, as when the toolbar closes the sidebar); the pointer coming back (90, 200) and the release must not reopen it.
+        // Native AppKit may reopen while the same gesture returns past the threshold.
         dragDivider(through: [200, 100, 60, 90, 200])
-        precondition(!dragSplit.isSidebarOpen, "dragged past 64 pt, the sidebar snaps shut and stays shut")
+        precondition(dragSplit.isSidebarOpen && dragChrome.isSidebarVisible, "dragging back right reopens live")
+        precondition(dragWidths.last == Double(dragSplit.subviews[0].frame.width.rounded()), "reopened drag saves the final visible width")
+        dragDivider(through: [250])
+        verifyWidth(dragSplit, 250, "width before a completed collapse")
+        dragWidths = []; dragChoices = []
+        // Releasing below the threshold completes collapse; it must stay closed
+        // through later layout, resizing and preference restoration.
+        dragDivider(through: [200, 100, 60])
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        precondition(!dragSplit.isSidebarOpen, "releasing below 64 pt leaves the sidebar closed")
         precondition(!dragChrome.isSidebarVisible && !dragSplit.dividerDragEnabled, "the chrome knows at once")
         try? await Task.sleep(nanoseconds: 200_000_000)
         dragWindow.layoutIfNeeded()
         precondition(!dragSplit.isSidebarOpen && backend.sidebarWidth(ofSplitView: dragSplit) == 0, "closed for SwiftCrossUI's layout too")
         precondition(abs(dragSplit.subviews[1].frame.width - dragSplit.bounds.width) < 1.5 && dragSplit.subviews[1].frame.minX < 1.5, "the content takes the whole width: got \(dragSplit.subviews[1].frame) in \(dragSplit.bounds.width)")
-        precondition(dragChoices == [true, false], "the app is told once that the sidebar closed: \(dragChoices)")
+        precondition(dragChoices == [false], "the app is told once that the sidebar closed: \(dragChoices)")
         precondition(dragWidths == [250], "the width from before the drag is the one kept: \(dragWidths)")
         dragWindow.setContentSize(NSSize(width: 1100, height: 700))
         dragWindow.layoutIfNeeded()
         precondition(!dragSplit.isSidebarOpen && abs(dragSplit.subviews[1].frame.width - dragSplit.bounds.width) < 1.5, "a window resize keeps it closed and the content full width")
-        precondition(NSApp.sendAction(dragToggle.action!, to: dragToggle.target, from: dragToggle))
+        dragChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         precondition(dragSplit.isSidebarOpen && dragSplit.dividerDragEnabled, "the toolbar reopens a sidebar closed by a drag")
         verifyWidth(dragSplit, 250, "reopening restores the width from before the drag")
@@ -230,13 +220,12 @@ func checkNativeSidebarPersistence() async {
         let prior = makeSplit()
         let priorWindow = window(prior)
         let priorChrome = MacChrome.sidebarCheckChrome(window: priorWindow)
-        let priorToolbar = NSToolbar(identifier: "sidebar-save-check")
-        let priorToggle = priorChrome.toolbar(priorToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
+
         priorChrome.onSidebarChange = { PortablePreferences.shared.stageSidebarOpen($0, store: store) }
         priorChrome.setSidebarAvailable(false)
         priorChrome.restoreSidebar(open: true, width: 319) { PortablePreferences.shared.stageSidebarWidth($0, store: store) }
         priorChrome.setSidebarAvailable(true)
-        precondition(NSApp.sendAction(priorToggle.action!, to: priorToggle.target, from: priorToggle))
+        priorChrome.toggleSidebar()
         try! await PortablePreferences.shared.flush()
         let saved = try! store.data.readChecked(PortableSettings.self, from: "settings.json")!
         precondition(!saved.sidebarOpen && saved.sidebarWidth == 319, "toolbar choice must be on disk before quit")
@@ -245,13 +234,12 @@ func checkNativeSidebarPersistence() async {
         let next = makeSplit()
         let nextWindow = window(next)
         let nextChrome = MacChrome.sidebarCheckChrome(window: nextWindow)
-        let nextToolbar = NSToolbar(identifier: "sidebar-relaunch-check")
-        let nextToggle = nextChrome.toolbar(nextToolbar, itemForItemIdentifier: NSToolbarItem.Identifier("toggleSidebar"), willBeInsertedIntoToolbar: true)!
+
         nextChrome.setSidebarAvailable(false)
         nextChrome.restoreSidebar(open: saved.sidebarOpen, width: saved.sidebarWidth) { _ in preconditionFailure("restore must not save a new width") }
         nextChrome.setSidebarAvailable(true)
         precondition(!next.isSidebarOpen, "relaunch through iPod must retain saved closed choice")
-        precondition(NSApp.sendAction(nextToggle.action!, to: nextToggle.target, from: nextToggle))
+        nextChrome.toggleSidebar()
         try? await Task.sleep(nanoseconds: 500_000_000)
         verifyWidth(next, 319, "button reopens the reloaded sidebar at its saved width")
         nextWindow.close()

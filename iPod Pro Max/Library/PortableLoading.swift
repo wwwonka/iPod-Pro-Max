@@ -11,8 +11,8 @@ struct LoadedPortableLibrary {
 }
 
 enum PortableLoading {
-    static func load(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool = false, removedKind: SourceKind? = nil, removedSourcePath: String? = nil, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil) async throws -> LoadedPortableLibrary {
-        try await Task.detached(priority: .userInitiated) {
+    static func load(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool = false, removedKind: SourceKind? = nil, removedSourcePath: String? = nil, root overrideRoot: URL? = nil, legacyLibraryURL: URL? = nil, progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> LoadedPortableLibrary {
+        let worker = Task.detached(priority: .userInitiated) {
             guard let root = overrideRoot ?? PortableRoot.url else { throw LoadingError.noRoot }
             guard let hostID = HostIdentity.current() else { throw LoadingError.noIdentity }
             let store = PortableLibraryStore(root: root, hostID: hostID)
@@ -84,7 +84,7 @@ enum PortableLoading {
                 var books: [LibraryTrack] = []
                 for source in host.sources where source.kind == .audiobooks {
                     let scanned = await AudiobookScanner.scan(folder: URL(fileURLWithPath: source.path), artworkDir: store.artwork,
-                        cached: cache.tracks.filter(\.isAudiobook), namespace: source.id.uuidString)
+                        cached: cache.tracks.filter(\.isAudiobook), namespace: source.id.uuidString, progress: progress)
                     books.append(contentsOf: scanned.tracks)
                 }
                 cache.tracks = cache.tracks.filter { !$0.isAudiobook } + books
@@ -172,7 +172,7 @@ enum PortableLoading {
                         }
                         return track
                     }
-                    let scanned = await FolderImporter.scan(folder: URL(fileURLWithPath: source.path), artworkDir: store.artwork,
+                    let scanned = await FolderImporter.scan(folder: URL(fileURLWithPath: source.path), artworkDir: store.artwork, progress: progress,
                         cached: relocated, namespace: source.id.uuidString, musicOnly: true,
                         excluding: host.sources.filter { $0.kind == .audiobooks }.map { URL(fileURLWithPath: $0.path) })
                     tracks.append(contentsOf: scanned.tracks)
@@ -219,10 +219,12 @@ enum PortableLoading {
             cache.sourcePathHistory = sourceHistory.isEmpty ? nil : sourceHistory
             // Playlist membership is a saved choice. Missing tracks have no visible rows,
             // but keep their IDs so a reconnected source can populate the playlist again.
+            try Task.checkCancellation()
             if cache != originalCache { try store.save(cache) }
             return LoadedPortableLibrary(store: store, cache: cache, configured: host.sources.contains { $0.kind == .music },
                                          audiobooksConfigured: host.sources.contains { $0.kind == .audiobooks })
-        }.value
+        }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
     }
     enum LoadingError: LocalizedError {
         case noRoot, noIdentity
