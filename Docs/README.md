@@ -13,6 +13,9 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Historique des décisions]] : du plan d'origine au plan actuel, et les options écartées
 
 ## Architecture
+
+- [[Lecteur et session média]] : PLR1–19, responsabilités, file, analyse/cache et intégrations système
+- [[Revue du lecteur novembre 2026]] : constats sourcés, reproductions et limites des vérifications
 - [[Modules]] : découpage du code en packages
 - [[Compilation multiplateforme]] : un `Package.swift`, trois OS
 - [[MediaKit]] : tags, pochettes, transcodage (rapide sur Mac, portable ailleurs)
@@ -34,6 +37,8 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Onglet iPod]] : parcourir, modifier, supprimer ce qui est sur l'iPod, façon iTunes
 
 ## Interface
+
+- [[LCD du lecteur]] : géométrie actuelle, interactions, plein écran et mesures du lecteur
 - [[Un code, look Mac partout]] : SwiftCrossUI avec AppKit sur Mac et GTK4 ailleurs
 - [[Thème GTK Mac]] : la feuille de style qui donne le look Mac sur Windows et Linux
 - [[Manques SwiftCrossUI]] : ce qu'il faut ajouter au framework, et ce que le prototype a découvert

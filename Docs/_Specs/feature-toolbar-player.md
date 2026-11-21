@@ -1,6 +1,6 @@
 # Spec — Lecteur dans la barre d'outils (PLR-1 à PLR-19)
 
-Rédigée le 15 novembre 2026. Destinée à l'agent qui implémente. Aucune ligne de code n'existe encore pour cette fonctionnalité.
+Brief initial rédigé le 15 novembre 2026. L’implémentation et les ajustements ultérieurs sont décrits dans [[Lecteur et session média]] et [[LCD du lecteur]] ; les constats de revue sont dans [[Revue du lecteur novembre 2026]]. Les dispositions de départ ci-dessous sont conservées comme référence historique, notamment AirPlay intégré et le sélecteur de mode initial.
 
 ## 0. Cadre
 
