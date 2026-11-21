@@ -166,7 +166,7 @@ import AppKit
     if mode == "queue" {
         let tracks = (0..<5000).map { index in TrackRow(id: "preview-\(index)", title: index == 0 ? "A quiet place to listen" : "The next song \(index)", artist: "Artist", album: "Album", number: "", year: "", duration: "3:24", path: path) }
         PlaybackController.shared.start(tracks[0], in: tracks)
-        if let destination = ProcessInfo.processInfo.environment["IPPM_QUEUE_SNAPSHOT"] { PlayerQueueViewController().snapshot(to: destination) }
+        if let destination = ProcessInfo.processInfo.environment["IPPM_QUEUE_SNAPSHOT"] { PlayerQueueViewController(playback: .shared).snapshot(to: destination) }
     }
     #if canImport(AppKitBackend)
     if mode == "qa-final" {

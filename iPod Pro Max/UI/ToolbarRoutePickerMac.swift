@@ -34,7 +34,7 @@ import AVKit
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         observers.forEach(NotificationCenter.default.removeObserver); observers.removeAll()
-        if let window {
+        if window != nil {
             for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.updateTint() }

@@ -8,7 +8,7 @@ import SwiftCrossUI
     private weak var button: NSButton?
     override init() {
         super.init(); popover.behavior = .transient; popover.delegate = self
-        popover.contentViewController = PlayerQueueViewController()
+        popover.contentViewController = PlayerQueueViewController(playback: .shared)
         popover.contentSize = NSSize(width: 390, height: 420)
     }
     func toggle(from button: NSButton) {
@@ -22,15 +22,19 @@ import SwiftCrossUI
 
 @MainActor final class PlayerQueueViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let playback: PlaybackController
-    init(playback: PlaybackController = .shared) { self.playback = playback; super.init(nibName: nil, bundle: nil) }
+    init(playback: PlaybackController) { self.playback = playback; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError() }
     private let table = QueueTable()
     private let empty = NSTextField(labelWithString: "No tracks up next")
     private let shuffle = NSButton(), repeatButton = NSButton(), clear = NSButton(title: "Clear", target: nil, action: nil)
     private var subscription: SwiftCrossUI.Cancellable?
     private var revision = -1
+    private var renderedShuffle: Bool?
+    private var renderedRepeat: Int?
     private var rows: [TrackRow] = []
     private var draggedIDs: [String] = []
+    private var dragCancelled = false
+    private var escapeMonitor: Any?
     private static let queueType = NSPasteboard.PasteboardType("com.ippm.queue.ids")
     override func loadView() {
         let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 390, height: 420))
@@ -65,8 +69,26 @@ import SwiftCrossUI
         _ = view; view.layoutSubtreeIfNeeded()
         precondition(table.numberOfRows == expectedCount, "Queue must show the frozen order")
         precondition(table.visibleRect.height <= 420, "The queue must remain a virtualized viewport")
+        if rows.count >= 5 { checkGroupDrag() }
         playback.clearUpcoming(); refresh()
         precondition(table.numberOfRows == 1, "Clear must keep the playing row")
+    }
+    private func checkGroupDrag() {
+        let current = rows[0].id, moving = [rows[1].id, rows[3].id]
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.writeObjects(moving.map { id -> NSPasteboardItem in
+            let item = NSPasteboardItem(); item.setString(id, forType: Self.queueType); return item
+        })
+        precondition(acceptPasteboard(board, at: rows.count))
+        precondition(playback.queueRows.suffix(2).map(\.id) == moving && playback.queueRows.first?.id == current)
+        draggedIDs = moving; dragCancelled = true
+        finishDrag(at: NSPoint(x: -1000, y: -1000), operation: [])
+        precondition(playback.queueRows.suffix(2).map(\.id) == moving, "Escape outside the queue preserves all dragged tracks")
+        draggedIDs = moving; dragCancelled = false
+        finishDrag(at: NSPoint(x: -1000, y: -1000), operation: .delete)
+        precondition(!playback.queueRows.contains { moving.contains($0.id) })
+        log("PASS: native multi-item queue drop preserves group order; cancelled outside drag retains tracks; deletion removes the group")
     }
     func snapshot(to path: String) {
         _ = view
@@ -79,9 +101,15 @@ import SwiftCrossUI
     }
     override func viewWillAppear() { super.viewWillAppear(); refresh() }
     private func refresh() {
-        shuffle.contentTintColor = playback.shuffled ? .controlAccentColor : nil
-        repeatButton.contentTintColor = playback.repeatMode == .off ? nil : .controlAccentColor
-        repeatButton.image = systemSymbol(playback.repeatMode == .one ? "repeat.1" : "repeat", pointSize: 14)
+        if renderedShuffle != playback.shuffled {
+            renderedShuffle = playback.shuffled
+            shuffle.contentTintColor = playback.shuffled ? .controlAccentColor : nil
+        }
+        if renderedRepeat != playback.repeatMode.rawValue {
+            renderedRepeat = playback.repeatMode.rawValue
+            repeatButton.contentTintColor = playback.repeatMode == .off ? nil : .controlAccentColor
+            repeatButton.image = systemSymbol(playback.repeatMode == .one ? "repeat.1" : "repeat", pointSize: 14)
+        }
         clear.isEnabled = playback.queueRows.count > 1
         guard revision != playback.queueRevision else { return }
         revision = playback.queueRevision; rows = playback.queueRows
@@ -106,27 +134,47 @@ import SwiftCrossUI
         let item = NSPasteboardItem(); item.setString(rows[row].id, forType: Self.queueType); return item
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        dragCancelled = false
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { self?.dragCancelled = true }
+            return event
+        }
         draggedIDs = rowIndexes.filter { $0 > 0 && rows.indices.contains($0) }.map { rows[$0].id }
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
         tableView.setDropRow(max(1, row), dropOperation: .above)
-        if info.draggingPasteboard.string(forType: Self.queueType) != nil { return .move }
+        if !queueIDs(from: info.draggingPasteboard).isEmpty { return .move }
         return info.draggingPasteboard.string(forType: .string) == TrackDrag.payload && !TrackDrag.ids.isEmpty ? .copy : []
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        let offset = max(0, row - 1)
-        if let id = info.draggingPasteboard.string(forType: Self.queueType) { playback.moveInQueue(id, to: offset); return true }
-        guard info.draggingPasteboard.string(forType: .string) == TrackDrag.payload else { return false }
+        acceptPasteboard(info.draggingPasteboard, at: max(0, row - 1))
+    }
+    private func acceptPasteboard(_ pasteboard: NSPasteboard, at offset: Int) -> Bool {
+        let ids = queueIDs(from: pasteboard)
+        if !ids.isEmpty { playback.moveInQueue(ids, to: offset); return true }
+        guard pasteboard.string(forType: .string) == TrackDrag.payload else { return false }
         let tracks = playback.libraryRowsProvider(TrackDrag.ids)
         guard !tracks.isEmpty else { return false }
         playback.enqueue(tracks, at: offset); return true
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        if !draggedIDs.isEmpty, operation == .delete || (operation.isEmpty && view.window?.frame.contains(screenPoint) == false) {
+        finishDrag(at: screenPoint, operation: operation)
+    }
+    private func finishDrag(at screenPoint: NSPoint, operation: NSDragOperation) {
+        defer {
+            draggedIDs = []
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
+        }
+        // A cancelled drag is never a deletion, even with the pointer outside.
+        if !dragCancelled, !draggedIDs.isEmpty, operation == .delete || (operation.isEmpty && view.window?.frame.contains(screenPoint) == false) {
             playback.removeFromQueue(Set(draggedIDs))
         }
-        draggedIDs = []
     }
+    private func queueIDs(from pasteboard: NSPasteboard) -> [String] {
+        pasteboard.pasteboardItems?.compactMap { $0.string(forType: Self.queueType) } ?? []
+    }
+    deinit { if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) } }
 }
 
 @MainActor private final class QueueTable: NSTableView {

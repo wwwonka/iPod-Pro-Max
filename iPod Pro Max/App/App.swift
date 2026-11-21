@@ -205,7 +205,8 @@ struct ContentView: View {
                 checkPlaybackController()
                 #if canImport(AppKitBackend)
                 MacChrome.shared.checkPlayerToolbarLayout()
-                await ToolbarPlaybackButton.checkHoverFeedback()
+                await checkPlayerDisplayOwnership()
+                guard await ToolbarPlaybackButton.checkHoverFeedback() else { flushLog(); exit(2) }
                 checkMacMediaSession()
                 #endif
                 await checkPlayerActivityDeadlines()

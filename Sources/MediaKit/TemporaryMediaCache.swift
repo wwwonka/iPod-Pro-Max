@@ -19,16 +19,16 @@ public final class TemporaryMediaCache: @unchecked Sendable {
     public static let shared = TemporaryMediaCache()
     public let root: URL
     private let lock = NSRecursiveLock()
-    private let launched: Date
+    private let scratch: TemporaryScratchSpace
     private var policy = MediaCachePolicy()
-    public init(root: URL? = nil, launched: Date = Date()) {
+    public init(root: URL? = nil) {
         #if os(Linux)
         let base = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
         self.root = root ?? base.appendingPathComponent("iPod Pro Max-\(getuid())", isDirectory: true)
         #else
         self.root = root ?? FileManager.default.temporaryDirectory.appendingPathComponent("iPod Pro Max", isDirectory: true)
         #endif
-        self.launched = launched
+        scratch = TemporaryScratchSpace(root: self.root.appendingPathComponent(Category.scratch.rawValue, isDirectory: true))
     }
     public static func key(path: String, size: Int64, modified: Date) -> String {
         var hash = SHA1(); hash.update(data: Array("\(path)|\(size)|\(modified.timeIntervalSince1970)".utf8))
@@ -41,8 +41,7 @@ public final class TemporaryMediaCache: @unchecked Sendable {
     public func directory(_ category: Category) -> URL { root.appendingPathComponent(category.rawValue, isDirectory: true) }
     public func scratchURL(extension suffix: String = "tmp") -> URL {
         lock.lock(); defer { lock.unlock() }
-        let folder = directory(.scratch); try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent(UUID().uuidString + "." + suffix)
+        return scratch.url(extension: suffix)
     }
     public func read(_ category: Category, key: String, version: Int = 1) -> Data? {
         lock.lock(); defer { lock.unlock() }
@@ -85,12 +84,10 @@ public final class TemporaryMediaCache: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; self.policy = policy
         if launchCleanup {
             let fm = FileManager.default
-            for category in Category.allCases {
+            scratch.cleanupAbandonedSessions()
+            for category in [Category.spectrum, .waveforms] {
                 for file in files(category) {
-                    let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
-                    if category == .scratch {
-                        if (values?.creationDate ?? values?.contentModificationDate ?? .distantPast) < launched { try? fm.removeItem(at: file) }
-                    } else if !file.lastPathComponent.hasPrefix("v1-") { try? fm.removeItem(at: file) }
+                    if !file.lastPathComponent.hasPrefix("v1-") { try? fm.removeItem(at: file) }
                 }
             }
         }
@@ -104,6 +101,7 @@ public final class TemporaryMediaCache: @unchecked Sendable {
     }
     public func clear(_ category: Category? = nil) {
         lock.lock(); defer { lock.unlock() }
+        guard category != .scratch else { return } // Scratch has live owners, not cache entries.
         for item in category.map({ [$0] }) ?? [.spectrum, .waveforms] { for url in files(item) { try? FileManager.default.removeItem(at: url) } }
     }
     public func cleanupOnExit() {
@@ -112,15 +110,23 @@ public final class TemporaryMediaCache: @unchecked Sendable {
         if policy.clearWaveformsOnExit { clear(.waveforms) }
     }
     private func files(_ category: Category) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(at: directory(category), includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .creationDateKey], options: [.skipsHiddenFiles])) ?? []
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        if category == .scratch {
+            guard let iterator = FileManager.default.enumerator(at: directory(category), includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
+            return iterator.compactMap { $0 as? URL }.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+        }
+        return (try? FileManager.default.contentsOfDirectory(at: directory(category), includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
     }
     private func trim() {
         let candidates = ([Category.spectrum, .waveforms].flatMap(files)).map { url -> (URL, Int64, Date) in
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             return (url, Int64(values?.fileSize ?? 0), values?.contentModificationDate ?? .distantPast)
-        }.sorted { $0.2 < $1.2 }
+        }
         var total = candidates.reduce(Int64(0)) { $0 + $1.1 }
-        for (url, size, _) in candidates where total > max(0, policy.limitBytes) {
+        let limit = max(0, policy.limitBytes)
+        guard total > limit else { return }
+        // Most writes fit under the cap. Sort only when an eviction is needed.
+        for (url, size, _) in candidates.sorted(by: { $0.2 < $1.2 }) where total > limit {
             if (try? FileManager.default.removeItem(at: url)) != nil { total -= size }
         }
     }

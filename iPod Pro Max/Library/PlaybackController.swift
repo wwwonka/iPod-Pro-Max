@@ -106,7 +106,7 @@ extension AudioEngine {
             status: playing ? .playing : .paused, canPrevious: true, canNext: queue.canGoNext, spoken: track.playbackKind != .music))
     }
     private func refreshQueue() {
-        queueRows = ([queue.current].compactMap { $0 } + queue.upcoming).compactMap { rows[$0] }
+        queueRows = queue.currentAndUpcoming.compactMap { rows[$0] }
         queueRevision += 1
     }
     func enqueue(_ incoming: [TrackRow], next: Bool = false, at insertion: Int? = nil) {
@@ -122,7 +122,8 @@ extension AudioEngine {
     }
     func jump(to id: String) { guard queue.jump(to: id), let row = rows[id] else { return }; load(row) }
     func removeFromQueue(_ ids: Set<String>) { queue.remove(ids); refreshQueue(); publishSession() }
-    func moveInQueue(_ id: String, to index: Int) { queue.move(id, to: index); refreshQueue(); publishSession() }
+    func moveInQueue(_ ids: [String], to index: Int) { queue.move(ids, to: index); refreshQueue(); publishSession() }
+    func moveInQueue(_ id: String, to index: Int) { moveInQueue([id], to: index) }
     func clearUpcoming() { queue.clearUpcoming(); refreshQueue(); publishSession() }
     func setRepeat(_ mode: PlaybackQueue.RepeatMode) { repeatMode = mode; queue.repeatMode = mode; publishSession() }
     func setRate(_ value: Double) {
@@ -179,7 +180,7 @@ extension AudioEngine {
         engine.setRate(rate); engine.play(); publishSession()
         analysis = Task { [weak self] in
             #if os(macOS)
-            let result = await AudioAnalysis.read(URL(fileURLWithPath: path), onSpectrum: { spectrum in
+            let result = await AudioAnalysis.read(URL(fileURLWithPath: path), onSpectrum: { [weak self] spectrum in
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == revision else { return }
                     PlayerDisplayController.shared.setSpectrum(spectrum, forTrackID: row.id)

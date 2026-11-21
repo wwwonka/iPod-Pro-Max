@@ -21,6 +21,47 @@ final class PlayerCompletionTests: XCTestCase {
         XCTAssertEqual(queue.current, "b")
         XCTAssertTrue(queue.jump(to: "new")); XCTAssertFalse(queue.jump(to: "missing"))
     }
+    func testGroupMovePreservesOrderAndProtectsCurrentTrack() {
+        var queue = PlaybackQueue()
+        queue.start(ids: ["a", "b", "c", "d", "e", "f"], at: "a")
+        queue.move(["b", "c"], to: 5)
+        XCTAssertEqual(queue.ids, ["a", "d", "e", "f", "b", "c"])
+        queue.move(["e", "c"], to: 0)
+        XCTAssertEqual(queue.ids, ["a", "e", "c", "d", "f", "b"])
+        queue.move(["a", "missing", "e", "e"], to: 5)
+        XCTAssertEqual(queue.current, "a")
+        XCTAssertEqual(Set(queue.ids), Set(["a", "b", "c", "d", "e", "f"]))
+        XCTAssertEqual(queue.ids.count, 6)
+    }
+    func testOtherCacheSessionCannotUnlinkLiveWork() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = TemporaryMediaCache(root: root), second = TemporaryMediaCache(root: root)
+        let file = first.scratchURL(extension: "spectrum")
+        try Data([1, 2]).write(to: file)
+        let writer = try FileHandle(forWritingTo: file)
+        second.configure(MediaCachePolicy(), launchCleanup: true)
+        second.clear(.scratch)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        try writer.seekToEnd(); try writer.write(contentsOf: Data([3])); try writer.close()
+        first.commitScratch(file, category: .spectrum, key: "live")
+        XCTAssertEqual(first.read(.spectrum, key: "live"), Data([1, 2, 3]))
+        XCTAssertNotEqual(first.scratchURL().deletingLastPathComponent(), second.scratchURL().deletingLastPathComponent())
+    }
+    func testLaunchReapsDeadSessionsButPreservesUnownedLegacyFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = TemporaryMediaCache(root: root)
+        let folder = cache.directory(.scratch)
+        let abandoned = folder.appendingPathComponent("2147483647-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: abandoned, withIntermediateDirectories: true)
+        try Data([0]).write(to: abandoned.appendingPathComponent("old.tmp"))
+        let legacy = folder.appendingPathComponent("old-build.tmp")
+        try Data([0]).write(to: legacy)
+        cache.configure(MediaCachePolicy(), launchCleanup: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
+    }
     func testCacheRevisionKeysAndUnlinkDoesNotInvalidateRead() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -55,11 +96,11 @@ final class PlayerCompletionTests: XCTestCase {
         XCTAssertEqual(cache.read(.waveforms, key: "b"), Data([2,2,2]))
         XCTAssertEqual(cache.sizes().values.reduce(0, +), 6)
         let scratch = cache.scratchURL(); try Data([0]).write(to: scratch)
-        let other = TemporaryMediaCache(root: root, launched: .distantPast); other.configure(policy, launchCleanup: true)
+        let other = TemporaryMediaCache(root: root); other.configure(policy, launchCleanup: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: scratch.path))
         let obsolete = cache.directory(.spectrum).appendingPathComponent("v0-obsolete.bin"); try Data([0]).write(to: obsolete)
-        let freshLaunch = TemporaryMediaCache(root: root, launched: .distantFuture); freshLaunch.configure(policy, launchCleanup: true)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path)); XCTAssertFalse(FileManager.default.fileExists(atPath: obsolete.path))
+        let freshLaunch = TemporaryMediaCache(root: root); freshLaunch.configure(policy, launchCleanup: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: scratch.path)); XCTAssertFalse(FileManager.default.fileExists(atPath: obsolete.path))
         cache.cleanupOnExit(); XCTAssertEqual(cache.sizes()["Spectrum"], 0)
         XCTAssertEqual(cache.sizes()["Waveforms"], 3)
     }
@@ -87,6 +128,15 @@ final class PlayerCompletionTests: XCTestCase {
         XCTAssertNil(SpectrumFile.decode(Data("IPSP0002".utf8)))
         XCTAssertNil(SpectrumFile.decode(data + Data([1])))
         XCTAssertEqual(SpectrumFile.decode(SpectrumFile.header)?.frames.count, 0)
+    }
+    func testPortableFFTWorkspaceTransformsImpulseWithoutStaleValues() {
+        var real = [Float](repeating: 0, count: 2048), imaginary = real
+        real[0] = 1
+        real.withUnsafeMutableBufferPointer { real in
+            imaginary.withUnsafeMutableBufferPointer { imaginary in SpectrumAnalyzer.fft(real, imaginary) }
+        }
+        XCTAssertTrue(real.allSatisfy { abs($0 - 1) < 0.0001 })
+        XCTAssertTrue(imaginary.allSatisfy { abs($0) < 0.0001 })
     }
     func testPortableCacheSettingsDefaults() throws {
         let defaults = try JSONDecoder().decode(PortableSettings.self, from: Data("{}".utf8))

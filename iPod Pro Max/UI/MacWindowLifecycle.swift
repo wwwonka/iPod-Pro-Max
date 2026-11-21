@@ -97,6 +97,7 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         func windowDidFailToEnterFullScreen(_ window: NSWindow) {
             window.styleMask.insert(.titled)
             inner?.windowDidFailToEnterFullScreen?(window)
+            MacChrome.shared.reconcilePlayerPresentation(in: window, fullScreen: false)
         }
         func windowWillExitFullScreen(_ notification: Notification) {
             if let window = notification.object as? NSWindow {
@@ -118,6 +119,7 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         func windowDidFailToExitFullScreen(_ window: NSWindow) {
             window.styleMask.remove(.titled)
             inner?.windowDidFailToExitFullScreen?(window)
+            MacChrome.shared.reconcilePlayerPresentation(in: window, fullScreen: true)
         }
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             log("[lifecycle] close requested; hide window")

@@ -13,11 +13,12 @@ import iPodKit
     private(set) var spectrum: PlayerSpectrum?
     func setSpectrum(_ value: PlayerSpectrum, forTrackID id: String) {
         guard trackID == id, value.frames.count >= (spectrum?.frames.count ?? 0) else { return }
-        spectrum = value; onChange()
+        spectrum = value; didChange.send()
     }
     private(set) var lyricIndex: Int?
-    var idleDetail = "" { didSet { if idleDetail != oldValue { onChange() } } }
-    var onChange: () -> Void = {}
+    var idleDetail = "" { didSet { if idleDetail != oldValue { didChange.send() } } }
+    /// Each LCD keeps its own cancellable subscription; probes cannot replace a live view.
+    let didChange = SwiftCrossUI.Publisher()
     var onReveal: ((String) -> Void)?
     private var sources: [String: (String) -> Void] = [:]
     func clearSources() { sources.removeAll(); onReveal = nil }
@@ -40,39 +41,57 @@ import iPodKit
     private(set) var jumpedLastRefresh = false
     private var visible = true
     private var idleDeviceID: String?
+    private var idleDevice: IPodDevice?
+    private var idleGeneration = 0
     private var idleTask: Task<Void, Never>?
+    private let readFreeSpace: @Sendable (IPodDevice) -> Int64
     func setIdleDevices(_ devices: [IPodDevice], selectedID: String?) {
         setIdleDevice(devices.first { $0.id == (selectedID ?? idleDeviceID) } ?? devices.first)
     }
     private func setIdleDevice(_ device: IPodDevice?) {
+        idleDevice = device
         guard idleDeviceID != device?.id else { return }
         idleDeviceID = device?.id; idleTask?.cancel()
         idleDetail = ""
-        guard let device else { return }
+        refreshIdleSpace()
+    }
+    func invalidateIdleSpace(for deviceID: String) {
+        guard idleDeviceID == deviceID else { return }
+        refreshIdleSpace()
+    }
+    private func refreshIdleSpace() {
+        idleGeneration += 1
+        let generation = idleGeneration
+        idleTask?.cancel()
+        guard let device = idleDevice else { return }
         idleTask = Task { [weak self] in
-            let free = await Task.detached(priority: .utility) { device.volumeStats().free }.value
-            guard !Task.isCancelled, let self, self.idleDeviceID == device.id else { return }
+            let reader = self?.readFreeSpace
+            let free = await Task.detached(priority: .utility) { reader?(device) ?? 0 }.value
+            guard !Task.isCancelled, let self, self.idleDeviceID == device.id, self.idleGeneration == generation else { return }
             self.idleDetail = ByteCountFormatter.string(fromByteCount: free, countStyle: .file) + " free"
         }
     }
-    init() {
+    init(readFreeSpace: @escaping @Sendable (IPodDevice) -> Int64 = { $0.volumeStats().free }) {
+        self.readFreeSpace = readFreeSpace
         playbackToken = PlaybackController.shared.didChange.observe { [weak self] in self?.refresh() }
-        activityToken = PlayerActivityController.shared.didChange.observe { [weak self] in self?.onChange() }
+        activityToken = PlayerActivityController.shared.didChange.observe { [weak self] in self?.didChange.send() }
     }
+    deinit { detailsTask?.cancel(); lyricDeadline?.cancel(); idleTask?.cancel() }
+    func waitForIdleSpace() async { await idleTask?.value }
     var resolvedMode: PlayerLCDMode { mode.resolved(hasLyrics: !lyrics.isEmpty) }
     func load(_ settings: PortableSettings?, store: PortableLibraryStore) {
         self.store = store
         mode = PlayerLCDMode(rawValue: settings?.playerLCDMode ?? "title") ?? .title
         showsRemaining = settings?.playerShowsRemaining ?? true
-        onChange()
+        didChange.send()
     }
     func choose(_ mode: PlayerLCDMode) { self.mode = mode; persist(); refresh() }
     func cycle() { guard PlaybackController.shared.track != nil else { return }; choose(mode.next(hasLyrics: !lyrics.isEmpty)) }
-    func toggleTime() { showsRemaining.toggle(); persist(); onChange() }
+    func toggleTime() { showsRemaining.toggle(); persist(); didChange.send() }
     private func persist() {
         if let store { PortablePreferences.shared.stagePlayer(mode: mode.rawValue, remaining: showsRemaining, store: store) }
     }
-    func setVisible(_ value: Bool) { visible = value; refresh() }
+    func setVisible(_ value: Bool) { guard visible != value else { return }; visible = value; refresh() }
     func refresh() {
         let playback = PlaybackController.shared
         if trackID != playback.track?.id {
@@ -116,11 +135,11 @@ import iPodKit
                     guard !Task.isCancelled, let self else { return }
                     self.lyricIndex = next
                     self.lyricDue = nil
-                    self.onChange()
+                    self.didChange.send()
                     // The next engine position event schedules the following line.
                 }
             }
         }
-        onChange()
+        didChange.send()
     }
 }

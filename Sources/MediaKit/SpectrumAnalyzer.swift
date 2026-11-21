@@ -8,6 +8,9 @@ public final class SpectrumAnalyzer {
     public let sampleRate: Double
     private let size = 2048
     private var left = [Float](repeating: 0, count: 2048), right = [Float](repeating: 0, count: 2048)
+    // One owned workspace per analyzer, reused for every channel and frame.
+    // No shared PCM state and no copy-on-write array mutation in the FFT loop.
+    private let workspace = FFTWorkspace(size: 2048)
     private var count = 0
     private let hop: Int
     private let window: [Float]
@@ -47,17 +50,21 @@ public final class SpectrumAnalyzer {
     }
     public func result() -> PlayerSpectrum { PlayerSpectrum(frames: frames, framesPerSecond: sampleRate / Double(hop)) }
     private func energies(_ ring: [Float]) -> [UInt8] {
-        var real = [Float](repeating: 0, count: size), imaginary = real
-        for i in 0..<size { real[i] = ring[(count + i) % size] * window[i] }
+        let inputReal = workspace.inputReal, inputImaginary = workspace.inputImaginary
+        for i in 0..<size {
+            inputReal[i] = ring[(count + i) % size] * window[i]
+            inputImaginary[i] = 0
+        }
         #if canImport(Accelerate)
         if let setup {
-            var outputReal = real, outputImaginary = imaginary
-            vDSP_DFT_Execute(setup, real, imaginary, &outputReal, &outputImaginary)
-            real = outputReal; imaginary = outputImaginary
-        } else { Self.fft(&real, &imaginary) }
-        #else
-        Self.fft(&real, &imaginary)
+            vDSP_DFT_Execute(setup, inputReal, inputImaginary, workspace.outputReal, workspace.outputImaginary)
+            return bandEnergies(real: workspace.outputReal, imaginary: workspace.outputImaginary)
+        }
         #endif
+        Self.fft(UnsafeMutableBufferPointer(start: inputReal, count: size), UnsafeMutableBufferPointer(start: inputImaginary, count: size))
+        return bandEnergies(real: inputReal, imaginary: inputImaginary)
+    }
+    private func bandEnergies(real: UnsafePointer<Float>, imaginary: UnsafePointer<Float>) -> [UInt8] {
         return bands.map { band in
             var energy: Float = 0
             for bin in band { energy += real[bin] * real[bin] + imaginary[bin] * imaginary[bin] }
@@ -66,7 +73,8 @@ public final class SpectrumAnalyzer {
             return UInt8(max(0, min(255, (db + 72) / 72 * 255)))
         }
     }
-    private static func fft(_ real: inout [Float], _ imaginary: inout [Float]) {
+    static func fft(_ realBuffer: UnsafeMutableBufferPointer<Float>, _ imaginaryBuffer: UnsafeMutableBufferPointer<Float>) {
+        var real = realBuffer, imaginary = imaginaryBuffer
         let n = real.count
         var j = 0
         for i in 1..<n {
@@ -110,5 +118,24 @@ public enum SpectrumFile {
             frames.append(Array(bytes[index..<(index + 32)]))
         }
         return PlayerSpectrum(frames: frames)
+    }
+}
+
+/// Fixed-size, initialized Float storage. Only the owning analyzer touches it;
+/// decoding remains serial within that analyzer and deinit releases all buffers.
+private final class FFTWorkspace {
+    let inputReal: UnsafeMutablePointer<Float>
+    let inputImaginary: UnsafeMutablePointer<Float>
+    let outputReal: UnsafeMutablePointer<Float>
+    let outputImaginary: UnsafeMutablePointer<Float>
+    private let size: Int
+    init(size: Int) {
+        self.size = size
+        inputReal = .allocate(capacity: size); inputImaginary = .allocate(capacity: size)
+        outputReal = .allocate(capacity: size); outputImaginary = .allocate(capacity: size)
+        for buffer in [inputReal, inputImaginary, outputReal, outputImaginary] { buffer.initialize(repeating: 0, count: size) }
+    }
+    deinit {
+        for buffer in [inputReal, inputImaginary, outputReal, outputImaginary] { buffer.deinitialize(count: size); buffer.deallocate() }
     }
 }

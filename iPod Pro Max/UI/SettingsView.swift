@@ -235,7 +235,7 @@ struct SettingsView: View {
 
     private var temporaryFiles: some View {
         let controller = TemporaryCacheController.shared
-        let total = controller.sizes.values.reduce(Int64(0), +)
+        let total = controller.clearableBytes
         return group("Temporary files") {
             VStack(alignment: .leading, spacing: 12) {
                 cacheRow("Spectrum", bytes: controller.sizes["Spectrum"] ?? 0, clear: controller.clearSpectrum) { controller.change(spectrum: $0) }

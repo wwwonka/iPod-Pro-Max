@@ -15,6 +15,7 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 ## Architecture
 
 - [[Lecteur et session média]] : PLR1–19, responsabilités, file, analyse/cache et intégrations système
+- [[Corrections de revue du lecteur]] : résolutions, carte du code, mesures et protocole de validation
 - [[Revue du lecteur novembre 2026]] : constats sourcés, reproductions et limites des vérifications
 - [[Modules]] : découpage du code en packages
 - [[Compilation multiplateforme]] : un `Package.swift`, trois OS

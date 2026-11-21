@@ -1,6 +1,6 @@
 # Lecteur et session média
 
-État de référence : `4d93b08`, 20 novembre 2026. Le lecteur vit dans le contenu de la fenêtre macOS, dans une rangée de 44 pt. Le noyau de lecture et les modèles restent partagés ; les contrôles AppKit, la session système et l’analyse AVFoundation sont propres au Mac. Le portage de cette interface vers Windows et Linux reste distinct, comme prévu par la spec PLR.
+État du 20 novembre 2026, après les [[Corrections de revue du lecteur]]. Le lecteur vit dans le contenu de la fenêtre macOS, dans une rangée de 44 pt. Le noyau de lecture et les modèles restent partagés ; les contrôles AppKit, la session système et l’analyse AVFoundation sont propres au Mac. Le portage de cette interface vers Windows et Linux reste distinct, comme prévu par la spec PLR.
 
 Le comportement visuel courant est décrit dans [[LCD du lecteur]]. La spec initiale reste dans [feature-toolbar-player.md](../_Specs/feature-toolbar-player.md). Les choix demandés ensuite par le propriétaire, notamment AirPlay à gauche du LCD et les chevrons sur la pochette, remplacent les dispositions initiales. Les constats de revue sont dans [[Revue du lecteur novembre 2026]].
 
@@ -26,7 +26,7 @@ flowchart TD
 
 `PlaybackController` possède la piste, la file figée au lancement, le volume de session, la vitesse et les transitions du moteur. Chaque chargement incrémente une génération et annule l’analyse précédente ; les résultats tardifs sont filtrés. La position exacte privilégie le moteur et tient compte d’un seek en attente. Les vues de bibliothèque n’observent pas les changements de temps du lecteur.
 
-`PlayerDisplayController` possède le mode choisi, son repli si les paroles manquent, les chapitres, les paroles horodatées et le spectre. Il mémorise aussi la provenance des pistes pour revenir à la bonne section. `PlayerActivityController` reçoit les opérations existantes ; il ne scanne ni le disque ni les téléchargements de lui-même.
+`PlayerDisplayController` publie ses changements par subscriptions annulables et possède le mode choisi, son repli si les paroles manquent, les chapitres, les paroles horodatées et le spectre. Il mémorise aussi la provenance des pistes pour revenir à la bonne section. `PlayerActivityController` reçoit les opérations existantes ; il ne scanne ni le disque ni les téléchargements de lui-même.
 
 `ToolbarPlayerMac` possède les contrôles natifs. `MacChrome` dispose le header, la recherche et les véritables boutons de fenêtre. `MacWindowLifecycle` masque la fenêtre à sa fermeture, la réouvre depuis le Dock et attend les sauvegardes/nettoyages à la sortie de l’application.
 
@@ -70,7 +70,7 @@ Une tâche utility décode en blocs, sans conserver le PCM complet. Sur Mac, ell
 
 La waveform est limitée à 1 024 valeurs. Les formats disque utilisent `IPWF0001` et `IPSP0001`. Leur clé incorpore le chemin standardisé, la taille et la date de modification, hachés ; elle n’est pas une empreinte du contenu audio. Le cache mémoire `AudioAnalysis` a un coût cible de 12 Mio. Le cache disque est commun aux catégories Spectrum et Waveforms, avec un plafond initial de 200 Mio et une éviction par date d’utilisation. Les fichiers Scratch n’entrent pas dans ce plafond.
 
-Les réglages de plafond, conservation et nettoyage sont portables. Les fichiers dérivés restent sur l’hôte. Vider le cache disque conserve les données déjà utilisées en mémoire et une écriture en cours peut faire réapparaître un fichier. Le verrou du cache protège une instance ; il ne coordonne pas plusieurs processus. Le risque associé au nettoyage de Scratch est décrit dans la revue.
+Les réglages de plafond, conservation et nettoyage sont portables. Les fichiers dérivés restent sur l’hôte. Vider le cache disque conserve les données déjà utilisées en mémoire et une écriture en cours peut faire réapparaître un fichier. Le verrou du cache protège une instance ; les fichiers de travail sont isolés dans des sous-dossiers de session et seuls ceux d’un processus confirmé arrêté sont nettoyés. Les détails sont dans [[Corrections de revue du lecteur]].
 
 ## Horloges et réactivité
 
@@ -85,7 +85,7 @@ Les réglages de plafond, conservation et nettoyage sont portables. Les fichiers
 | Survol des boutons | Une échéance de 400 ms, annulée au départ du pointeur |
 | Géométrie et caches | Événements et tâches ponctuelles ; aucun polling autonome |
 
-Ces gardes sont les mécanismes présents dans le code. Elles ne prouvent pas à elles seules une consommation nulle de l’application entière. La revue relève notamment une incohérence de propriété de la visibilité entre le LCD et le moteur.
+Ces gardes sont les mécanismes présents dans le code. Elles ne prouvent pas à elles seules une consommation nulle de l’application entière. Le LCD est désormais l’unique propriétaire de la visibilité transmise au moteur ; le contrôle d’intégration vérifie les horloges arrêtées en pause et avec une fenêtre auxiliaire visible.
 
 ## Évolution des choix visuels
 
@@ -114,4 +114,4 @@ Ces gardes sont les mécanismes présents dans le code. Elles ne prouvent pas à
 | `IPPM_QA_APPEARANCE=dark\|light` | Apparence du contrôle d’intégration ; cohérente avec l’argument de lancement `-AppleInterfaceStyle` |
 | `IPPM_LOG=<fichier>` | Journal du contrôle |
 
-La vérification du hover exige que la fenêtre de sonde conserve le focus ; le harnais actuel échoue par précondition lorsque cette condition n’est plus vraie. Les mesures historiques d’analyse, de CPU et de disposition, avec leurs limites, restent dans [[LCD du lecteur]]. Les gestes AirPods et touches média physiques ne sont pas validés, faute de matériel disponible. Les builds Windows/Linux n’ont pas été exécutés dans cette revue.
+La vérification du hover exige que la fenêtre de sonde conserve le focus ; le harnais signale explicitement une indisponibilité avec code de sortie 2 si cette condition n’est plus vraie. Les mesures historiques d’analyse, de CPU et de disposition, avec leurs limites, restent dans [[LCD du lecteur]]. Les gestes AirPods et touches média physiques ne sont pas validés, faute de matériel disponible. Les builds Windows/Linux n’ont pas été exécutés dans cette revue.

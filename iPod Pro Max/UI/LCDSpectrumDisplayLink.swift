@@ -27,6 +27,7 @@ final class LCDSpectrumDisplayLink: @unchecked Sendable {
         lock.lock(); interval = reducedMotion ? 0.1 : 1.0 / 30; lock.unlock()
         if let link, !CVDisplayLinkIsRunning(link) { CVDisplayLinkStart(link) }
     }
+    var isRunning: Bool { link.map { CVDisplayLinkIsRunning($0) } ?? false }
     func stop() { if let link, CVDisplayLinkIsRunning(link) { CVDisplayLinkStop(link) } }
     private func tick(_ stamp: Double) {
         lock.lock()
@@ -35,8 +36,12 @@ final class LCDSpectrumDisplayLink: @unchecked Sendable {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.onFrame()
-            self.lock.lock(); self.queued = false; self.lock.unlock()
+            self.frameDelivered()
         }
+    }
+    private func frameDelivered() {
+        lock.lock(); defer { lock.unlock() }
+        queued = false
     }
     deinit { stop() }
 }

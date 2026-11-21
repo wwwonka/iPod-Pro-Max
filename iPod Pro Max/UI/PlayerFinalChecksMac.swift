@@ -52,11 +52,17 @@ import MediaKit
     guard let play = resumed.items.first(where: { $0.title == "Play" }), let playAction = play.action else { return false }
     guard require(NSApp.sendAction(playAction, to: play.target, from: play) && playback.playing, "Dock play action") else { return false }
     log("PASS: live Now Playing metadata and actual application Dock-menu pause/play actions")
+    playback.setPlaying(false)
+    let settled = await waitUntil { (originalLCD as? PlayerLCD)?.isSpectrumAnimating == false }
+    guard require(settled && (playback.activeEngine as? PlatformAudioEngine)?.isProgressObserverInstalled == false,
+                  "paused spectrum release stops both display and progress clocks") else { return false }
+    playback.setPlaying(true)
+    log("PASS: pause release reaches zero active spectrum/progress clocks and playback resumes")
 
     let spectrum = display.spectrum!.frames, samples = playback.samples, before = playback.exactPosition
     await Task.detached(priority: .utility) { TemporaryMediaCache.shared.clear() }.value
     await TemporaryCacheController.shared.refresh()
-    guard require(TemporaryCacheController.shared.sizes.values.reduce(0, +) == 0, "temporary cache cleared") else { return false }
+    guard require(TemporaryCacheController.shared.clearableBytes == 0, "temporary cache cleared") else { return false }
     guard require(playback.playing && display.spectrum?.frames == spectrum && playback.samples == samples, "clearing preserves the playing track's in-memory visualization") else { return false }
     let advancing = await waitUntil { playback.exactPosition > before + 0.2 }
     guard require(advancing, "playback continues after cache clear") else { return false }
@@ -90,7 +96,7 @@ import MediaKit
     guard require(window.contentView?.subviews.contains(where: { $0.identifier?.rawValue == "windowGlass" && $0.window === window }) == true && !window.isOpaque, "translucent background remains in the content window"),
           require(visible && window.toolbar == nil, "LCD remains in its original content header in full screen") else { return false }
     // Force the reveal state, rather than checking the host's alpha only at rest.
-    for host in NSApp.windows where String(describing: type(of: host)) == "NSToolbarFullScreenWindow" {
+    if let host = MacChrome.shared.fullScreenRevealHost {
         let alpha = host.alphaValue
         host.alphaValue = 1
         guard require(MacChrome.shared.fullScreenTrafficLightsVisible, "menu-bar reveal exposes clickable window buttons in the content header") else { return false }
@@ -142,6 +148,13 @@ import MediaKit
     guard require(restored, "native window returns from the Dock") else { return false }
     window.standardWindowButton(.closeButton)?.performClick(nil)
     guard require(!window.isVisible && playback.playing && center.nowPlayingInfo != nil, "closing hides the window and preserves playback/system session") else { return false }
+    let auxiliary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 140, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+    auxiliary.isReleasedWhenClosed = false; auxiliary.orderFront(nil)
+    NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: auxiliary)
+    let clockStopped = await waitUntil { (playback.activeEngine as? PlatformAudioEngine)?.isProgressObserverInstalled == false }
+    guard require(clockStopped, "auxiliary window cannot reactivate a hidden player's progress observer") else { return false }
+    auxiliary.orderOut(nil)
+    log("PASS: hidden player keeps its progress observer stopped while an auxiliary window is visible")
     _ = MacWindowLifecycle.shared.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
     guard require(window.isVisible && playback.playing, "Dock reopen restores the live window") else { return false }
     log("PASS: close/reopen preserves the live player and media session")

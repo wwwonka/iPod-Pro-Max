@@ -8,6 +8,8 @@ import AppKit
 @MainActor final class TemporaryCacheController {
     static let shared = TemporaryCacheController()
     private(set) var sizes: [String: Int64] = [:]
+    /// The clear button and cap apply to derived entries, never live Scratch.
+    var clearableBytes: Int64 { (sizes["Spectrum"] ?? 0) + (sizes["Waveforms"] ?? 0) }
     private(set) var loading = false
     private(set) var limitMB = 200
     private(set) var clearSpectrum = false

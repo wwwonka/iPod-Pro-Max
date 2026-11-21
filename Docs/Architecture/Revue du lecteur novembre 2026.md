@@ -1,5 +1,7 @@
 # Revue du lecteur novembre 2026
 
+> Photographie de la revue initiale. Les mécanismes appliqués ensuite et leurs mesures sont décrits dans [[Corrections de revue du lecteur]]. Les constats ci-dessous restent rattachés au commit audité.
+
 Audit du 20 novembre 2026 sur `4d93b08954792fe89f30ae2ad6327de842a2d610`, couvrant les huit commits depuis `2814bd2` inclus : 59 fichiers, environ 5 400 lignes ajoutées. Le périmètre est le lecteur PLR1–19 et ses branchements à la bibliothèque, au cache, aux préférences et à la fenêtre macOS. Les autres sous-systèmes ne font pas l’objet d’un audit exhaustif.
 
 La séparation entre modèles portables, moteur, analyse utility et dessin natif est utile et les scénarios courants sont couverts. Aucun défaut de gravité P0/P1 n’a été confirmé dans ce périmètre. Six défauts fonctionnels ou de robustesse P2 et une information obsolète P3 sont décrits ci-dessous. Une partie est reproduite par sonde ; les autres constats reposent sur les transitions explicites du code. Cette revue documente les corrections à envisager sans les appliquer au produit.

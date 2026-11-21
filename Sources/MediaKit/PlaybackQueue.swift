@@ -42,6 +42,10 @@ public struct PlaybackQueue: Sendable {
         else if repeatMode == .all { index = ids.count - 1 }
         return current
     }
+    /// A slice avoids copying the entire remaining queue before mapping row models.
+    public var currentAndUpcoming: ArraySlice<String> {
+        ids.dropFirst(min(index, ids.count))
+    }
     public var upcoming: [String] { index + 1 < ids.count ? Array(ids[(index + 1)...]) : [] }
     public var canGoPrevious: Bool { current != nil && (index > 0 || repeatMode == .all) }
     public var canGoNext: Bool { current != nil && (index + 1 < ids.count || repeatMode == .all) }
@@ -75,6 +79,11 @@ public struct PlaybackQueue: Sendable {
         index = selected.flatMap { ids.firstIndex(of: $0) } ?? 0
     }
     public mutating func clearUpcoming() { remove(Set(upcoming)) }
-    public mutating func move(_ id: String, to upcomingIndex: Int) { insert([id], at: upcomingIndex) }
+    public mutating func move(_ id: String, to upcomingIndex: Int) { move([id], to: upcomingIndex) }
+    /// Move the whole drag in its displayed order. Unknown IDs never enter the queue.
+    public mutating func move(_ incoming: [String], to upcomingIndex: Int) {
+        let existing = Set(ids)
+        insert(incoming.filter { existing.contains($0) }, at: upcomingIndex)
+    }
     public mutating func clear() { ids = []; original = []; index = 0 }
 }

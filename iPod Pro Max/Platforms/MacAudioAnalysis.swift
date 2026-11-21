@@ -37,14 +37,18 @@ enum MacAudioAnalysis {
         defer { try? writer?.close(); try? FileManager.default.removeItem(at: scratch) }
         var peaks: [Float] = [], peak: Float = 0
         var count = 0, strideSize = 4096
+        // AVAssetReader usually returns equally sized blocks. Reuse their PCM
+        // destination; a short final block must never consume the stale tail.
+        var pcm: [Float] = []
         while let sample = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(sample) {
             if Task.isCancelled { reader.cancelReading(); return .init(samples: [], spectrum: nil) }
             let length = CMBlockBufferGetDataLength(block)
-            guard length >= 8 else { continue }
-            var pcm = [Float](repeating: 0, count: length / 4)
-            let copied = pcm.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: $0.count, destination: $0.baseAddress!) }
+            guard length >= 8, length % 8 == 0 else { continue }
+            let sampleCount = length / MemoryLayout<Float>.size
+            if pcm.count < sampleCount { pcm = [Float](repeating: 0, count: sampleCount) }
+            let copied = pcm.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
             guard copied == kCMBlockBufferNoErr else { continue }
-            for index in Swift.stride(from: 0, to: pcm.count - 1, by: 2) {
+            for index in Swift.stride(from: 0, to: sampleCount - 1, by: 2) {
                 let left = pcm[index], right = pcm[index + 1]
                 analyzer?.consume(left: left, right: right)
                 if cachedSamples == nil {

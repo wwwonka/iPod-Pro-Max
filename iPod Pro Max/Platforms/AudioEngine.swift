@@ -20,7 +20,8 @@ import AppKit
     private var visible = true
     private var active = false
     private var generation = 0
-    private var windowObservers: [NSObjectProtocol] = []
+    /// The LCD owns visibility. Auxiliary windows must never reactivate this clock.
+    var isProgressObserverInstalled: Bool { timeObserver != nil }
     init() {
         rateObserver = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             Task { @MainActor [weak self] in
@@ -31,19 +32,13 @@ import AppKit
                 } else if rate > 0, !self.active { self.active = true; self.updateObserver(); self.onPlaybackState?(true) }
             }
         }
-        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification] {
-            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.setVisible(NSApp.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) })
-                }
-            })
-        }
+
     }
     deinit {
         if let token = timeObserver { player.removeTimeObserver(token) }
         if let token = endObserver { NotificationCenter.default.removeObserver(token) }
-        for token in windowObservers { NotificationCenter.default.removeObserver(token) }
-        player.pause()
+        let player = player
+        Task { @MainActor in player.pause() }
     }
     func load(_ url: URL) {
         stop()
@@ -80,7 +75,7 @@ import AppKit
         }
     }
     func setVolume(_ volume: Double) { player.volume = Float(volume) }
-    func setVisible(_ visible: Bool) { self.visible = visible; updateObserver() }
+    func setVisible(_ visible: Bool) { guard self.visible != visible else { return }; self.visible = visible; updateObserver() }
     private func updateObserver() {
         if (!visible || !active), let token = timeObserver { player.removeTimeObserver(token); timeObserver = nil }
         guard visible, active, timeObserver == nil else { return }

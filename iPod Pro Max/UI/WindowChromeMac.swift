@@ -90,7 +90,7 @@
         private var slideRevision = 0
         private let queueButton = ToolbarPlaybackButton()
         private var queueToken: SwiftCrossUI.Cancellable?
-        private let player = ToolbarPlayerMac()
+        private let player = ToolbarPlayerMac(controller: .shared)
         var canStartSelectionPlayback: Bool { player.canPlaySelection }
         func startSelectionPlayback() { player.toggle() }
         @objc private func showPlayerQueue() { PlayerQueuePopover.shared.toggle(from: queueButton) }
@@ -157,6 +157,15 @@
             }
             player.setFullScreenLayout(false)
             precondition(player.transport.frame.minX == 74 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
+            // Exercise the shared final-state reconciler used by both failure callbacks.
+            hidingTrafficLights = true; player.setFullScreenLayout(true)
+            reconcilePlayerPresentation(in: window, fullScreen: false)
+            precondition(!player.fullScreenLayout && hostedTrafficLights.allSatisfy { !$0.isHidden })
+            reconcilePlayerPresentation(in: window, fullScreen: true)
+            precondition(playerUsesFullScreenSpacing)
+            reconcilePlayerPresentation(in: window, fullScreen: false)
+            precondition(!player.fullScreenLayout && hostedTrafficLights.allSatisfy { !$0.isHidden })
+            log("PASS: failed fullscreen entry/exit reconciliation restores geometry and native controls")
             log("PASS: playback clearance animates in/out over 250 ms and restores its windowed position")
             measurements.sort()
             log(String(format: "PASS: toolbar resize 820–1600 pt, LCD bounds; synchronous layout median %.2f ms, max %.2f ms", measurements[measurements.count / 2], measurements.last ?? 0))
@@ -185,7 +194,7 @@
             controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
             log("[search check] focused=\(searchField.editing), editor=\(searchField.currentEditor() != nil), queryDelivered=\(query == "new query")")
             guard query == "new query" && searchField.editing else { return false }
-            log("[search check] appearance field=\(searchField.effectiveAppearance.name.rawValue), editor=\(String(describing: (searchField.currentEditor() as? NSView)?.effectiveAppearance.name.rawValue))")
+            log("[search check] appearance field=\(searchField.effectiveAppearance.name.rawValue), editor=\(String(describing: searchField.currentEditor()?.effectiveAppearance.name.rawValue))")
             if let root = searchField.superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
                 let savedAppearance = NSAppearance.current
                 NSAppearance.current = root.effectiveAppearance
@@ -350,6 +359,14 @@
         private var nativeTitlebarRevealed = false
         private var holdingTrafficLightReveal = false
         private var trafficLightArea: NSTrackingArea?
+        private var settleFullScreenPresentation: ((Bool) -> Void)?
+        var fullScreenRevealHost: NSWindow? { suppressedTitlebar?.host }
+
+        /// Success and failure callbacks share the same final-state reconciliation.
+        func reconcilePlayerPresentation(in window: NSWindow, fullScreen: Bool) {
+            guard self.window === window else { return }
+            settleFullScreenPresentation?(fullScreen)
+        }
         var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
         var fullScreenTrafficLightsVisible: Bool { player.fullScreenLayout && !hidingTrafficLights && hostedTrafficLights.count == 3 && hostedTrafficLights.allSatisfy { !$0.isHidden } }
         private func updateFullScreenTrafficLights() {
@@ -360,7 +377,9 @@
             relayoutTitleArea?()
         }
         @objc func mouseEntered(with event: NSEvent) {
-            holdingTrafficLightReveal = player.fullScreenLayout && !hidingTrafficLights
+            // The header can reveal its controls even on systems with no
+            // auxiliary title surface; menu-bar reveal is an additional source.
+            holdingTrafficLightReveal = player.fullScreenLayout
             updateFullScreenTrafficLights()
         }
         @objc func mouseExited(with event: NSEvent) { holdingTrafficLightReveal = false; updateFullScreenTrafficLights() }
@@ -386,9 +405,16 @@
             // buttons then no longer lead to the reveal host. Restrict the fallback
             // to this process's native titlebar on the primary window's screen.
             let originalHost = container?.window
-            let host = originalHost !== primary && originalHost != nil ? originalHost : NSApp.windows.first {
-                String(describing: type(of: $0)) == "NSToolbarFullScreenWindow" && $0.screen === primary.screen && abs($0.frame.width - primary.frame.width) < 2
+            // Match the thin surface at the primary window's top edge using
+            // public geometry, never an AppKit implementation class name. If
+            // ambiguous, preserve the other windows rather than hiding one.
+            let candidates = NSApp.windows.filter {
+                $0 !== primary && $0.screen === primary.screen &&
+                abs($0.frame.minX - primary.frame.minX) < 2 && abs($0.frame.width - primary.frame.width) < 2 &&
+                abs($0.frame.maxY - primary.frame.maxY) < 2 && $0.frame.height > 0 && $0.frame.height <= CGFloat(titleBarHeight) * 2
             }
+            let knownHost = originalHost !== primary ? originalHost : nil
+            let host = knownHost ?? (candidates.count == 1 ? candidates.first : nil)
             guard let host, host !== primary, let content = host.contentView else { return }
             // AppKit retains this host for menu-bar hover even without NSToolbar.
             // Its resting alpha is irrelevant: keep the host transparent and non-interactive
@@ -467,20 +493,29 @@
                     center()
                 }
             })
+            func settle(fullScreen: Bool) {
+                exitingFullScreen = false
+                self.holdingTrafficLightReveal = false
+                self.player.setFullScreenLayout(fullScreen)
+                if fullScreen {
+                    self.suppressFullScreenTitlebar(originalContainer, in: window)
+                    self.updateFullScreenTrafficLights()
+                } else {
+                    self.hidingTrafficLights = false
+                    self.nativeTitlebarRevealed = false
+                    self.restoreFullScreenTitlebar()
+                }
+                center()
+            }
+            settleFullScreenPresentation = { settle(fullScreen: $0) }
             for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification, NSWindow.didBecomeKeyNotification] {
                 trafficLightObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
                     MainActor.assumeIsolated {
-                        if name == NSWindow.didEnterFullScreenNotification {
-                            self.suppressFullScreenTitlebar(originalContainer, in: window)
-                            self.player.setFullScreenLayout(true)
-                            self.updateFullScreenTrafficLights()
-                        }
-                        if name == NSWindow.didExitFullScreenNotification {
-                            exitingFullScreen = false; self.hidingTrafficLights = false
-                            self.player.setFullScreenLayout(false); self.restoreFullScreenTitlebar()
-                        }
-                        center()
-                        if name == NSWindow.didExitFullScreenNotification { DispatchQueue.main.async { center() } }
+                        if name == NSWindow.didEnterFullScreenNotification { settle(fullScreen: true) }
+                        else if name == NSWindow.didExitFullScreenNotification {
+                            settle(fullScreen: false)
+                            DispatchQueue.main.async { center() }
+                        } else { center() }
                     }
                 })
             }

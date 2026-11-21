@@ -1,7 +1,7 @@
 # LCD du lecteur de barre d’outils
 
 
-État courant au commit `4d93b08` du 20 novembre 2026. Architecture et correspondance PLR1–19 : [[Lecteur et session média]]. Constats et limites de validation : [[Revue du lecteur novembre 2026]]. Les sections datées plus bas conservent les étapes et mesures historiques ; le tableau suivant décrit les dimensions actuelles.
+État visuel au 20 novembre 2026 ; mécanismes de robustesse et mesures actualisés dans [[Corrections de revue du lecteur]]. Architecture et correspondance PLR1–19 : [[Lecteur et session média]]. Constats et limites de validation : [[Revue du lecteur novembre 2026]]. Les sections datées plus bas conservent les étapes et mesures historiques ; le tableau suivant décrit les dimensions actuelles.
 
 ## Disposition actuelle
 
@@ -30,7 +30,7 @@ Le conteneur macOS reste un verre natif translucide, creusé par des dégradés 
 
 Au repos, le LCD n’affiche ni nom d’application ni nom du périphérique ; seule l’information d’espace libre reste disponible.
 
-Le scrub garde une position proposée jusqu’au relâchement. Échap, un changement de piste ou une phase de défilement annulée abandonne cette proposition. La revue a toutefois reproduit un redémarrage du geste si l’on continue à glisser après Échap : voir [[Revue du lecteur novembre 2026]]. Les chapitres s’aimantent à 6 points. Les gestes sans scrub possible sont ignorés dans la vue enfant : les renvoyer à AppKit recréerait une boucle avec le parent qui lui transmet le défilement. Le retour à la piste restaure sa vue d’origine, efface la recherche et transmet une demande de sélection/défilement à la table native ou à l’album déplié.
+Le scrub garde une position proposée jusqu’au relâchement. Échap, un changement de piste ou une phase de défilement annulée abandonne cette proposition. Le correctif de revue verrouille désormais l’ensemble du geste après Échap : continuer à glisser ne déclenche plus de seek avant un nouvel appui. Les chapitres s’aimantent à 6 points. Les gestes sans scrub possible sont ignorés dans la vue enfant : les renvoyer à AppKit recréerait une boucle avec le parent qui lui transmet le défilement. Le retour à la piste restaure sa vue d’origine, efface la recherche et transmet une demande de sélection/défilement à la table native ou à l’album déplié.
 
 ## Cadences et travail de fond
 

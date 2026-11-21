@@ -22,10 +22,12 @@ import MediaKit
     private let cancel = ToolbarPlaybackButton()
     private let indicator = NSTextField(labelWithString: "")
     private let plot = LCDPlaybackPlot()
+    var isSpectrumAnimating: Bool { plot.isSpectrumAnimating }
     private let progressOverlay = LCDProgressOverlay()
     private let spinner = NSProgressIndicator()
     private let hoverTime = NSTextField(labelWithString: "")
     private var tokens: [NSObjectProtocol] = []
+    private var displaySubscription: SwiftCrossUI.Cancellable?
     private var artworkTask: Task<Void, Never>?
     private var trackID: String?
     private var lastPresentation = ""
@@ -33,6 +35,7 @@ import MediaKit
     private var renderedHover = false
     private var tracking: NSTrackingArea?
     private var rendering = false
+    private var spinning = false
     private let capturesHiddenWindow = ProcessInfo.processInfo.environment["IPPM_SNAPSHOT"] != nil
     private var isDisplayVisible: Bool { window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true }
 
@@ -90,10 +93,13 @@ import MediaKit
         title.onClick = { [weak self] in
             guard self?.display.resolvedMode == .title else { return }; self?.revealTrack()
         }
-        display.onChange = { [weak self] in self?.refresh() }
+        displaySubscription = display.didChange.observe { [weak self] in self?.refresh() }
         for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification] {
-            tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.visibilityChanged() }
+            tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, notification.object as? NSWindow === self.window else { return }
+                    self.visibilityChanged()
+                }
             })
         }
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("Now Playing")
@@ -104,7 +110,7 @@ import MediaKit
     private func visibilityChanged() {
         playback.setVisible(isDisplayVisible)
         display.setVisible(isDisplayVisible)
-        if !isDisplayVisible { spinner.stopAnimation(nil); title.stop(); plot.suspendSpectrum() }
+        if !isDisplayVisible { setSpinning(false); title.stop(); plot.suspendSpectrum() }
         else { refresh() }
     }
     override func updateTrackingAreas() {
@@ -157,7 +163,7 @@ import MediaKit
         elapsed.isHidden = !available || effective == .spectrum || effective == .lyrics
         remaining.isHidden = elapsed.isHidden
         plot.isHidden = !available
-        spinner.stopAnimation(nil)
+        setSpinning(activity?.state == .running && activity?.fraction == nil)
         for view in [backActivity, nextActivity, cancel, indicator] { view.isHidden = activity == nil && activities.list.items.isEmpty }
         cancel.isHidden = activity == nil
         indicator.stringValue = activities.list.items.isEmpty ? "" : String(repeating: "•", count: min(5, activities.list.items.count))
@@ -166,7 +172,6 @@ import MediaKit
             title.setText(activity.title); subtitle.stringValue = activity.detail
             title.isHidden = false; subtitle.isHidden = false
             plot.isHidden = false; plot.activity = activity; plot.needsDisplay = true
-            if activity.state == .running && activity.fraction == nil { spinner.startAnimation(nil) }
             cancel.isEnabled = activity.cancellable || activity.state != .running
             cancel.setSymbol(activity.state == .failed ? "xmark" : activity.state == .completed ? "checkmark" : "xmark", size: 10)
         } else if !playback.error.isEmpty {
@@ -219,6 +224,11 @@ import MediaKit
         setAccessibilityValue([activity?.title ?? track?.title ?? "", subtitle.stringValue, time(position), effective.rawValue].joined(separator: ", "))
         if presentationChanged || hoverChanged { needsLayout = true; layoutSubtreeIfNeeded() }
 
+    }
+    private func setSpinning(_ value: Bool) {
+        guard spinning != value else { return }
+        spinning = value
+        if value { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
     }
     private func fade(_ view: NSView, to opacity: CGFloat, animated: Bool) {
         guard abs(view.alphaValue - opacity) > 0.001 else { return }
@@ -300,6 +310,19 @@ import MediaKit
             else { plot.mouseUp(with: click) }
         }
         precondition(plot.scrub.proposed == nil, "Click/drag release must end the scrub")
+        // Cancellation belongs to the entire gesture, not only its proposal.
+        var seeks: [Double] = []
+        plot.onSeek = { seeks.append($0) }; plot.currentTrackID = { "scroll-check" }
+        let down = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 1, y: 1), modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+        plot.mouseDown(with: down); plot.keyDown(with: escape)
+        plot.mouseDragged(with: down); plot.mouseUp(with: down)
+        precondition(seeks.isEmpty && plot.scrub.proposed == nil, "Escape prevents a seek until a new gesture")
+        plot.mouseDown(with: down); plot.mouseUp(with: down)
+        precondition(seeks.count == 1, "A fresh gesture works after cancellation")
+        plot.onSeek = { PlaybackController.shared.seek($0) }
+        plot.currentTrackID = { PlaybackController.shared.track?.id }
+        log("PASS: Escape cancels the full scrub gesture; a new press restores seeking")
         refresh(force: true)
         precondition(title.isHidden, "Idle LCD must not show a device or app name")
         precondition(subviews.firstIndex(of: progressOverlay)! > subviews.firstIndex(of: subtitle)!, "Progress must draw above the metadata")
@@ -451,156 +474,4 @@ import MediaKit
     }
 }
 
-@MainActor private final class LCDPlaybackPlot: NSView {
-    var onPreview: (Double?) -> Void = { _ in }
-    var onHover: (Double?) -> Void = { _ in }
-    var activity: PlayerActivity?
-    private(set) var scrub = PlayerScrub()
-    private(set) var hoverX: CGFloat = 0
-    private var trackID: String?
-    private var gestureCancelled = false
-    private(set) var hoverChapter: String?
-    private var duration = 0.0, position = 0.0
-    private var mode: PlayerLCDMode = .title
-    private var samples: [Float] = []
-    private var chapters: [PlaybackChapter] = []
-    private var spectrumLink: LCDSpectrumDisplayLink?
-    private var spectrumWasPlaying = false
-    private var peakRelease = PlayerSpectrumPeakRelease()
-    private var spectrumRelease = PlayerSpectrumRelease()
-    private var spectrumLevels = [Float](repeating: 0, count: 32)
-    private var spectrumPeaks = PlayerSpectrumPeaks()
-    private var spectrumAnchor = ProcessInfo.processInfo.systemUptime
-    private var spectrumLast = ProcessInfo.processInfo.systemUptime
-    func suspendSpectrum() {
-        spectrumLink?.stop()
-        if !PlaybackController.shared.playing {
-            spectrumRelease.finish(); spectrumLevels = spectrumRelease.levels
-            spectrumPeaks = PlayerSpectrumPeaks(); spectrumWasPlaying = false; peakRelease.finish(); needsDisplay = true
-        }
-    }
-    private func updateSpectrum() {
-        guard mode == .spectrum, activity == nil, let timeline = PlayerDisplayController.shared.spectrum else { suspendSpectrum(); return }
-        let visible = window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
-        let now = ProcessInfo.processInfo.systemUptime
-        let playing = PlaybackController.shared.playing
-        let running = playing && scrub.proposed == nil
-        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let time = position + (running ? max(0, now - spectrumAnchor) * PlaybackController.shared.rate : 0)
-        if playing {
-            spectrumRelease.show(timeline.levels(at: time))
-            peakRelease.show()
-        } else if spectrumWasPlaying {
-            spectrumRelease.pause(at: now, animated: visible && !reduced)
-            peakRelease.pause(at: now, animated: visible && !reduced)
-        }
-        if !visible || reduced, !playing { spectrumRelease.finish(); peakRelease.finish() }
-        spectrumRelease.advance(to: now)
-        spectrumLevels = spectrumRelease.levels; spectrumWasPlaying = playing
-        if playing { spectrumPeaks.update(levels: spectrumLevels, elapsed: now - spectrumLast, reset: reduced) }
-        else { peakRelease.advance(to: now) }
-        spectrumLast = now
-        needsDisplay = true
-        if visible && (running || spectrumRelease.isReleasing || peakRelease.isReleasing) {
-            if spectrumLink == nil { spectrumLink = LCDSpectrumDisplayLink { [weak self] in self?.updateSpectrum() } }
-            spectrumLink?.start(reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
-        } else { suspendSpectrum() }
-    }
-    private var hover = false
-    private var tracking: NSTrackingArea?
-    override var acceptsFirstResponder: Bool { true }
-    override init(frame: NSRect) {
-        super.init(frame: frame); setAccessibilityElement(true); setAccessibilityRole(.slider); setAccessibilityLabel("Playback position")
-    }
-    required init?(coder: NSCoder) { fatalError() }
-    func update(trackID: String?, position: Double, duration: Double, mode: PlayerLCDMode, samples: [Float], chapters: [PlaybackChapter]) {
-        if self.trackID != trackID { if scrub.proposed != nil { gestureCancelled = true }; scrub.cancel(); onHover(nil) }
-        if self.trackID != trackID { spectrumRelease.finish(); spectrumWasPlaying = false }
-        if abs(self.position - position) > 1 { spectrumPeaks = PlayerSpectrumPeaks() }
-        self.trackID = trackID; self.position = position; self.duration = duration; self.mode = mode
-        if !self.samples.sameStorage(as: samples) { self.samples = samples }
-        self.chapters = chapters; spectrumAnchor = ProcessInfo.processInfo.systemUptime; updateSpectrum(); needsDisplay = true
-        setAccessibilityValue(duration > 0 ? position / duration : 0)
-    }
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas(); if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .inVisibleRect, .activeAlways], owner: self)
-        addTrackingArea(area); tracking = area
-    }
-    override func mouseEntered(with event: NSEvent) { hover = true; mouseMoved(with: event); needsDisplay = true }
-    override func mouseExited(with event: NSEvent) { hover = false; onHover(nil); needsDisplay = true }
-    override func mouseMoved(with event: NSEvent) {
-        guard duration > 0 else { onHover(nil); return }
-        hoverX = convert(event.locationInWindow, from: nil).x
-        let target = min(duration, max(0, Double(hoverX / max(1, bounds.width)) * duration))
-        hoverChapter = chapters.first { abs($0.time - target) / duration * bounds.width <= 6 }?.title
-        onHover(target)
-    }
-    private func propose(_ event: NSEvent) {
-        guard !gestureCancelled, duration > 0, let trackID, activity == nil else { return }
-        if scrub.proposed == nil { scrub.begin(trackID: trackID, position: position) }
-        let x = convert(event.locationInWindow, from: nil).x
-        scrub.update(fraction: Double(x / max(1, bounds.width)), duration: duration, width: Double(bounds.width), chapters: chapters)
-        onPreview(scrub.proposed); needsDisplay = true
-    }
-    override func mouseDown(with event: NSEvent) { gestureCancelled = false; window?.makeFirstResponder(self); propose(event) }
-    override func mouseDragged(with event: NSEvent) { propose(event) }
-    override func mouseUp(with event: NSEvent) {
-        guard scrub.proposed != nil else { return }
-        if let value = scrub.finish(currentTrackID: PlaybackController.shared.track?.id) { PlaybackController.shared.seek(value) }
-        onPreview(nil)
-    }
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { scrub.cancel(); onPreview(nil); needsDisplay = true }
-        else if event.keyCode == 123 { PlaybackController.shared.seek(position - 5) }
-        else if event.keyCode == 124 { PlaybackController.shared.seek(position + 5) }
-        else { super.keyDown(with: event) }
-    }
-    override func scrollWheel(with event: NSEvent) {
-        // The LCD parent forwards scrolls here. Returning unhandled events to
-        // AppKit would send them to that parent again and recurse indefinitely.
-        guard activity == nil, duration > 0, let trackID, event.scrollingDeltaX != 0 || scrub.proposed != nil else { return }
-        if event.phase == .began || event.phase.isEmpty { gestureCancelled = false }
-        guard !gestureCancelled else { return }
-        if event.phase == .cancelled { scrub.cancel(); onPreview(nil); return }
-        if scrub.proposed == nil { scrub.begin(trackID: trackID, position: position) }
-        scrub.update(fraction: ((scrub.proposed ?? position) + Double(event.scrollingDeltaX) * 0.25) / duration, duration: duration, width: Double(bounds.width), chapters: chapters)
-        onPreview(scrub.proposed)
-        if event.phase.isEmpty || event.phase == .ended || event.momentumPhase == .ended {
-            if let value = scrub.finish(currentTrackID: PlaybackController.shared.track?.id) { PlaybackController.shared.seek(value) }
-            onPreview(nil)
-        }
-    }
-    override func accessibilityPerformIncrement() -> Bool { guard duration > 0 else { return false }; PlaybackController.shared.seek(position + 5); return true }
-    override func accessibilityPerformDecrement() -> Bool { guard duration > 0 else { return false }; PlaybackController.shared.seek(position - 5); return true }
-    override func draw(_ dirtyRect: NSRect) {
-        guard bounds.width > 0 else { return }
-        let fraction = activity?.fraction ?? (duration > 0 ? (scrub.proposed ?? position) / duration : 0)
-        if activity == nil, mode == .waveform, !samples.isEmpty {
-            let count = max(1, Int(bounds.width / 3))
-            for i in 0..<count {
-                let h = max(1, CGFloat(samples[min(samples.count - 1, i * samples.count / count)]) * (bounds.height - 12))
-                (Double(i) / Double(count) <= fraction ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setFill()
-                NSRect(x: CGFloat(i) * 3, y: 10 + (bounds.height - 12 - h) / 2, width: 1.5, height: h).fill()
-            }
-        } else if activity == nil, mode == .spectrum {
-            let inset: CGFloat = 28
-            let barWidth = max(0, bounds.width - 12 - 2 * inset) / 32
-            for block in 0..<2 { for band in 0..<16 {
-                let index = block * 16 + band
-                let x = inset + CGFloat(index) * barWidth + CGFloat(block) * 12
-                for segment in 0..<6 {
-                    let lit = Float(segment + 1) / 6 <= spectrumLevels[index]
-                    (lit ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor.withAlphaComponent(0.35)).setFill()
-                    NSRect(x: x, y: 9 + CGFloat(segment) * 4, width: max(1, barWidth - 2), height: 2).fill()
-                }
-                // Peak marks stay above the falling levels briefly, then fade completely.
-                NSColor.labelColor.withAlphaComponent(0.6 * CGFloat(peakRelease.opacity)).setFill()
-                NSRect(x: x, y: 9 + CGFloat(spectrumPeaks.values[index]) * 24, width: max(1, barWidth - 2), height: 1).fill()
-            } }
-
-        }
-
-    }
-}
 #endif
