@@ -24,11 +24,10 @@ import MediaKit
     var isSpectrumAnimating: Bool { plot.isSpectrumAnimating }
     private let progressOverlay = LCDProgressOverlay()
     private let spinner = NSProgressIndicator()
-    private let hoverTime = NSTextField(labelWithString: "")
+    private let hoverTime = LCDHoverLabel(labelWithString: "")
     private var tokens: [NSObjectProtocol] = []
     private var displaySubscription: SwiftCrossUI.Cancellable?
     private var artworkTask: Task<Void, Never>?
-    private var artworkKey: String?
     private var timeTrackID: String?
     private var trackID: String?
     private var lastPresentation = ""
@@ -86,7 +85,9 @@ import MediaKit
         plot.onPreview = { [weak self] value in self?.refresh(preview: value) }
         plot.onHover = { [weak self] value in
             guard let self else { return }
-            self.hoverTime.isHidden = value == nil || self.activities.list.selected != nil || self.display.resolvedMode == .spectrum
+            let overTimeline = value != nil && self.plot.hoverPoint.y >= 0 && self.plot.hoverPoint.y <= 7
+            self.progressOverlay.setPointerX(overTimeline ? self.plot.hoverX : nil)
+            self.hoverTime.isHidden = !overTimeline || self.activities.list.selected != nil || self.display.resolvedMode == .spectrum
             self.needsLayout = true
             self.hoverTime.stringValue = value.map { (self.plot.hoverChapter.map { $0 + " · " } ?? "") + self.time($0) } ?? ""
         }
@@ -106,11 +107,18 @@ import MediaKit
     }
     required init?(coder: NSCoder) { fatalError() }
     deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh(force: true); visibilityChanged() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Keep the centered hover label outside the LCD's clipping mask so it
+        // also stays centered over the handle at the two ends of the timeline.
+        if window != nil, let header = superview?.superview { header.addSubview(hoverTime, positioned: .above, relativeTo: nil) }
+        else { hoverTime.removeFromSuperview() }
+        refresh(force: true); visibilityChanged()
+    }
     private func visibilityChanged() {
         playback.setVisible(isDisplayVisible)
         display.setVisible(isDisplayVisible)
-        if !isDisplayVisible { setSpinning(false); title.stop(); subtitle.stop(); plot.suspendSpectrum() }
+        if !isDisplayVisible { hoverTime.isHidden = true; setSpinning(false); title.stop(); subtitle.stop(); plot.suspendSpectrum() }
         else { refresh(); title.scrollOnce(); subtitle.scrollOnce() }
     }
     override func updateTrackingAreas() {
@@ -223,24 +231,22 @@ import MediaKit
         subtitle.canAnimate = title.canAnimate
         fade(plot, to: 1, animated: false)
         plot.update(trackID: track?.id, position: position, duration: playback.duration, mode: effective, samples: playback.samples, chapters: display.chapters)
+        if effective == .spectrum { hoverTime.isHidden = true }
         progressOverlay.isHidden = plot.isHidden
         progressOverlay.update(position: position, duration: playback.duration, activity: activity, proposed: plot.scrub.proposed, chapters: display.chapters)
         if trackID != track?.id {
             trackID = track?.id; artworkTask?.cancel()
-            let nextArtworkKey = track?.artworkKey
-            if artworkKey != nextArtworkKey || cover.image == nil {
-                artworkKey = nextArtworkKey
-                cover.fillsArtwork = false; cover.imageScaling = .scaleNone
-                cover.image = systemSymbol("music.note", pointSize: 16)
-            }
-            if !cover.fillsArtwork, let key = nextArtworkKey, let folder = PlayerArtwork.folder {
-                let id = track?.id
-                artworkTask = Task { [weak self] in
-                    let image = await ThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 128)
-                    guard !Task.isCancelled, self?.trackID == id else { return }
-                    if let image { self?.cover.fillsArtwork = true; self?.cover.imageScaling = .scaleProportionallyUpOrDown; self?.cover.image = image }
+            if let key = track?.artworkKey, let folder = PlayerArtwork.folder {
+                if cover.displayedArtworkKey != key {
+                    let id = track?.id
+                    artworkTask = Task { [weak self] in
+                        let image = await ThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 128)
+                        guard !Task.isCancelled, self?.trackID == id else { return }
+                        self?.cover.showArtwork(image, key: key)
+                    }
                 }
-            }
+            } else { cover.showArtwork(nil, key: nil) }
+
         }
         setAccessibilityValue([activity?.title ?? track?.title ?? "", subtitle.stringValue, time(position), effective.rawValue].joined(separator: ", "))
         if presentationChanged || hoverChanged { needsLayout = true; layoutSubtreeIfNeeded() }
@@ -295,9 +301,11 @@ import MediaKit
         plot.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: expanded && activities.list.selected == nil ? height - 3 : 7)
         progressOverlay.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: 7)
         spinner.frame = NSRect(x: width - 72, y: 3, width: 12, height: 12)
-        let hoverPoint = convert(plot.hoverPoint, from: plot)
-        let tooltipWidth = min(width - 8, max(42, hoverTime.intrinsicContentSize.width + 8))
-        hoverTime.frame = NSRect(x: max(2, min(width - tooltipWidth - 2, hoverPoint.x + 4)), y: hoverPoint.y + 4, width: tooltipWidth, height: 15)
+        let tooltipWidth = min(160, max(42, hoverTime.intrinsicContentSize.width + 8))
+        let handle = convert(progressOverlay.handleRect, from: progressOverlay)
+        let tooltip = NSRect(x: handle.midX - tooltipWidth / 2, y: handle.maxY + 3, width: tooltipWidth, height: 15)
+        hoverTime.frame = convert(tooltip, to: hoverTime.superview)
+
     }
     override func scrollWheel(with event: NSEvent) { plot.scrollWheel(with: event) }
     func checkScrollRouting() {
@@ -369,9 +377,10 @@ import MediaKit
     }
 
     func checkComposition() {
+        LCDArtworkButton.checkTransitions(in: self, behind: cover)
         guard playback.track != nil, activities.list.selected == nil else { return }
         func snapshot(_ name: String) {
-            guard let root = superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
+            guard let root = name == "timeline-hover" ? hoverTime.superview : superview, let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
             root.cacheDisplay(in: root.bounds, to: bitmap)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/plr-composition-" + name + ".png"))
         }
@@ -382,7 +391,7 @@ import MediaKit
         precondition(progressOverlay.frame.minX == cover.frame.maxX && progressOverlay.frame.maxX == bounds.maxX)
         precondition(!more.isHidden && more.usesAccentTint && more.frame.minX == title.frame.maxX + 2)
         precondition(abs(title.frame.midX - (cover.frame.maxX + 6 + bounds.width - 19) / 2) < 0.1, "Title centering does not include the actions button")
-        precondition(layer?.animation(forKey: "LCDContent") == nil, "Track transitions must never fade the whole LCD")
+        precondition(layer?.animation(forKey: kCATransition) == nil, "Track transitions must never fade the whole LCD")
         precondition(elapsed.alphaValue == 1 && remaining.alphaValue == 1)
         precondition(remaining.textOnlyHover, "The remaining time uses glyph feedback without a hover plate")
         title.checkLoop(); subtitle.checkLoop()
@@ -390,6 +399,14 @@ import MediaKit
         hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
         precondition(more.alphaValue == 1)
         snapshot("title-hover")
+        progressOverlay.setPointerX(progressOverlay.bounds.width - 2)
+        hoverTime.stringValue = "1:59"; hoverTime.isHidden = false
+        needsLayout = true; layoutSubtreeIfNeeded()
+        let label = convert(hoverTime.frame, from: hoverTime.superview)
+        let handle = convert(progressOverlay.handleRect, from: progressOverlay)
+        precondition(abs(label.midX - handle.midX) < 0.01, "Hover time stays centered on the capsule, including at the edge")
+        snapshot("timeline-hover")
+        progressOverlay.setPointerX(nil); hoverTime.isHidden = true
         display.choose(.spectrum); hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
         precondition(more.isHidden && title.isHidden && subtitle.isHidden && plot.alphaValue == 1, "Spectrum hover must preserve the visualization")
         snapshot("spectrum-hover")
@@ -476,15 +493,48 @@ import MediaKit
     override func rightMouseDown(with event: NSEvent) { guard isEnabled else { return }; NSMenu.popUpContextMenu(makeMenu(), with: event, for: self) }
 }
 
+@MainActor private final class LCDHoverLabel: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor private final class LCDArtworkPlaceholder: NSImageView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 @MainActor private final class LCDArtworkButton: NSButton {
+    private(set) var displayedArtworkKey: String?
+    func showArtwork(_ image: NSImage?, key: String?) {
+        let identity = image == nil ? nil : key
+        guard displayedArtworkKey != identity else { return }
+        displayedArtworkKey = identity
+        fillsArtwork = image != nil; self.image = image; needsDisplay = true
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let fade = CATransition(); fade.type = .fade; fade.duration = 0.20
+            layer?.add(fade, forKey: kCATransition)
+        }
+    }
+    static func checkTransitions(in host: NSView, behind cover: NSView) {
+        let view = LCDArtworkButton(frame: NSRect(x: 0, y: 0, width: 41, height: 41))
+        host.addSubview(view, positioned: .below, relativeTo: cover)
+        defer { view.removeFromSuperview() }
+        view.layoutSubtreeIfNeeded()
+        precondition(view.layer != nil, "Artwork transitions require a live backing layer")
+        let image = NSImage(size: NSSize(width: 2, height: 2), flipped: false) { rect in NSColor.red.setFill(); rect.fill(); return true }
+        view.showArtwork(nil, key: nil)
+        precondition(view.layer?.animation(forKey: kCATransition) == nil)
+        view.showArtwork(image, key: "a")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { precondition(view.layer?.animation(forKey: kCATransition) != nil) }
+        view.layer?.removeAllAnimations(); view.showArtwork(image, key: "a")
+        precondition(view.layer?.animation(forKey: kCATransition) == nil)
+        view.showArtwork(image, key: "b")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { precondition(view.layer?.animation(forKey: kCATransition) != nil) }
+        view.showArtwork(nil, key: nil); view.layer?.removeAllAnimations(); view.showArtwork(nil, key: nil)
+        precondition(view.layer?.animation(forKey: kCATransition) == nil && view.alphaValue == 1)
+    }
     private let placeholder = LCDArtworkPlaceholder()
     var fillsArtwork = false { didSet { placeholder.isHidden = fillsArtwork; needsDisplay = true } }
     override init(frame: NSRect) {
-        super.init(frame: frame)
+        super.init(frame: frame); wantsLayer = true
         placeholder.image = systemSymbol("music.note", pointSize: 16)
         placeholder.contentTintColor = .secondaryLabelColor
         placeholder.imageScaling = .scaleNone; placeholder.setAccessibilityHidden(true)

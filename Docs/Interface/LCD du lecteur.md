@@ -10,8 +10,8 @@
 | Header | 44 pt, dans le contenu de la fenêtre ; aucune `NSToolbar` |
 | Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; boutons standard créés par AppKit dans le header, indépendants des instances du titlebar ; masque d’autoresize retiré |
 | Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 20 pt ; entraxe 27 pt |
-| Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms commune au transport et au volume |
-| Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back + 3 pt |
+| Plein écran | Groupe x = 52 pt au repos, soit rail 44 pt + 8 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms commune au transport et au volume |
+| Volume | Slider 117 pt au maximum (un tiers de plus que 88 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back + 3 pt |
 | Bouton de volume | 7 pt au repos, 9 pt au survol ; couleur opaque ; échelle 100 ms à l’entrée et 90 ms à la sortie ; teinte accentuée après 400 ms |
 | Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe ; symbole 10 pt et slider rapproché de 7 pt |
 | LCD | Hauteur 41 pt, largeur 280–460 pt selon le budget ; ancré au haut, marge inférieure 3 pt ; pochette 41 × 41 pt |
@@ -97,6 +97,16 @@ Le centrage des instances possédées par le titlebar ne suffisait pas : le bout
 Le volume aligne les images SF sur leur `alignmentRect` typographique : à 10 pt, `speaker.wave.2.fill` mesure 14 × 10 pt et `speaker.wave.3.fill` 17 × 11 pt, ce qui rendait leur centrage par boîte instable. Le canal vide est un `NSVisualEffectView` under-window actif, avec le même voile `railGlassTint` que la sidebar. Remplissage et curseur restent au-dessus de ce verre.
 
 La perte du focus atténue le titre et le sous-titre du LCD, les textes des cellules de sidebar et leurs grands titres à 45 %. Les horloges utilisent le gris inactif des commandes ; leur opacité de vue reste 1 pour préserver les fondus de contenu. Le temps restant se rapproche encore de 3 pt du bord droit et ne dessine plus de plaque au survol : seul son texte s’accentue. Les animations de texte avancent à 20 pt/s et se reposent 2,4 s, soit deux fois la pause précédente. Ces mises à jour suivent les notifications de fenêtre, sans horloge inactive.
+
+### Pochettes, ancrage du haut-parleur et poignée de timeline
+
+Les changements d’image utilisent un fondu de contenu de 200 ms sur la pochette seule. Une clé identique conserve l’image affichée ; deux absences d’image conservent le placeholder sans transition. Pendant le chargement d’une autre pochette, l’ancienne reste visible jusqu’au résultat. Le bouton Play conserve sa disponibilité pour lancer une sélection, tout en prenant la teinte désactivée de Back/Next lorsqu’aucune piste n’est chargée.
+
+Le haut-parleur est désormais enregistré sur le rectangle gauche de son glyphe : une mesure alpha à résolution ×4, mémorisée pour chaque nom et taille de symbole, repère son ancrage. Les images normalisent leur `alignmentRect` pour éviter une seconde correction optique par NSImageView. La bouche garde le même x et son centre vertical coïncide avec celui des boutons système. Le dimensionnement initial du symbole de volume est lui aussi fixé à 10 pt.
+
+Depuis le bouton vert du header, le fondu des contrôles précède de 160 ms l’entrée plein écran, afin qu’AppKit ne capture pas directement leur état final invisible. Les fondus utilisent le proxy d’animation AppKit et le masquage attend 200 ms. Le transport sans feux se rapproche de 4 pt du rail ; le volume inline peut grandir jusqu’à 117 pt et conserve sa réduction adaptative. Les largeurs sont arrondies au point pour garder le déplacement natif du curseur exactement cohérent avec les extrémités dessinées.
+
+Au survol de la bande inférieure, une capsule grise de 4 × 9 pt indique la position visée ; elle suit aussi le scrub. Le temps est centré exactement sur cette capsule, à 3 pt au-dessus. Son label appartient au header, au-dessus du LCD, afin de conserver ce centrage aux extrémités sans être coupé par le masque du panneau. Le label laisse passer les clics ; le slider accessible existant garde les gestes. Le mode Spectre conserve l’absence de temps flottant au survol.
 
 ## Vérification du polissage — 22 novembre 2026
 
@@ -261,3 +271,7 @@ Le slider atteint 132 pt, contre 72 pt auparavant. Sa largeur partage le budget 
 Contrôle natif sombre : slider de 132 pt à 1 240/1 600 pt, 94,6 pt à 1 000 pt et 77 pt à 820 pt avec recherche réduite. Les assertions vérifient la plage 52–132 pt et l’absence de chevauchement avec AirPlay et les contrôles à droite, y compris après le plein écran.
 
 Validation du dernier complément : builds macOS de développement et optimisé, scénarios natifs clair/sombre, contrôle explicite de perte de focus (métadonnées, deux horloges et titres de sidebar), ainsi que réduction/fermeture/plein écran depuis les boutons visibles du header. Un premier contrôle de remplacement audio puis un essai de transfert du focus ont nécessité une relance du scénario ; la suite finale réussit.
+
+Validation du complément pochettes/timeline : build de développement et scénario natif sombre réussis ; transitions entre images différentes, même image et deux placeholders vérifiées, ancrage du haut-parleur contrôlé, centrage de la capsule au bord droit capturé. La largeur fractionnaire initiale de 117,33 pt révélait une différence de déplacement dans NSSliderCell : les largeurs inline sont désormais entières, et les glissements à 0/25/50/75/100 % correspondent exactement au dessin. Les contrôles de CATransition lisent la clé canonique `kCATransition` (Core Animation ignore le nom personnalisé pour ce type d’animation). Le parcours sombre mesure une disposition médiane de 3,19 ms, maximum 4,89 ms dans la fenêtre de contrôle.
+
+Le scénario clair et le build optimisé sont également validés ; les contrôles couvrent l’entrée et la sortie plein écran depuis le bouton vert, la réduction/fermeture/réouverture, l’absence de clignotement entre placeholders, les ancrages du haut-parleur et le centrage du temps sur la capsule. Le contrôle de volume restaure maintenant son niveau initial après les gestes synthétiques pour conserver la prévisualisation silencieuse.

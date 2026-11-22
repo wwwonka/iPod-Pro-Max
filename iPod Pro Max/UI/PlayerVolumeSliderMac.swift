@@ -206,7 +206,7 @@ import AppKit
     func checkThumbInteraction() {
         guard let cell = cell as? NSSliderCell else { preconditionFailure("Volume cell missing") }
         let previousValue = doubleValue
-        defer { doubleValue = previousValue; setHovering(false); positionThumb() }
+        defer { doubleValue = previousValue; sendAction(action, to: target); setHovering(false); positionThumb() }
         let bar = visibleTrackRect
         for fraction in [0.0, 0.25, 0.5, 0.75, 1] {
             doubleValue = fraction; positionThumb()

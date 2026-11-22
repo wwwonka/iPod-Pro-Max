@@ -14,6 +14,7 @@ import AppKit
     private var pressed = false
     private var currentSymbol = ""
     private lazy var transportSymbol = TransportSymbolView()
+    var matchesDisabledTint = false { didSet { if oldValue != matchesDisabledTint { updateInteraction() } } }
     var textOnlyHover = false
     func refreshTextTint() { updateInteraction() }
     var usesElevation = false { didSet { if usesElevation { (cell as? NSButtonCell)?.highlightsBy = [] } } }
@@ -173,7 +174,7 @@ import AppKit
         hoverLayer.backgroundColor = (dark ? NSColor.white : NSColor.black).cgColor
         hoverLayer.opacity = usesElevation || textOnlyHover ? 0 : lit ? (pressed ? 0.13 : 0.065) : 0
         CATransaction.commit()
-        contentTintColor = !isEnabled ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : (pressed || isLatched) && !usesElevation ? .white : .secondaryLabelColor
+        contentTintColor = (!isEnabled || matchesDisabledTint) ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : (pressed || isLatched) && !usesElevation ? .white : .secondaryLabelColor
         if textOnlyHover {
             let color: NSColor = !active ? NSColor.labelColor.withAlphaComponent(0.3) : hovered ? .controlAccentColor : .secondaryLabelColor
             let text = NSAttributedString(string: title, attributes: [.font: font ?? NSFont.systemFont(ofSize: 9), .foregroundColor: color])

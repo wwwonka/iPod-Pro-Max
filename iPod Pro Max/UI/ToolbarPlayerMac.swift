@@ -41,7 +41,8 @@ import SwiftCrossUI
     private var pendingTransportAnimation: (trackID: String?, playing: Bool)?
     private var showsStop: Bool { headerHovered && optionHeld && controller.track != nil }
     var trailingControlsWidth: CGFloat = 194
-    private(set) var volumeSliderWidth: CGFloat = 88
+    static let maximumVolumeSliderWidth: CGFloat = 117
+    private(set) var volumeSliderWidth: CGFloat = maximumVolumeSliderWidth
     private var compact = false
     private(set) var fullScreenLayout = false
     private(set) var trafficLightsRevealed = false
@@ -70,6 +71,7 @@ import SwiftCrossUI
         previous.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position - 5) }
         next.onSeek = { [weak self] in guard let self else { return }; self.controller.seek(self.controller.position + 5) }
         for button in [previous, play, next] {
+            (button.cell as? NSButtonCell)?.imageDimsWhenDisabled = false
             button.animatesPress = true; button.usesElevation = true
             (button.cell as? NSButtonCell)?.highlightsBy = []
         }
@@ -109,7 +111,7 @@ import SwiftCrossUI
         precondition(!play.isEnabled && !previous.isEnabled && !next.isEnabled)
         let row = TrackRow(id: "toolbar-check", title: "Toolbar", artist: "", album: "", number: "", year: "", duration: "", path: "/missing")
         selectionRows = [row]; selectedIDs = [row.id]
-        precondition(play.isEnabled)
+        precondition(play.isEnabled && play.matchesDisabledTint && play.contentTintColor == previous.contentTintColor)
         let beforeClick = play.animatedSymbolChanges
         play.performClick(nil)
         refresh()
@@ -146,7 +148,7 @@ import SwiftCrossUI
     private func configure(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.bezelStyle = .texturedRounded; button.isBordered = false
         button.controlSize = .small; button.imageScaling = .scaleNone
-        if let button = button as? ToolbarPlaybackButton { button.setSymbol(symbol, size: button === play ? 20 : 13) }
+        if let button = button as? ToolbarPlaybackButton { button.setSymbol(symbol, size: button === play ? 20 : button === mute ? 10 : 13) }
         else { button.image = systemSymbol(symbol, pointSize: 13) }
         button.target = self; button.action = action; button.toolTip = label; button.setAccessibilityLabel(label)
     }
@@ -189,7 +191,7 @@ import SwiftCrossUI
     /// Geometry is owned by the content header; AppKit never reparents these views.
     func layout(in header: NSView) {
         updateWidth()
-        transport.frame.origin = NSPoint(x: fullScreenLayout ? (trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) : 74, y: 6)
+        transport.frame.origin = NSPoint(x: fullScreenLayout ? (trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 8) : 74, y: 6)
         let gap = (fullScreenLayout ? 18 : trafficToBackGap(in: header)) + 3
         volumeTargetGap = gap
         let nextInk = next.cell?.imageRect(forBounds: next.bounds) ?? next.bounds
@@ -200,7 +202,9 @@ import SwiftCrossUI
         // at a fixed window-width threshold. Reserve the actual search control.
         let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 21
         compact = budget < 280 + 44
-        volumeSliderWidth = compact ? 0 : min(88, max(44, 88 - max(0, 460 + 88 - budget) * 0.4))
+        // Native NSSliderCell rounds its travel metrics. Integral point widths
+        // keep the drawn endpoints and native drag fractions identical.
+        volumeSliderWidth = compact ? 0 : floor(min(Self.maximumVolumeSliderWidth, max(44, Self.maximumVolumeSliderWidth - max(0, 460 + Self.maximumVolumeSliderWidth - budget) * 0.4)))
         volumeView.setFrameSize(NSSize(width: 21 + volumeSliderWidth, height: 32))
         if !popover.isShown {
             if compact { slider.removeFromSuperview() }
@@ -221,7 +225,7 @@ import SwiftCrossUI
         return mute.convert(muteInk, to: root).minX - next.convert(nextInk, to: root).maxX
     }
     func checkVolumeSlider() {
-        slider.checkThumbInteraction(); route.checkNativeControl()
+        slider.checkThumbInteraction(); route.checkNativeControl(); TransportSymbolView.checkSpeakerAlignment()
         if let content = popover.contentViewController?.view, !compact {
             slider.removeFromSuperview(); content.addSubview(slider)
             popoverDidClose(Notification(name: NSPopover.didCloseNotification, object: popover))
@@ -246,6 +250,7 @@ import SwiftCrossUI
         if route.player !== routePlayer { route.player = routePlayer }
         previous.isEnabled = controller.track != nil; next.isEnabled = controller.track != nil
         play.isEnabled = controller.track != nil || selection != nil
+        play.matchesDisabledTint = controller.track == nil
         let animate = !showsStop && pendingTransportAnimation?.trackID == controller.track?.id && pendingTransportAnimation?.playing == controller.playing
         let symbol = showsStop ? "stop.fill" : controller.playing ? "pause.fill" : "play.fill"
         play.setSymbol(symbol, size: 20, animated: animate)

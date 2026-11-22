@@ -103,8 +103,8 @@ import MediaKit
         scrub.update(fraction: Double(x / max(1, bounds.width)), duration: duration, width: Double(bounds.width), chapters: chapters)
         onPreview(scrub.proposed); needsDisplay = true
     }
-    override func mouseDown(with event: NSEvent) { gestureCancelled = false; window?.makeFirstResponder(self); propose(event) }
-    override func mouseDragged(with event: NSEvent) { propose(event) }
+    override func mouseDown(with event: NSEvent) { mouseMoved(with: event); gestureCancelled = false; window?.makeFirstResponder(self); propose(event) }
+    override func mouseDragged(with event: NSEvent) { mouseMoved(with: event); propose(event) }
     override func mouseUp(with event: NSEvent) {
         guard scrub.proposed != nil else { return }
         if let value = scrub.finish(currentTrackID: currentTrackID()) { onSeek(value) }

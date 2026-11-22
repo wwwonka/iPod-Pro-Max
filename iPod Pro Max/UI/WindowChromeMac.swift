@@ -128,7 +128,7 @@
                     log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
                     precondition(abs(leftGap - reference - 3) <= 1, "Next/volume margin adds 3 pt to traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
-                precondition((player.volumeSliderWidth == 0 || (44...88).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
+                precondition((player.volumeSliderWidth == 0 || (44...ToolbarPlayerMac.maximumVolumeSliderWidth).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
                 precondition(player.volumeView.frame.maxX + 12 <= player.route.frame.minX + 0.5, "Adaptive volume clears AirPlay")
                 precondition(player.lcd.frame.maxX + 47 <= (playerHeader?.bounds.width ?? 0) - player.trailingControlsWidth + 0.5, "Adaptive LCD clears search and queue")
                 log(String(format: "Adaptive volume %.0f pt: slider %.2f pt", width, player.volumeSliderWidth))
@@ -376,9 +376,23 @@
         }
         @objc private func closePrimaryWindow() { window?.performClose(nil) }
         @objc private func minimizePrimaryWindow() { window?.performMiniaturize(nil) }
+        private var fullScreenEntryPending = false
         @objc private func zoomPrimaryWindow() {
-            if NSEvent.modifierFlags.contains(.option) { window?.performZoom(nil) }
-            else { window?.toggleFullScreen(nil) }
+            guard let window, !fullScreenEntryPending else { return }
+            if NSEvent.modifierFlags.contains(.option) { window.performZoom(nil) }
+            else if window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+            else {
+                // Finish the fade before AppKit snapshots the window for entry.
+                fullScreenEntryPending = true; hidingTrafficLights = true
+                relayoutTitleArea?(); CATransaction.flush()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self, weak window] in
+                    self?.fullScreenEntryPending = false
+                    if let window, !window.styleMask.contains(.fullScreen) {
+                        if window.isVisible { window.toggleFullScreen(nil) }
+                        else { self?.hidingTrafficLights = false; self?.relayoutTitleArea?() }
+                    }
+                }
+            }
         }
         private var trafficLightHideWork: DispatchWorkItem?
         private var hidingTrafficLights = false
@@ -396,7 +410,7 @@
         var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
         var fullScreenTrafficLightsVisible: Bool {
             guard player.fullScreenLayout, !hidingTrafficLights, hostedTrafficLights.count == 3, let header = playerHeader else { return false }
-            return hostedTrafficLights.allSatisfy { !$0.isHidden && $0.alphaValue == 1 && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
+            return hostedTrafficLights.allSatisfy { !$0.isHidden && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
         }
         private func updateFullScreenTrafficLights() {
             guard player.fullScreenLayout else { return }
@@ -414,7 +428,7 @@
         @objc func mouseExited(with event: NSEvent) { holdingTrafficLightReveal = false; updateFullScreenTrafficLights() }
         private(set) var exitButtonLayoutSamples = 0
         private(set) var exitButtonClippedSamples = 0
-        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == (player.trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) }
+        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == (player.trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 8) }
         private func observeNativeButtonFrames(_ views: [NSView], onChange: @escaping () -> Void) {
             guard views.map(ObjectIdentifier.init) != observedNativeButtonViews.map(ObjectIdentifier.init) else { return }
             nativeButtonFrameObservers.forEach(NotificationCenter.default.removeObserver)
@@ -517,17 +531,18 @@
                 }
                 for type in types { window.standardWindowButton(type)?.isHidden = true }
                 self.observeNativeButtonFrames(self.hostedTrafficLights, onChange: center)
+                let visibilityChanged = lastHidden != self.hidingTrafficLights
                 for (index, button) in self.hostedTrafficLights.enumerated() {
                     if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
                     button.autoresizingMask = []
                     let opacity: CGFloat = self.hidingTrafficLights ? 0 : 1
-                    if button.alphaValue != opacity {
-                        let from = button.layer?.presentation()?.opacity ?? Float(button.alphaValue)
-                        button.alphaValue = opacity
-                        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                            let fade = CABasicAnimation(keyPath: "opacity")
-                            fade.fromValue = from; fade.toValue = opacity; fade.duration = 0.16
-                            button.layer?.add(fade, forKey: "windowControlVisibility")
+                    if visibilityChanged {
+                        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { button.alphaValue = opacity }
+                        else {
+                            NSAnimationContext.runAnimationGroup { context in
+                                context.duration = 0.16
+                                button.animator().alphaValue = opacity
+                            }
                         }
                     }
                     if !self.hidingTrafficLights { button.isHidden = false }
@@ -552,13 +567,14 @@
                             self.hostedTrafficLights.forEach { $0.isHidden = true }
                         }
                         self.trafficLightHideWork = work
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20, execute: work)
                     }
                 }
                 self.layoutPlayerHeader()
             }
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { self.hidingTrafficLights = true; self.nativeTitlebarRevealed = false; self.holdingTrafficLightReveal = false; center() }
+                MainActor.assumeIsolated { self.hidingTrafficLights = true; self.nativeTitlebarRevealed = false; self.holdingTrafficLightReveal = false; center()
+                    CATransaction.flush() }
             })
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated {

@@ -10,12 +10,15 @@ import MediaKit
     private var duration = 0.0
     private var scrubbing = false
     private var hovered = false
+    private var pointerX: CGFloat?
+    var handleRect: NSRect { thumb.frame }
     private var tracking: NSTrackingArea?
     private(set) var thickness: CGFloat = 2
     override init(frame: NSRect) {
-        super.init(frame: frame); wantsLayer = true
+        super.init(frame: frame); wantsLayer = true; clipsToBounds = false
         for item in [track, fill, markers, thumb] { layer?.addSublayer(item) }
-        thumb.cornerRadius = 3
+        thumb.cornerRadius = 2
+        thumb.borderWidth = 0.5
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -35,20 +38,25 @@ import MediaKit
     }
     override func mouseEntered(with event: NSEvent) { setHovered(true) }
     override func mouseExited(with event: NSEvent) { setHovered(false) }
+    func setPointerX(_ value: CGFloat?) {
+        pointerX = value; setHovered(value != nil); render(animated: false)
+    }
     func setHovered(_ value: Bool) {
         guard hovered != value else { return }
         hovered = value; thickness = value ? 4 : 2; render(animated: true)
     }
     func checkHoverRendering() {
         update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [])
-        setHovered(true)
+        setPointerX(bounds.width / 2)
+        precondition(!thumb.isHidden && thumb.bounds.size == NSSize(width: 4, height: 9))
         precondition(thickness == 4 && track.bounds.height == 4 && fill.bounds.height == 4)
         precondition(alphaValue == 1 && track.opacity == 1 && fill.opacity == 1, "Progress must stay opaque above metadata")
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             precondition(track.animation(forKey: "hoverHeight") != nil, "Hover thickness must animate")
         }
         update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [])
-        setHovered(false)
+        setPointerX(nil)
+        precondition(thumb.isHidden)
         precondition(thickness == 2 && track.bounds.height == 2)
         log("PASS: progress overlay stays opaque and animates hover thickness 2–4 pt")
     }
@@ -61,15 +69,18 @@ import MediaKit
         track.backgroundColor = NSColor.tertiaryLabelColor.withAlphaComponent(0.5).cgColor
         fill.backgroundColor = NSColor.controlAccentColor.cgColor
         markers.fillColor = NSColor.labelColor.withAlphaComponent(0.55).cgColor
-        thumb.backgroundColor = NSColor.controlAccentColor.cgColor
+        thumb.backgroundColor = NSColor.labelColor.withAlphaComponent(0.45).cgColor
+        thumb.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
         track.frame = NSRect(x: 0, y: 0, width: bounds.width, height: thickness)
         fill.frame = NSRect(x: 0, y: 0, width: bounds.width * fraction, height: thickness)
         track.cornerRadius = 0; fill.cornerRadius = 0
         let path = CGMutablePath()
         if duration > 0 { for chapter in chapters { path.addRect(CGRect(x: bounds.width * chapter.time / duration, y: 0, width: 1, height: thickness + 2)) } }
         markers.path = path
-        thumb.frame = NSRect(x: bounds.width * fraction - 3, y: 0, width: 6, height: 6)
-        thumb.isHidden = !scrubbing
+        let x: CGFloat = scrubbing ? bounds.width * fraction : (pointerX ?? bounds.width * fraction)
+        let center = min(max(2, bounds.width - 2), max(2, x))
+        thumb.frame = NSRect(x: center - 2, y: 0, width: 4, height: 9)
+        thumb.isHidden = !scrubbing && !hovered
         CATransaction.commit()
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         for bar in [track, fill] {
