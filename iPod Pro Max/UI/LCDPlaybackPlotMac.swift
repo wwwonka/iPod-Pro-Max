@@ -9,6 +9,7 @@ import MediaKit
     var activity: PlayerActivity?
     private(set) var scrub = PlayerScrub()
     private(set) var hoverX: CGFloat = 0
+    private(set) var hoverPoint = NSPoint.zero
     private var trackID: String?
     private var gestureCancelled = false
     var onSeek: (Double) -> Void = { PlaybackController.shared.seek($0) }
@@ -89,7 +90,8 @@ import MediaKit
     override func mouseExited(with event: NSEvent) { hover = false; onHover(nil); needsDisplay = true }
     override func mouseMoved(with event: NSEvent) {
         guard duration > 0 else { onHover(nil); return }
-        hoverX = convert(event.locationInWindow, from: nil).x
+        hoverPoint = convert(event.locationInWindow, from: nil)
+        hoverX = hoverPoint.x
         let target = min(duration, max(0, Double(hoverX / max(1, bounds.width)) * duration))
         hoverChapter = chapters.first { abs($0.time - target) / duration * bounds.width <= 6 }?.title
         onHover(target)

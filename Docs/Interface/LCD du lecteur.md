@@ -9,18 +9,18 @@
 |---|---|
 | Header | 44 pt, dans le contenu de la fenêtre ; aucune `NSToolbar` |
 | Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; instances AppKit réelles, masque d’autoresize retiré |
-| Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 19 pt |
+| Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 20 pt ; entraxe 27 pt |
 | Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms |
 | Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back |
 | Bouton de volume | 7 pt au repos, 9 pt au survol ; couleur opaque ; échelle 100 ms à l’entrée et 90 ms à la sortie ; teinte accentuée après 400 ms |
-| Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe |
+| Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe ; symbole 10 pt et slider rapproché de 5 pt |
 | LCD | Hauteur 41 pt, largeur 280–460 pt selon le budget ; ancré au haut, marge inférieure 3 pt ; pochette 41 × 41 pt |
 | AirPlay et file | Plaques 39 × 26 pt, espacées de 8 pt de part et d’autre du LCD ; AirPlay à gauche, file à droite |
 | Modes | Chevrons de 16 pt au bord droit du LCD, sous la timeline dans l’ordre de composition, révélés 130 ms et retirés 100 ms ; cachés en idle |
 | Recherche | Champ natif 170 × 28 pt, ou loupe quand la fenêtre se réduit ; focus à l’échelle 1,025 en 120 ms, contour serré, texte suivant le curseur |
 | Défocus recherche | Échap conserve le texte et retire le focus ; clic extérieur transmis normalement ; perte d’activation retire le focus |
 
-Le verre reste actif visuellement quand la fenêtre est en arrière-plan ; les contrôles prennent leur teinte inactive. Le transport remplace le voile par un relief extérieur, renforcé après le délai de survol, presque éteint et réduit à 86 % à l’appui. Le highlight blanc de la cellule native est désactivé. Play/Pause utilise les transitions SF Symbols d’AppKit accélérées uniquement en réponse au clic sur ce bouton. Les changements de piste, raccourcis et commandes distantes mettent le symbole à jour sans effet. Option maintenue pendant le survol du header affiche `stop.fill` ; son clic arrête et décharge la lecture. Les infobulles du transport sont retirées, les libellés d’accessibilité conservés.
+Le verre reste actif visuellement quand la fenêtre est en arrière-plan ; les contrôles prennent leur teinte inactive. Le transport remplace le voile par un relief extérieur, renforcé après le délai de survol, presque éteint et réduit à 86 % à l’appui. Le highlight blanc de la cellule native est désactivé. Play/Pause utilise les transitions SF Symbols d’AppKit accélérées en réponse au clic sur ce bouton ou à la barre d’espace. Les changements de piste et commandes distantes mettent le symbole à jour sans effet. Option maintenue pendant le survol du header affiche `stop.fill` ; son clic arrête et décharge la lecture. Les infobulles du transport sont retirées, les libellés d’accessibilité conservés.
 
 Le conteneur macOS reste un verre natif translucide, creusé par des dégradés internes, affleurant le haut de la fenêtre et laissant 3 points sous le panneau. La pochette remplit la hauteur de 41 pt au bord gauche ; la timeline part de son coin inférieur droit jusqu’au bord droit du LCD. Les métadonnées gardent deux lignes. Les commandes auxiliaires reprennent les valeurs du rail et des boutons natifs : attente de 400 ms au survol, fondu entrant de 180 ms et sortant de 160 ms, voile neutre à 6,5 % au survol et 13 % à la pression, glyphes gris secondaires et estompés quand la fenêtre perd le focus. Les trois boutons de transport utilisent désormais une ombre extérieure à la place du voile de survol : opacité 0,40 et rayon 1,7 pt au repos, puis 0,78 et 3,6 pt après le délai de 400 ms. L’appui réduit l’ombre à 0,015 et le rayon à 0,2 pt. Ils passent à 86 % pendant l’appui en 60 ms, puis retrouvent leur taille en 100 ms. Les changements d’ombre prennent 60 ms à l’appui et 120 ms au relâchement/survol. Play/Pause utilise directement les transitions SF Symbols d’AppKit, accélérées avec `.speed(3)` : Magic Replace sous macOS 15 et ultérieur, Replace sous macOS 14. Le système fournit les effets Draw lorsque disponibles sous macOS 26 ; aucun tracé simulé par masque n’est conservé. Réduire les animations donne directement le symbole final.
 
@@ -42,7 +42,7 @@ La progression est une vue transparente distincte, toujours au-dessus des métad
 
 En mode Spectre, le survol conserve les barres sans superposer les métadonnées ni afficher un temps flottant. L’écart entre canaux est de 24 pt. À la pause, les niveaux descendent à vitesse constante jusqu’à zéro, en 840 ms au maximum ; les colonnes basses s’éteignent plus tôt. Chaque crête attend l’extinction du dernier segment de sa propre colonne, garde sa hauteur 200 ms, puis disparaît en 220 ms. Un seul display link pilote ce relâchement borné ; il s’arrête lorsque tous les niveaux et crêtes sont éteints. Reprise, masquage et Réduire les animations interrompent proprement l’enveloppe.
 
-La pochette sans image dessine un fond translucide avec la note musicale. Le titre et l’artiste descendent de 2 pt ; les temps se rapprochent des extrémités de leur zone, avant les chevrons à droite.
+La pochette sans image dessine un fond translucide avec la note musicale. Le titre et l’artiste descendent de 2 pt. Le titre reste centré dans la zone utile, indépendamment du bouton •••, qui se révèle en fondu à sa droite au survol. Les temps partagent des marges de 6 pt et 22 pt, cette dernière réservant la place des chevrons et un intervalle avec le temps restant. Les chevrons restent au bord droit et gardent leur rendu actif pendant le fondu sortant de 160 ms. Le sous-titre défilant réserve 60 pt de chaque côté pour les horloges (90 pt à gauche avec une vitesse parlée), afin que les textes ne se chevauchent jamais.
 
 Le volume utilise `speaker.slash.fill` à zéro et les vrais `speaker.wave.1.fill` à `speaker.wave.3.fill`. Une surface d’icône fixe, alignée à gauche, conserve la position du haut-parleur ; un fondu de 140 ms introduit ou retire les ondes. Les changements externes et mute animent aussi le remplissage et le curseur, sans ralentir le glissement natif.
 
@@ -65,6 +65,22 @@ Les activités proviennent des imports, transferts/synchronisations (y compris l
 - L’analyse reste indépendante du dessin : `IPPM_CHECK_ANALYSIS=<fichier>` mesure le décodage réel, vérifie waveform/spectre et leur réutilisation ; `IPPM_CHECK_AUDIO=<WAV>` vérifie aussi les publications de session sur un moteur réel.
 
 Les lancements ordinaires gardent une fenêtre de niveau normal, visible dans Mission Control. `IPPM_FRONT` ne change plus son niveau ; un niveau flottant ne peut être demandé que lors d’une capture explicite `IPPM_SNAPSHOT`.
+
+## Transitions de piste et interactions — complément du 22 novembre
+
+Le conteneur LCD ne reçoit plus de transition globale. Seuls les textes de piste fondent ; le placeholder et le verre restent stables. La note de remplacement est une image native persistante indépendante de la cellule du bouton. Deux pistes sans pochette conservent le même rendu. Les temps gardent une opacité de vue de 1 ; le texte précédent reste jusqu’à disponibilité de la nouvelle durée, puis un fondu de contenu de 180 ms le remplace sans passer par `--:--` entre les pistes.
+
+Le contrôleur ignore les états moteur synchrones pendant le remplacement. Sur Mac, l’observation du taux AVPlayer vérifie l’identité de l’item et ignore les taux nuls de démarrage jusqu’à une progression audio effective. Un taux positif seul ne suffit pas à conclure que le chargement est terminé. Les pauses explicites continuent de mettre l’interface à jour immédiatement. Le contrôle réel remplace une piste pendant la lecture et vérifie qu’aucun état `playing = false` n’est publié.
+
+L’infobulle de la mini timeline suit le point local du curseur avec un décalage de 4 pt et se borne aux bords horizontaux. Le volume utilise une sensibilité de 0,0015 par unité de défilement précis et 0,004 par unité de molette. Le scroll retire le survol du curseur et le bloque jusqu’au prochain mouvement de souris ; aucun délai ou polling n’est ajouté.
+
+Titre et sous-titre trop longs utilisent deux copies de texte pour un défilement continu vers la gauche à 28 pt/s, avec une pause de 1,2 s au début de chaque boucle. Les animations sont retirées en pause ou quand la fenêtre est masquée ; les textes qui tiennent dans leur zone et Réduire les animations restent immobiles. Aucun timer ne pilote le défilement.
+
+### Validation du complément
+
+Builds de développement et optimisé ; 131 tests, 7 ignorés, aucun échec. L’intégration native en clair/sombre remplace réellement la piste AVPlayer et vérifie l’absence d’état pause intermédiaire, puis contrôle la composition avec des titres longs, les deux copies de défilement, leur suppression en pause et leur reprise. Les contrôles de volume vérifient la sensibilité réduite et l’absence de grossissement après scroll jusqu’au mouvement du pointeur. Plein écran, pause/reprise et arrêt des horloges restent validés.
+
+Un lancement du contrôle direct de disposition a rencontré le `PackageDropOverlayView` du module de plug-ins lors d’un `hitTest` hors événement pointeur (`WindowChromeMac.swift:141`). Ce contrôle dépend de `NSApp.currentEvent` ; le scénario d’intégration avec la fenêtre active valide les mêmes contrôles de géométrie. Le chemin de dépôt de plug-ins n’est pas changé par ce lot. La limitation du contrôle global des menus de colonnes signalée plus bas reste distincte.
 
 ## Vérification du polissage — 22 novembre 2026
 

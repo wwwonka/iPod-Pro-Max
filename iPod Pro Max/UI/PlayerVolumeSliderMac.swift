@@ -34,6 +34,7 @@ import AppKit
     private var lastDrawnValue = Double.nan
     private var thumbArea: NSTrackingArea?
     private var hoverWork: DispatchWorkItem?
+    private var awaitingPointerMove = false
     private var hovering = false
     private var accented = false
     private var pressing = false
@@ -150,10 +151,11 @@ import AppKit
         } else { accented = false }
         updateThumb()
     }
-    override func mouseEntered(with event: NSEvent) { setHovering(true) }
-    override func mouseMoved(with event: NSEvent) { setHovering(thumbHitRect.contains(convert(event.locationInWindow, from: nil))) }
+    override func mouseEntered(with event: NSEvent) { if !awaitingPointerMove { setHovering(true) } }
+    override func mouseMoved(with event: NSEvent) { awaitingPointerMove = false; setHovering(thumbHitRect.contains(convert(event.locationInWindow, from: nil))) }
     override func mouseExited(with event: NSEvent) { setHovering(false) }
     override func mouseDown(with event: NSEvent) {
+        awaitingPointerMove = false
         animateNextValueChange = !thumbHitRect.contains(convert(event.locationInWindow, from: nil))
         hoverWork?.cancel(); pressing = true; updateThumb()
         super.mouseDown(with: event)
@@ -182,7 +184,10 @@ import AppKit
         updateThumb(animated: false)
     }
     override func scrollWheel(with event: NSEvent) {
-        doubleValue = min(1, max(0, doubleValue + Double(event.scrollingDeltaY) * 0.01))
+        awaitingPointerMove = true; setHovering(false)
+        animateNextValueChange = true
+        let sensitivity = event.hasPreciseScrollingDeltas ? 0.0015 : 0.004
+        doubleValue = min(1, max(0, doubleValue + Double(event.scrollingDeltaY) * sensitivity))
         sendAction(action, to: target)
     }
     func checkThumbInteraction() {
@@ -212,6 +217,15 @@ import AppKit
         if !active { log("NOTE: volume active-hover check unavailable without key window; inactive thumb scale verified instead") }
         setHovering(false)
         precondition(targetScale == 1 && !accented, "Hover-out restores the size and cancels delayed tint")
+        let scroll = NSEvent(cgEvent: CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 10, wheel2: 0, wheel3: 0)!)!
+        doubleValue = 0.5; scrollWheel(with: scroll)
+        precondition(doubleValue > 0.5 && doubleValue < 0.55, "Scroll volume changes remain restrained")
+        mouseEntered(with: scroll)
+        precondition(awaitingPointerMove && !hovering && targetScale == 1, "A wheel-moved thumb must not grow underneath a stationary cursor")
+        let move = NSEvent.mouseEvent(with: .mouseMoved, location: convert(NSPoint(x: thumbHitRect.midX, y: thumbHitRect.midY), to: nil), modifierFlags: [], timestamp: 0, windowNumber: window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+        mouseMoved(with: move)
+        precondition(!awaitingPointerMove && hovering, "A real pointer move restores direct thumb interaction")
+        setHovering(false)
         log("PASS: volume endpoints and native quarter-step drags agree; opaque thumb; hover scale follows activation (active=\(active))")
     }
     deinit { hoverWork?.cancel(); activationObservers.forEach(NotificationCenter.default.removeObserver) }

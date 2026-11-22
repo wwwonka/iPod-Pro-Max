@@ -60,8 +60,8 @@ import SwiftCrossUI
         slider.controlSize = .small
         for (button, symbol, label, action, x) in [
             (previous as NSButton, "backward.fill", "Previous", #selector(goPrevious), CGFloat(0)),
-            (play, "play.fill", "Play", #selector(activateTransport), CGFloat(30)),
-            (next as NSButton, "forward.fill", "Next", #selector(goNext), CGFloat(60))] {
+            (play, "play.fill", "Play", #selector(activateTransport), CGFloat(27)),
+            (next as NSButton, "forward.fill", "Next", #selector(goNext), CGFloat(54))] {
             configure(button, symbol: symbol, label: label, action: action)
             button.toolTip = nil
             button.frame = NSRect(x: x, y: 2, width: 28, height: 28)
@@ -97,7 +97,7 @@ import SwiftCrossUI
                       event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
                       !(event.window?.firstResponder is NSTextView), !(event.window?.firstResponder is NSTextField),
                       self.controller.track != nil || self.selection != nil else { return false }
-                self.toggle(); return true
+                self.toggleWithSymbolAnimation(); return true
             }
             return handled ? nil : event
         }
@@ -117,6 +117,9 @@ import SwiftCrossUI
         precondition(controller.playing && previous.isEnabled && next.isEnabled)
         play.performClick(nil)
         precondition(!controller.playing)
+        let beforeSpace = play.animatedSymbolChanges
+        toggleWithSymbolAnimation(); toggleWithSymbolAnimation()
+        precondition(play.animatedSymbolChanges == beforeSpace + 2, "Space shares the explicit Play/Pause transition")
         let afterClicks = play.animatedSymbolChanges
         controller.toggle(); controller.toggle(); refresh()
         precondition(play.animatedSymbolChanges == afterClicks, "External playback updates must never animate the transport symbol")
@@ -143,7 +146,7 @@ import SwiftCrossUI
     private func configure(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.bezelStyle = .texturedRounded; button.isBordered = false
         button.controlSize = .small; button.imageScaling = .scaleNone
-        if let button = button as? ToolbarPlaybackButton { button.setSymbol(symbol, size: button === play ? 19 : 13) }
+        if let button = button as? ToolbarPlaybackButton { button.setSymbol(symbol, size: button === play ? 20 : 13) }
         else { button.image = systemSymbol(symbol, pointSize: 13) }
         button.target = self; button.action = action; button.toolTip = label; button.setAccessibilityLabel(label)
     }
@@ -151,9 +154,9 @@ import SwiftCrossUI
         let windowWidth = playerControlWindow(for: transport)?.frame.width ?? 1240
         transportLeadingSpace = fullScreenLayout ? 0 : min(8, max(0, (windowWidth - 900) / 340 * 8))
         for (index, button) in transport.subviews.enumerated() {
-            button.setFrameOrigin(NSPoint(x: transportLeadingSpace + CGFloat(index) * 30, y: button.frame.minY))
+            button.setFrameOrigin(NSPoint(x: transportLeadingSpace + CGFloat(index) * 27, y: button.frame.minY))
         }
-        let transportWidth = 102 + transportLeadingSpace
+        let transportWidth = 96 + transportLeadingSpace
         transport.setFrameSize(NSSize(width: transportWidth, height: transport.frame.height))
         transport.centerControls()
     }
@@ -190,15 +193,15 @@ import SwiftCrossUI
         volumeView.frame.origin = NSPoint(x: nextRight + gap - muteInk.minX, y: 6)
         // Share the available width with the LCD, rather than dropping the slider
         // at a fixed window-width threshold. Reserve the actual search control.
-        let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 28
+        let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 23
         compact = budget < 280 + 44
         volumeSliderWidth = compact ? 0 : min(88, max(44, 88 - max(0, 460 + 88 - budget) * 0.4))
-        volumeView.setFrameSize(NSSize(width: 28 + volumeSliderWidth, height: 32))
+        volumeView.setFrameSize(NSSize(width: 23 + volumeSliderWidth, height: 32))
         if !popover.isShown {
             if compact { slider.removeFromSuperview() }
             else {
                 if slider.superview !== volumeView { slider.removeFromSuperview(); volumeView.addSubview(slider) }
-                slider.frame = NSRect(x: 28, y: 6, width: volumeSliderWidth, height: 20)
+                slider.frame = NSRect(x: 23, y: 6, width: volumeSliderWidth, height: 20)
             }
         }
         volumeView.centerControls()
@@ -240,14 +243,14 @@ import SwiftCrossUI
         play.isEnabled = controller.track != nil || selection != nil
         let animate = !showsStop && pendingTransportAnimation?.trackID == controller.track?.id && pendingTransportAnimation?.playing == controller.playing
         let symbol = showsStop ? "stop.fill" : controller.playing ? "pause.fill" : "play.fill"
-        play.setSymbol(symbol, size: 19, animated: animate)
+        play.setSymbol(symbol, size: 20, animated: animate)
         play.setAccessibilityLabel(showsStop ? "Stop" : controller.playing ? "Pause" : "Play")
         if animate || pendingTransportAnimation?.trackID != controller.track?.id { pendingTransportAnimation = nil }
         if slider.doubleValue != controller.volume { slider.setVolume(controller.volume, animated: true) }
         let level = controller.volume == 0 ? 0 : controller.volume < 0.33 ? 1 : controller.volume < 0.67 ? 2 : 3
         if level != speakerLevel {
             speakerLevel = level
-            mute.setSymbol(level == 0 ? "speaker.slash.fill" : "speaker.wave.\(level).fill", size: 12)
+            mute.setSymbol(level == 0 ? "speaker.slash.fill" : "speaker.wave.\(level).fill", size: 10)
         }
         mute.setAccessibilityLabel(controller.volume == 0 ? "Unmute" : "Mute")
         // LCD refreshes once through PlayerDisplayController.didChange.
@@ -258,6 +261,9 @@ import SwiftCrossUI
     }
     @objc private func activateTransport() {
         if showsStop { pendingTransportAnimation = nil; controller.close(); return }
+        toggleWithSymbolAnimation()
+    }
+    private func toggleWithSymbolAnimation() {
         pendingTransportAnimation = (controller.track?.id ?? selection?.id, !controller.playing)
         toggle()
     }

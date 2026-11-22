@@ -38,6 +38,19 @@ import MediaKit
     let ready = await waitUntil { playback.duration > 0 && display.spectrum != nil }
     guard require(ready && playback.playing && playback.error.isEmpty, "real playback and spectrum readiness") else { return false }
     guard require(window.toolbar == nil, "player uses no native toolbar"), let originalLCD = findLCD(root), let originalHeader = originalLCD.superview else { return false }
+    // A real replacement exercises AVPlayer's asynchronous rate KVO, which the
+    // in-memory engine cannot reproduce. Loading must not flash Play in between.
+    if let oldTrack = playback.track {
+        let replacement = TrackRow(id: "replacement-check", title: "A quiet place to listen — a long song title that continues beyond the player and loops back to its beginning", artist: oldTrack.artist, album: "A long album title to read while the music continues playing, with a gentle pause between each loop", number: oldTrack.number, year: oldTrack.year, duration: oldTrack.duration, path: oldTrack.path)
+        var sawPause = false
+        let observation = playback.didChange.observe { if !playback.playing { sawPause = true } }
+        playback.start(replacement, in: [oldTrack, replacement])
+        await playback.waitForAnalysis()
+        _ = await waitUntil { playback.position > 0.25 && playback.duration > 0 }
+        withExtendedLifetime(observation) {}
+        guard require(!sawPause && playback.playing, "real track replacement never publishes a transient paused state") else { return false }
+        log("PASS: real AVPlayer track replacement keeps Pause stable throughout loading")
+    }
     (originalLCD as? PlayerLCD)?.checkComposition()
     let center = MPNowPlayingInfoCenter.default()
     guard require(center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == playback.track?.title, "live system Now Playing metadata") else { return false }

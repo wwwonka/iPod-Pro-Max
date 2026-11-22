@@ -55,6 +55,7 @@ extension AudioEngine {
         return SimulatedMediaSession()
     }
     private var spokenRates: [PlaybackContentKind: Double] = [:]
+    private var replacingTrack = false
     private var pendingSeek: Double?
     private var anchorTime = ProcessInfo.processInfo.systemUptime
     private var visible = true
@@ -144,7 +145,7 @@ extension AudioEngine {
             if oldDuration == 0, self.duration > 0 { self.publishSession() }
         }
         engine.onPlaybackState = { [weak self] playing in
-            guard let self, self.track != nil, self.playing != playing else { return }
+            guard let self, !self.replacingTrack, self.track != nil, self.playing != playing else { return }
             self.position = self.exactPosition; self.anchorTime = ProcessInfo.processInfo.systemUptime
             self.playing = playing; self.publishSession()
         }
@@ -164,6 +165,8 @@ extension AudioEngine {
     }
     private func load(_ row: TrackRow) {
         guard let path = row.path else { return }
+        replacingTrack = true
+        defer { replacingTrack = false }
         generation += 1
         let revision = generation
         analysis?.cancel()

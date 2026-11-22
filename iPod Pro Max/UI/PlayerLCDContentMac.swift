@@ -8,7 +8,7 @@ import MediaKit
     private let display = PlayerDisplayController.shared
     private let activities = PlayerActivityController.shared
     private let title = LCDMarquee()
-    private let subtitle = NSTextField(labelWithString: "")
+    private let subtitle = LCDMarquee(fontSize: 10, weight: .regular, color: .secondaryLabelColor)
     private let elapsed = NSTextField(labelWithString: "")
     private let remaining = ToolbarPlaybackButton()
     private let mode = LCDModeButton()
@@ -28,6 +28,8 @@ import MediaKit
     private var tokens: [NSObjectProtocol] = []
     private var displaySubscription: SwiftCrossUI.Cancellable?
     private var artworkTask: Task<Void, Never>?
+    private var artworkKey: String?
+    private var timeTrackID: String?
     private var trackID: String?
     private var lastPresentation = ""
     private var hovered = false
@@ -67,8 +69,6 @@ import MediaKit
         cover.title = ""; cover.imagePosition = .imageOnly
         cover.isBordered = false; cover.imageScaling = .scaleNone
         cover.target = self; cover.action = #selector(revealTrack); cover.setAccessibilityLabel("Show playing track in library")
-        subtitle.alignment = .center; subtitle.font = .systemFont(ofSize: 10); subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingTail
         elapsed.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular); elapsed.textColor = .secondaryLabelColor
         indicator.font = .systemFont(ofSize: 7); indicator.alignment = .center
         hoverTime.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
@@ -76,7 +76,7 @@ import MediaKit
         hoverTime.backgroundColor = .controlBackgroundColor; hoverTime.wantsLayer = true; hoverTime.layer?.cornerRadius = 3
         hoverTime.layer?.masksToBounds = true; hoverTime.isHidden = true
         spinner.style = .spinning; spinner.controlSize = .mini; spinner.isDisplayedWhenStopped = false
-        for view in [title, subtitle, plot] { view.wantsLayer = true }
+        for view in [title, subtitle, plot, elapsed, remaining] { view.wantsLayer = true }
         for view in [title, subtitle, elapsed, remaining, mode, reveal, cover, plot, more, backActivity, nextActivity, cancel, indicator, spinner, hoverTime, progressOverlay] { addSubview(view) }
         addSubview(plot, positioned: .below, relativeTo: title)
         for view in [previousMode, nextMode] { addSubview(view) }
@@ -108,8 +108,8 @@ import MediaKit
     private func visibilityChanged() {
         playback.setVisible(isDisplayVisible)
         display.setVisible(isDisplayVisible)
-        if !isDisplayVisible { setSpinning(false); title.stop(); plot.suspendSpectrum() }
-        else { refresh() }
+        if !isDisplayVisible { setSpinning(false); title.stop(); subtitle.stop(); plot.suspendSpectrum() }
+        else { refresh(); title.scrollOnce(); subtitle.scrollOnce() }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -117,7 +117,7 @@ import MediaKit
         let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeAlways], owner: self)
         addTrackingArea(area); tracking = area
     }
-    override func mouseEntered(with event: NSEvent) { hovered = true; title.scrollOnce(); refresh() }
+    override func mouseEntered(with event: NSEvent) { hovered = true; refresh() }
     override func mouseExited(with event: NSEvent) { hovered = false; hoverTime.isHidden = true; refresh() }
     func refresh(preview: Double? = nil, force: Bool = false) {
         guard (force || isDisplayVisible || capturesHiddenWindow), !rendering else { return }
@@ -131,11 +131,13 @@ import MediaKit
         let key = "\(track?.id ?? "")|\(effective.rawValue)|\(activity?.id ?? "")|\(effective == .lyrics ? (display.lyricIndex ?? -1) : -1)|\(playback.error)"
         let presentationChanged = key != lastPresentation
         if presentationChanged {
+            // Crossfade content only. The shared placeholder, clock and glass
+            // remain stable when moving between tracks with identical artwork.
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                let fade = CATransition()
-                fade.type = effective == .lyrics && !display.jumpedLastRefresh && playback.playing ? .push : .fade
-                fade.subtype = .fromTop; fade.duration = 0.15
-                layer?.add(fade, forKey: "LCDContent")
+                for view in [title, subtitle] {
+                    let fade = CATransition(); fade.type = .fade; fade.duration = 0.16
+                    view.layer?.add(fade, forKey: "trackContent")
+                }
             }
             lastPresentation = key
         }
@@ -145,7 +147,7 @@ import MediaKit
         for view in [previousMode, nextMode] {
             let opacity: CGFloat = hovered && canChangeView ? 1 : 0
             fade(view, to: opacity, animated: hoverChanged)
-            view.isEnabled = opacity > 0
+            view.isEnabled = canChangeView
         }
         let symbols: [PlayerLCDMode: String] = [.title: "text.alignleft", .spectrum: "chart.bar.fill", .waveform: "waveform", .lyrics: "quote.bubble"]
         mode.setSymbol(symbols[display.mode] ?? "text.alignleft", size: 10)
@@ -199,18 +201,34 @@ import MediaKit
         let metadataOpacity: CGFloat = spectrumOverlay ? 0 : trackOpacity
         fade(title, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(subtitle, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
-        fade(more, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
-        elapsed.stringValue = (playback.duration > 0 ? time(position) : "--:--") + (playback.rate == 1 ? "" : " · \(playback.rate)×")
-        remaining.title = playback.duration > 0 ? (display.showsRemaining ? "−" + time(max(0, playback.duration - position)) : time(playback.duration)) : "--:--"
+        fade(more, to: hovered && available && showTitle ? 1 : 0, animated: hoverChanged)
+        if playback.duration > 0 || elapsed.stringValue.isEmpty || track == nil {
+            let nextElapsed = (playback.duration > 0 ? time(position) : "--:--") + (playback.rate == 1 ? "" : " · \(playback.rate)×")
+            let nextRemaining = playback.duration > 0 ? (display.showsRemaining ? "−" + time(max(0, playback.duration - position)) : time(playback.duration)) : "--:--"
+            if timeTrackID != track?.id, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                for view in [elapsed, remaining] {
+                    let fade = CATransition(); fade.type = .fade; fade.duration = 0.18
+                    view.layer?.add(fade, forKey: "timeContent")
+                }
+            }
+            elapsed.stringValue = nextElapsed; remaining.title = nextRemaining
+            timeTrackID = track?.id
+        }
+        elapsed.alphaValue = 1; remaining.alphaValue = 1
+        subtitle.canAnimate = title.canAnimate
         fade(plot, to: 1, animated: false)
         plot.update(trackID: track?.id, position: position, duration: playback.duration, mode: effective, samples: playback.samples, chapters: display.chapters)
         progressOverlay.isHidden = plot.isHidden
         progressOverlay.update(position: position, duration: playback.duration, activity: activity, proposed: plot.scrub.proposed, chapters: display.chapters)
         if trackID != track?.id {
             trackID = track?.id; artworkTask?.cancel()
-            cover.fillsArtwork = false; cover.imageScaling = .scaleNone
-            cover.image = systemSymbol("music.note", pointSize: 16)
-            if let key = track?.artworkKey, let folder = PlayerArtwork.folder {
+            let nextArtworkKey = track?.artworkKey
+            if artworkKey != nextArtworkKey || cover.image == nil {
+                artworkKey = nextArtworkKey
+                cover.fillsArtwork = false; cover.imageScaling = .scaleNone
+                cover.image = systemSymbol("music.note", pointSize: 16)
+            }
+            if !cover.fillsArtwork, let key = nextArtworkKey, let folder = PlayerArtwork.folder {
                 let id = track?.id
                 artworkTask = Task { [weak self] in
                     let image = await ThumbnailStore.shared.image(folder.appendingPathComponent(key + ".jpg"), pixels: 128)
@@ -235,7 +253,7 @@ import MediaKit
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let animation = CABasicAnimation(keyPath: "opacity")
             animation.fromValue = start; animation.toValue = Float(opacity)
-            animation.duration = hovered ? 0.13 : 0.10
+            animation.duration = hovered ? 0.13 : 0.16
             if view === previousMode || view === nextMode {
                 let move = CABasicAnimation(keyPath: "transform.translation.x")
                 move.fromValue = view.layer?.presentation()?.transform.m41 ?? (hovered ? -8 : 0)
@@ -254,18 +272,21 @@ import MediaKit
         let hasCover = !cover.isHidden
         let artEdge: CGFloat = hasCover ? height : 0
         mode.frame = .zero
-        previousMode.frame = NSRect(x: width - 18, y: height - 19, width: 16, height: 16)
-        nextMode.frame = NSRect(x: width - 18, y: 3, width: 16, height: 16)
-        let left = artEdge + 4, right: CGFloat = 22
+        previousMode.frame = NSRect(x: width - 16, y: height - 18, width: 16, height: 16)
+        nextMode.frame = NSRect(x: width - 16, y: 4, width: 16, height: 16)
+        let left = artEdge + 6, right: CGFloat = 22
         let availableWidth = max(0, width - left - right)
-        let actionsWidth: CGFloat = more.isHidden ? 0 : 20
-        let titleWidth = min(max(0, availableWidth - actionsWidth), title.naturalWidth)
-        let start = left + max(0, (availableWidth - titleWidth - actionsWidth) / 2)
+        let titleWidth = min(max(0, availableWidth - 40), title.naturalWidth)
+        let start = left + (availableWidth - titleWidth) / 2
         title.frame = NSRect(x: start, y: height - 19, width: titleWidth, height: 15)
-        subtitle.frame = NSRect(x: left, y: height - 31, width: availableWidth, height: 12)
+        // Long secondary metadata shares the lower row with the clocks: keep
+        // its scrolling viewport between them so glyphs can never overlap.
+        let clockClearance: CGFloat = playback.rate == 1 ? 60 : 90
+        subtitle.frame = NSRect(x: left + clockClearance, y: height - 31,
+                                width: max(0, availableWidth - clockClearance - 60), height: 12)
         if playback.track == nil && activities.list.selected == nil { title.frame.origin.y = 14 }
-        elapsed.frame = NSRect(x: artEdge + 1, y: 3, width: playback.rate == 1 ? 48 : 84, height: 11)
-        remaining.frame = NSRect(x: width - right - 54, y: 2, width: 54, height: 15)
+        elapsed.frame = NSRect(x: left, y: 4, width: playback.rate == 1 ? 54 : 84, height: 12)
+        remaining.frame = NSRect(x: width - right - 54, y: 3, width: 54, height: 14)
         reveal.frame = .zero
         more.frame = NSRect(x: title.frame.maxX + 2, y: height - 20, width: 18, height: 16)
         backActivity.frame = NSRect(x: width - 70, y: 20, width: 16, height: 16)
@@ -276,7 +297,9 @@ import MediaKit
         plot.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: expanded && activities.list.selected == nil ? height - 3 : 7)
         progressOverlay.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: 7)
         spinner.frame = NSRect(x: width - 72, y: 3, width: 12, height: 12)
-        hoverTime.frame = NSRect(x: max(25, min(width - 115, plot.hoverX + 3)), y: 14, width: 72, height: 15)
+        let hoverPoint = convert(plot.hoverPoint, from: plot)
+        let tooltipWidth = min(width - 8, max(42, hoverTime.intrinsicContentSize.width + 8))
+        hoverTime.frame = NSRect(x: max(2, min(width - tooltipWidth - 2, hoverPoint.x + 4)), y: hoverPoint.y + 4, width: tooltipWidth, height: 15)
     }
     override func scrollWheel(with event: NSEvent) { plot.scrollWheel(with: event) }
     func checkScrollRouting() {
@@ -340,7 +363,14 @@ import MediaKit
         precondition(cover.frame == NSRect(x: 0, y: 0, width: bounds.height, height: bounds.height))
         precondition(progressOverlay.frame.minX == cover.frame.maxX && progressOverlay.frame.maxX == bounds.maxX)
         precondition(!more.isHidden && more.usesAccentTint && more.frame.minX == title.frame.maxX + 2)
+        precondition(abs(title.frame.midX - (cover.frame.maxX + 6 + bounds.width - 22) / 2) < 0.1, "Title centering does not include the actions button")
+        precondition(layer?.animation(forKey: "LCDContent") == nil, "Track transitions must never fade the whole LCD")
+        precondition(elapsed.alphaValue == 1 && remaining.alphaValue == 1)
+        title.checkLoop(); subtitle.checkLoop()
         snapshot("title")
+        hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
+        precondition(more.alphaValue == 1)
+        snapshot("title-hover")
         display.choose(.spectrum); hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
         precondition(more.isHidden && title.isHidden && subtitle.isHidden && plot.alphaValue == 1, "Spectrum hover must preserve the visualization")
         snapshot("spectrum-hover")
@@ -349,7 +379,7 @@ import MediaKit
         precondition(display.mode == .spectrum, "LCD chevrons cycle both ways")
         hovered = false; refresh(force: true)
         precondition(more.alphaValue == 0 && title.alphaValue == 0 && !more.isEnabled)
-        precondition(self.previousMode.frame.minX == bounds.width - 18)
+        precondition(self.previousMode.frame.minX == bounds.width - 16)
         precondition(subviews.firstIndex(of: progressOverlay)! > subviews.firstIndex(of: nextMode)!)
         display.choose(.waveform); refresh(force: true); layoutSubtreeIfNeeded(); snapshot("waveform")
         log("PASS: right-side LCD controls below timeline; spectrum hover preserves bars; artwork and accent title actions")
@@ -422,18 +452,32 @@ import MediaKit
 }
 
 @MainActor private final class LCDModeButton: ToolbarPlaybackButton {
-    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue < 0.01 || !isEnabled ? nil : super.hitTest(point) }
+    override func hitTest(_ point: NSPoint) -> NSView? { alphaValue < 0.99 || !isEnabled ? nil : super.hitTest(point) }
     var makeMenu: () -> NSMenu = { NSMenu() }
     override func rightMouseDown(with event: NSEvent) { guard isEnabled else { return }; NSMenu.popUpContextMenu(makeMenu(), with: event, for: self) }
 }
 
+@MainActor private final class LCDArtworkPlaceholder: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor private final class LCDArtworkButton: NSButton {
-    var fillsArtwork = false { didSet { needsDisplay = true } }
+    private let placeholder = LCDArtworkPlaceholder()
+    var fillsArtwork = false { didSet { placeholder.isHidden = fillsArtwork; needsDisplay = true } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        placeholder.image = systemSymbol("music.note", pointSize: 16)
+        placeholder.contentTintColor = .secondaryLabelColor
+        placeholder.imageScaling = .scaleNone; placeholder.setAccessibilityHidden(true)
+        addSubview(placeholder)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() { super.layout(); placeholder.frame = bounds }
     override func draw(_ dirtyRect: NSRect) {
         guard fillsArtwork else {
             NSColor.labelColor.withAlphaComponent(0.075).setFill(); bounds.fill()
             NSGradient(starting: NSColor.white.withAlphaComponent(0.06), ending: NSColor.black.withAlphaComponent(0.08))?.draw(in: bounds, angle: -90)
-            super.draw(dirtyRect); return
+            return
         }
         guard let image, image.size.width > 0, image.size.height > 0 else { return }
         NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
@@ -445,34 +489,71 @@ import MediaKit
     }
 }
 
+/// Two copies form a seamless leftward loop, with a short rest at the start.
+/// Core Animation owns the loop; pause, occlusion and reduced motion remove it.
 @MainActor private final class LCDMarquee: NSView {
     private let label = NSTextField(labelWithString: "")
-    private var pendingScroll = false
+    private let continuation = NSTextField(labelWithString: "")
     var onClick: () -> Void = {}
+    var stringValue: String { get { label.stringValue } set { setText(newValue) } }
+    var canAnimate = false {
+        didSet { guard canAnimate != oldValue else { return }; if !canAnimate { stop() }; needsLayout = true }
+    }
     override func mouseDown(with event: NSEvent) { onClick() }
-    var canAnimate = false { didSet { if !canAnimate { stop() } } }
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true; layer?.masksToBounds = true
-        label.font = .systemFont(ofSize: 12, weight: .medium); label.alignment = .center
-        label.lineBreakMode = .byClipping; label.wantsLayer = true; addSubview(label)
+        for view in [label, continuation] {
+            view.font = .systemFont(ofSize: 12, weight: .medium)
+            view.lineBreakMode = .byClipping; view.wantsLayer = true; addSubview(view)
+        }
+        continuation.setAccessibilityHidden(true)
+    }
+    convenience init(fontSize: CGFloat, weight: NSFont.Weight, color: NSColor) {
+        self.init(frame: .zero)
+        for view in [label, continuation] { view.font = .systemFont(ofSize: fontSize, weight: weight); view.textColor = color }
     }
     required init?(coder: NSCoder) { fatalError() }
     var naturalWidth: CGFloat { label.intrinsicContentSize.width }
-    func setText(_ text: String) { guard label.stringValue != text else { return }; label.stringValue = text; stop(); pendingScroll = true; needsLayout = true }
-    override func layout() {
-        super.layout(); label.frame = NSRect(x: 0, y: 0, width: max(bounds.width, label.intrinsicContentSize.width), height: bounds.height)
-        if pendingScroll && canAnimate { pendingScroll = false; scrollOnce() }
+    func setText(_ text: String) {
+        guard label.stringValue != text else { return }
+        stop(); label.stringValue = text; continuation.stringValue = text; needsLayout = true
     }
-    func stop() { label.layer?.removeAnimation(forKey: "marquee") }
+    override func layout() {
+        super.layout()
+        let overflowing = naturalWidth > bounds.width + 4
+        let width = max(bounds.width, naturalWidth)
+        let oldFrame = label.frame
+        label.alignment = overflowing ? .left : .center
+        continuation.alignment = .left
+        label.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        continuation.frame = NSRect(x: width + 32, y: 0, width: width, height: bounds.height)
+        continuation.isHidden = !overflowing
+        if oldFrame != label.frame { stop() }
+        scrollOnce()
+    }
+    func checkLoop() {
+        layoutSubtreeIfNeeded()
+        guard naturalWidth > bounds.width + 4, canAnimate, window?.occlusionState.contains(.visible) == true, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        precondition(label.layer?.animation(forKey: "marquee")?.repeatCount == .infinity)
+        precondition(continuation.layer?.animation(forKey: "marquee") != nil)
+        canAnimate = false
+        precondition(label.layer?.animation(forKey: "marquee") == nil && continuation.layer?.animation(forKey: "marquee") == nil)
+        canAnimate = true; layoutSubtreeIfNeeded()
+        precondition(label.layer?.animation(forKey: "marquee") != nil, "Resuming a visible long label restores its loop")
+    }
+    func stop() { for view in [label, continuation] { view.layer?.removeAnimation(forKey: "marquee") } }
     func scrollOnce() {
-        guard canAnimate, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        let overflow = label.frame.width - bounds.width
-        guard overflow > 4 else { return }
-        let animation = CABasicAnimation(keyPath: "transform.translation.x")
-        animation.fromValue = 0; animation.toValue = -overflow
-        animation.duration = min(12, max(3, Double(overflow) / 24)); animation.autoreverses = true
-        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        label.layer?.add(animation, forKey: "marquee")
+        guard canAnimate, !isHidden, window?.occlusionState.contains(.visible) == true, bounds.width > 0, naturalWidth > bounds.width + 4,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              label.layer?.animation(forKey: "marquee") == nil else { return }
+        let distance = naturalWidth + 32
+        let travel = Double(distance) / 28, rest = 1.2
+        let animation = CAKeyframeAnimation(keyPath: "transform.translation.x")
+        animation.values = [0, 0, -distance]
+        animation.keyTimes = [0, NSNumber(value: rest / (rest + travel)), 1]
+        animation.duration = rest + travel; animation.repeatCount = .infinity
+        animation.calculationMode = .linear
+        for view in [label, continuation] { view.layer?.add(animation, forKey: "marquee") }
     }
 }
 
