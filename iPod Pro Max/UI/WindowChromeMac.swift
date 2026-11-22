@@ -128,7 +128,7 @@
                     log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
                     precondition(abs(leftGap - reference) <= 1, "Next/volume margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
-                precondition((player.volumeSliderWidth == 0 || (52...132).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
+                precondition((player.volumeSliderWidth == 0 || (44...88).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
                 precondition(player.volumeView.frame.maxX + 12 <= player.route.frame.minX + 0.5, "Adaptive volume clears AirPlay")
                 precondition(player.lcd.frame.maxX + 47 <= (playerHeader?.bounds.width ?? 0) - player.trailingControlsWidth + 0.5, "Adaptive LCD clears search and queue")
                 log(String(format: "Adaptive volume %.0f pt: slider %.2f pt", width, player.volumeSliderWidth))
@@ -664,6 +664,7 @@
             let header = PlayerHeaderMac(frame: NSRect(x: 0, y: content.bounds.height - CGFloat(titleBarHeight), width: content.bounds.width, height: CGFloat(titleBarHeight)))
             header.identifier = NSUserInterfaceItemIdentifier("playerHeader")
             header.autoresizingMask = [.width, .minYMargin]
+            header.onPointerPresence = { [weak self] in self?.player.setHeaderHovered($0) }
             header.onLayout = { [weak self] in self?.layoutPlayerHeader() }
             playerHeader = header
             let trafficArea = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self)

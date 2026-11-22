@@ -3,6 +3,7 @@ import AppKit
 
 @MainActor private final class PlayerVolumeCell: NSSliderCell {
     static let thumbDiameter: CGFloat = 7
+    static let hoverDiameter: CGFloat = 9
     override var knobThickness: CGFloat { Self.thumbDiameter }
     var visibleTrackRect: NSRect {
         let bounds = controlView?.bounds ?? .zero
@@ -55,6 +56,12 @@ import AppKit
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) { super.draw(dirtyRect); positionThumb() }
     override func layout() { super.layout(); positionThumb() }
+    func setVolume(_ value: Double, animated: Bool) {
+        animateNextValueChange = animated
+        doubleValue = value
+        positionThumb()
+    }
+    func syncTrackingPosition() { positionThumb() }
     private func positionThumb() {
         guard let cell = cell as? NSSliderCell else { return }
         let rect = cell.knobRect(flipped: isFlipped)
@@ -107,7 +114,7 @@ import AppKit
             } else { thumb.removeAnimation(forKey: "hoverTint") }
             CATransaction.begin(); CATransaction.setDisableActions(true); thumb.backgroundColor = target; CATransaction.commit()
         }
-        let scale: CGFloat = active ? (pressing ? 1.45 : hovering ? 12 / PlayerVolumeCell.thumbDiameter : 1) : 1
+        let scale: CGFloat = active ? (pressing ? 1.1 : hovering ? PlayerVolumeCell.hoverDiameter / PlayerVolumeCell.thumbDiameter : 1) : 1
         if scale != targetScale {
             let previous = thumb.presentation()?.transform.m11 ?? thumb.transform.m11
             targetScale = scale
@@ -199,7 +206,7 @@ import AppKit
         precondition(volumeFill.animation(forKey: "volumeClick")?.duration == 0.14 || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         let active = isEnabled && playerControlWindow(for: self)?.isKeyWindow == true
         setHovering(true)
-        let expectedDiameter: CGFloat = active ? 12 : PlayerVolumeCell.thumbDiameter
+        let expectedDiameter: CGFloat = active ? PlayerVolumeCell.hoverDiameter : PlayerVolumeCell.thumbDiameter
         precondition(abs(targetScale * PlayerVolumeCell.thumbDiameter - expectedDiameter) < 0.001, "Hover follows the actual window activation state")
         if active, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { precondition(thumb.animation(forKey: "thumbScale")?.duration == 0.1) }
         if !active { log("NOTE: volume active-hover check unavailable without key window; inactive thumb scale verified instead") }

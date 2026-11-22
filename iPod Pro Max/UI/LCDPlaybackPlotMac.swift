@@ -16,7 +16,7 @@ import MediaKit
     private(set) var hoverChapter: String?
     private var duration = 0.0, position = 0.0
     private var mode: PlayerLCDMode = .title
-    private var samples: [Float] = []
+    private let waveform = LCDWaveform()
     private var chapters: [PlaybackChapter] = []
     private var spectrumLink: LCDSpectrumDisplayLink?
     var isSpectrumAnimating: Bool { spectrumLink?.isRunning == true }
@@ -29,6 +29,7 @@ import MediaKit
     private var spectrumLast = ProcessInfo.processInfo.systemUptime
     func suspendSpectrum() {
         spectrumLink?.stop()
+        if window?.occlusionState.contains(.visible) != true || !PlaybackController.shared.playing { waveform.suspend() }
         if !PlaybackController.shared.playing {
             spectrumRelease.finish(); spectrumLevels = spectrumRelease.levels
             spectrumPeaks = PlayerSpectrumPeaks(); spectrumWasPlaying = false; peakRelease.finish(); needsDisplay = true
@@ -47,7 +48,7 @@ import MediaKit
             peakRelease.show()
         } else if spectrumWasPlaying {
             spectrumRelease.pause(at: now, animated: visible && !reduced)
-            peakRelease.pause(at: now, animated: visible && !reduced)
+            peakRelease.pause(at: now, levels: spectrumRelease.levels, animated: visible && !reduced)
         }
         if !visible || reduced, !playing { spectrumRelease.finish(); peakRelease.finish() }
         spectrumRelease.advance(to: now)
@@ -65,18 +66,20 @@ import MediaKit
     private var tracking: NSTrackingArea?
     override var acceptsFirstResponder: Bool { true }
     override init(frame: NSRect) {
-        super.init(frame: frame); setAccessibilityElement(true); setAccessibilityRole(.slider); setAccessibilityLabel("Playback position")
+        super.init(frame: frame); addSubview(waveform); waveform.isHidden = true; setAccessibilityElement(true); setAccessibilityRole(.slider); setAccessibilityLabel("Playback position")
     }
     required init?(coder: NSCoder) { fatalError() }
     func update(trackID: String?, position: Double, duration: Double, mode: PlayerLCDMode, samples: [Float], chapters: [PlaybackChapter]) {
         if self.trackID != trackID { if scrub.proposed != nil { gestureCancelled = true }; scrub.cancel(); onHover(nil) }
-        if self.trackID != trackID { spectrumRelease.finish(); spectrumWasPlaying = false }
+        if self.trackID != trackID { spectrumRelease.finish(); spectrumWasPlaying = false; spectrumPeaks = PlayerSpectrumPeaks(); peakRelease.finish() }
         if abs(self.position - position) > 1 { spectrumPeaks = PlayerSpectrumPeaks() }
         self.trackID = trackID; self.position = position; self.duration = duration; self.mode = mode
-        if !self.samples.sameStorage(as: samples) { self.samples = samples }
+        waveform.isHidden = mode != .waveform || activity != nil
+        waveform.update(samples: samples, fraction: duration > 0 ? (scrub.proposed ?? position) / duration : 0, playing: PlaybackController.shared.playing && !waveform.isHidden, scrubbing: scrub.proposed != nil)
         self.chapters = chapters; spectrumAnchor = ProcessInfo.processInfo.systemUptime; updateSpectrum(); needsDisplay = true
         setAccessibilityValue(duration > 0 ? position / duration : 0)
     }
+    override func layout() { super.layout(); waveform.frame = bounds }
     override func updateTrackingAreas() {
         super.updateTrackingAreas(); if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .inVisibleRect, .activeAlways], owner: self)
@@ -130,27 +133,20 @@ import MediaKit
     override func accessibilityPerformDecrement() -> Bool { guard duration > 0 else { return false }; onSeek(position - 5); return true }
     override func draw(_ dirtyRect: NSRect) {
         guard bounds.width > 0 else { return }
-        let fraction = activity?.fraction ?? (duration > 0 ? (scrub.proposed ?? position) / duration : 0)
-        if activity == nil, mode == .waveform, !samples.isEmpty {
-            let count = max(1, Int(bounds.width / 3))
-            for i in 0..<count {
-                let h = max(1, CGFloat(samples[min(samples.count - 1, i * samples.count / count)]) * (bounds.height - 12))
-                (Double(i) / Double(count) <= fraction ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor).setFill()
-                NSRect(x: CGFloat(i) * 3, y: 10 + (bounds.height - 12 - h) / 2, width: 1.5, height: h).fill()
-            }
-        } else if activity == nil, mode == .spectrum {
+        if activity == nil, mode == .spectrum {
             let inset: CGFloat = 28
-            let barWidth = max(0, bounds.width - 12 - 2 * inset) / 32
+            let channelGap: CGFloat = 24
+            let barWidth = max(0, bounds.width - channelGap - 2 * inset) / 32
             for block in 0..<2 { for band in 0..<16 {
                 let index = block * 16 + band
-                let x = inset + CGFloat(index) * barWidth + CGFloat(block) * 12
+                let x = inset + CGFloat(index) * barWidth + CGFloat(block) * channelGap
                 for segment in 0..<6 {
                     let lit = Float(segment + 1) / 6 <= spectrumLevels[index]
                     (lit ? NSColor.controlAccentColor : NSColor.tertiaryLabelColor.withAlphaComponent(0.35)).setFill()
                     NSRect(x: x, y: 9 + CGFloat(segment) * 4, width: max(1, barWidth - 2), height: 2).fill()
                 }
                 // Peak marks stay above the falling levels briefly, then fade completely.
-                NSColor.labelColor.withAlphaComponent(0.6 * CGFloat(peakRelease.opacity)).setFill()
+                NSColor.labelColor.withAlphaComponent(0.6 * CGFloat(peakRelease.opacities[index])).setFill()
                 NSRect(x: x, y: 9 + CGFloat(spectrumPeaks.values[index]) * 24, width: max(1, barWidth - 2), height: 1).fill()
             } }
 

@@ -9,6 +9,8 @@ import MediaKit
     private var chapters: [PlaybackChapter] = []
     private var duration = 0.0
     private var scrubbing = false
+    private var hovered = false
+    private var tracking: NSTrackingArea?
     private(set) var thickness: CGFloat = 2
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
@@ -17,22 +19,36 @@ import MediaKit
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    func update(position: Double, duration: Double, activity: PlayerActivity?, proposed: Double?, chapters: [PlaybackChapter], hovered: Bool) {
+    func update(position: Double, duration: Double, activity: PlayerActivity?, proposed: Double?, chapters: [PlaybackChapter]) {
         self.duration = duration; self.chapters = activity == nil ? chapters : []
         fraction = min(1, max(0, activity?.fraction ?? (duration > 0 ? (proposed ?? position) / duration : 0)))
         scrubbing = proposed != nil
-        let next: CGFloat = hovered || scrubbing ? 4 : 2
+        let next: CGFloat = hovered ? 4 : 2
         let changed = next != thickness; thickness = next
         render(animated: changed)
     }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeAlways], owner: self)
+        addTrackingArea(area); tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { setHovered(true) }
+    override func mouseExited(with event: NSEvent) { setHovered(false) }
+    func setHovered(_ value: Bool) {
+        guard hovered != value else { return }
+        hovered = value; thickness = value ? 4 : 2; render(animated: true)
+    }
     func checkHoverRendering() {
-        update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [], hovered: true)
+        update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [])
+        setHovered(true)
         precondition(thickness == 4 && track.bounds.height == 4 && fill.bounds.height == 4)
         precondition(alphaValue == 1 && track.opacity == 1 && fill.opacity == 1, "Progress must stay opaque above metadata")
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             precondition(track.animation(forKey: "hoverHeight") != nil, "Hover thickness must animate")
         }
-        update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [], hovered: false)
+        update(position: 30, duration: 60, activity: nil, proposed: nil, chapters: [])
+        setHovered(false)
         precondition(thickness == 2 && track.bounds.height == 2)
         log("PASS: progress overlay stays opaque and animates hover thickness 2–4 pt")
     }

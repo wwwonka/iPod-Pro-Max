@@ -3,6 +3,27 @@ import AppKit
 
 /// A stable content row. Empty space drags the window; child controls keep native tracking.
 @MainActor final class PlayerHeaderMac: NSView {
+    var onPointerPresence: (Bool) -> Void = { _ in }
+    private var pointerArea: NSTrackingArea?
+    private var activationObserver: NSObjectProtocol?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerArea { removeTrackingArea(pointerArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeInKeyWindow], owner: self)
+        addTrackingArea(area); pointerArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { onPointerPresence(true) }
+    override func mouseExited(with event: NSEvent) { onPointerPresence(false) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = window.map { window in
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onPointerPresence(false) }
+            }
+        }
+    }
+    deinit { if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) } }
     var onLayout: (() -> Void)?
     private var arranging = false
     override var mouseDownCanMoveWindow: Bool { true }

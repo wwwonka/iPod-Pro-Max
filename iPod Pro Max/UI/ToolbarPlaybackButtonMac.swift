@@ -15,9 +15,12 @@ import AppKit
     private var currentSymbol = ""
     private lazy var transportSymbol = TransportSymbolView()
     var usesElevation = false { didSet { if usesElevation { (cell as? NSButtonCell)?.highlightsBy = [] } } }
-    var usesAccentTint = false
+    var usesAccentTint = false { didSet { updateInteraction() } }
     var usesLightGlyph = false
     var animatesPress = false
+    var symbolTransition: TransportSymbolView.Transition = .system { didSet { transportSymbol.transition = symbolTransition } }
+    private(set) var animatedSymbolChanges = 0
+    var symbolName: String { currentSymbol }
     var drawsSymbolTransition = false {
         didSet {
             guard drawsSymbolTransition else { return }
@@ -26,17 +29,18 @@ import AppKit
             image = nil
         }
     }
-    func setSymbol(_ name: String, size: Double) {
+    func setSymbol(_ name: String, size: Double, animated: Bool = true) {
         guard name != currentSymbol else { return }
         let replacing = !currentSymbol.isEmpty
+        if replacing && animated { animatedSymbolChanges += 1 }
         currentSymbol = name
         title = ""; imagePosition = .imageOnly
         let symbolImage = systemSymbol(name, pointSize: size)
         if drawsSymbolTransition {
-            transportSymbol.setSymbol(name, image: symbolImage, animated: replacing)
+            transportSymbol.setSymbol(name, image: symbolImage, animated: replacing && animated)
             image = nil
         } else { image = symbolImage }
-        if replacing, !drawsSymbolTransition, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if animated, replacing, !drawsSymbolTransition, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let fade = CATransition(); fade.type = .fade; fade.duration = 0.18
             fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             layer?.add(fade, forKey: "symbolReplace")

@@ -143,7 +143,7 @@ public struct PlayerSpectrumPeaks: Sendable {
 
 /// Short, event-triggered release; the renderer stops its clock when this settles.
 public struct PlayerSpectrumRelease: Sendable {
-    public static let duration = 0.45
+    public static let duration = 0.84
     public private(set) var levels = [Float](repeating: 0, count: 32)
     private var initial = [Float](repeating: 0, count: 32)
     private var began: Double?
@@ -159,33 +159,49 @@ public struct PlayerSpectrumRelease: Sendable {
     }
     public mutating func advance(to now: Double) {
         guard let began else { return }
-        let progress = min(1, max(0, (now - began) / Self.duration))
-        if progress >= 1 { finish(); return }
-        let gain = Float((1 - progress) * (1 - progress))
-        levels = initial.map { $0 * gain }
+        let fall = Float(max(0, (now - began) / Self.duration))
+        for band in levels.indices { levels[band] = max(0, initial[band] - fall) }
+        if levels.allSatisfy({ $0 == 0 }) { finish() }
     }
     public mutating func finish() { began = nil; levels = Array(repeating: 0, count: 32) }
 }
 
 
-/// Peak marks linger briefly after the levels settle, then disappear without an idle clock.
+/// Each peak waits for its own last visible segment, then holds and fades.
+/// One display-link release drives all columns; no timers per band or idle work.
 public struct PlayerSpectrumPeakRelease: Sendable {
-    public static let holdDuration = 0.12
-    public static let fadeDuration = 0.16
-    public private(set) var opacity = 0.0
+    public static let holdDuration = 0.20
+    public static let fadeDuration = 0.22
+    public private(set) var opacities = [Double](repeating: 0, count: 32)
+    public var opacity: Double { opacities.max() ?? 0 }
+    private var offDelays = [Double](repeating: 0, count: 32)
     private var began: Double?
     public var isReleasing: Bool { began != nil }
     public init() {}
-    public mutating func show() { began = nil; opacity = 1 }
-    public mutating func pause(at now: Double, animated: Bool) {
+    public mutating func show() {
+        began = nil
+        for band in opacities.indices { opacities[band] = 1 }
+    }
+    public mutating func pause(at now: Double, levels: [Float], animated: Bool) {
         guard animated else { finish(); return }
-        began = now; opacity = 1
+        began = now
+        for band in opacities.indices {
+            let value = levels.indices.contains(band) && levels[band].isFinite ? min(1, max(0, levels[band])) : 0
+            // Six lit segments: extinction happens below the first threshold.
+            offDelays[band] = max(0, Double(value) - 1.0 / 6) * PlayerSpectrumRelease.duration
+            opacities[band] = 1
+        }
     }
     public mutating func advance(to now: Double) {
         guard let began else { return }
-        let elapsed = max(0, now - began - PlayerSpectrumRelease.duration - Self.holdDuration)
-        opacity = max(0, 1 - elapsed / Self.fadeDuration)
-        if opacity == 0 { finish() }
+        for band in opacities.indices {
+            let elapsed = max(0, now - began - offDelays[band] - Self.holdDuration)
+            opacities[band] = max(0, 1 - elapsed / Self.fadeDuration)
+        }
+        if opacities.allSatisfy({ $0 == 0 }) { finish() }
     }
-    public mutating func finish() { began = nil; opacity = 0 }
+    public mutating func finish() {
+        began = nil
+        for band in opacities.indices { opacities[band] = 0 }
+    }
 }

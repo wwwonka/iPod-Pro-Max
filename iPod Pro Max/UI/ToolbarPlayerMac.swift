@@ -35,10 +35,13 @@ import SwiftCrossUI
     private let popover = NSPopover()
     private var subscription: SwiftCrossUI.Cancellable?
     private var keyMonitor: Any?
-    private var speakerImages: [Int: NSImage] = [:]
     private var speakerLevel = -1
+    private var headerHovered = false
+    private var optionHeld = false
+    private var pendingTransportAnimation: (trackID: String?, playing: Bool)?
+    private var showsStop: Bool { headerHovered && optionHeld && controller.track != nil }
     var trailingControlsWidth: CGFloat = 194
-    private(set) var volumeSliderWidth: CGFloat = 132
+    private(set) var volumeSliderWidth: CGFloat = 88
     private var compact = false
     private(set) var fullScreenLayout = false
     private(set) var trafficLightsRevealed = false
@@ -57,9 +60,10 @@ import SwiftCrossUI
         slider.controlSize = .small
         for (button, symbol, label, action, x) in [
             (previous as NSButton, "backward.fill", "Previous", #selector(goPrevious), CGFloat(0)),
-            (play, "play.fill", "Play", #selector(toggle), CGFloat(30)),
+            (play, "play.fill", "Play", #selector(activateTransport), CGFloat(30)),
             (next as NSButton, "forward.fill", "Next", #selector(goNext), CGFloat(60))] {
             configure(button, symbol: symbol, label: label, action: action)
+            button.toolTip = nil
             button.frame = NSRect(x: x, y: 2, width: 28, height: 28)
             transport.addSubview(button)
         }
@@ -71,19 +75,25 @@ import SwiftCrossUI
         }
         play.drawsSymbolTransition = true
         configure(mute, symbol: "speaker.wave.2.fill", label: "Mute", action: #selector(volumeButton))
+        mute.symbolTransition = .crossfade; mute.drawsSymbolTransition = true
         mute.frame = NSRect(x: 0, y: 0, width: 28, height: 32)
         volumeView.addSubview(mute)
         slider.target = self; slider.action = #selector(changeVolume)
         slider.isContinuous = true; slider.setAccessibilityLabel("App volume")
         volumeView.addSubview(slider)
         let content = NSViewController()
-        content.view = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 40))
+        content.view = NSView(frame: NSRect(x: 0, y: 0, width: 112, height: 40))
         popover.contentViewController = content; popover.behavior = .transient; popover.delegate = self
         subscription = controller.didChange.observe { [weak self] in self?.refresh() }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard let self, event.window === self.transport.window,
-                      event.keyCode == 49, !event.isARepeat,
+                guard let self else { return false }
+                if event.type == .flagsChanged {
+                    self.optionHeld = event.modifierFlags.contains(.option)
+                    self.pendingTransportAnimation = nil; self.refresh()
+                    return false
+                }
+                guard event.window === self.transport.window, event.keyCode == 49, !event.isARepeat,
                       event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
                       !(event.window?.firstResponder is NSTextView), !(event.window?.firstResponder is NSTextField),
                       self.controller.track != nil || self.selection != nil else { return false }
@@ -100,11 +110,28 @@ import SwiftCrossUI
         let row = TrackRow(id: "toolbar-check", title: "Toolbar", artist: "", album: "", number: "", year: "", duration: "", path: "/missing")
         selectionRows = [row]; selectedIDs = [row.id]
         precondition(play.isEnabled)
+        let beforeClick = play.animatedSymbolChanges
         play.performClick(nil)
         refresh()
+        precondition(play.animatedSymbolChanges == beforeClick + 1, "Only a transport click requests the SF transition")
         precondition(controller.playing && previous.isEnabled && next.isEnabled)
         play.performClick(nil)
         precondition(!controller.playing)
+        let afterClicks = play.animatedSymbolChanges
+        controller.toggle(); controller.toggle(); refresh()
+        precondition(play.animatedSymbolChanges == afterClicks, "External playback updates must never animate the transport symbol")
+        let changedTrack = TrackRow(id: "toolbar-check-next", title: "Next", artist: "", album: "", number: "", year: "", duration: "", path: "/missing-next")
+        controller.start(changedTrack, in: [row, changedTrack]); refresh()
+        precondition(play.animatedSymbolChanges == afterClicks, "Changing tracks must not animate Pause")
+        controller.setPlaying(false)
+        setHeaderHovered(true, modifiers: [.option])
+        precondition(play.symbolName == "stop.fill")
+        setHeaderHovered(false, modifiers: [.option])
+        precondition(play.symbolName == "play.fill")
+        setHeaderHovered(true, modifiers: [.option]); play.performClick(nil)
+        precondition(controller.track == nil && !controller.playing, "Option-click stops and unloads playback")
+        setHeaderHovered(false, modifiers: [])
+        precondition([previous, play, next].allSatisfy { $0.toolTip == nil })
         controller.setVolume(0.42); mute.performClick(nil)
         precondition(controller.volume == 0)
         mute.performClick(nil); precondition(controller.volume == 0.42)
@@ -164,8 +191,8 @@ import SwiftCrossUI
         // Share the available width with the LCD, rather than dropping the slider
         // at a fixed window-width threshold. Reserve the actual search control.
         let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 28
-        compact = budget < 280 + 52
-        volumeSliderWidth = compact ? 0 : min(132, max(52, 132 - max(0, 460 + 132 - budget) * 0.4))
+        compact = budget < 280 + 44
+        volumeSliderWidth = compact ? 0 : min(88, max(44, 88 - max(0, 460 + 88 - budget) * 0.4))
         volumeView.setFrameSize(NSSize(width: 28 + volumeSliderWidth, height: 32))
         if !popover.isShown {
             if compact { slider.removeFromSuperview() }
@@ -192,7 +219,7 @@ import SwiftCrossUI
             popoverDidClose(Notification(name: NSPopover.didCloseNotification, object: popover))
             precondition(slider.superview === volumeView, "Closing the volume popover restores the inline slider")
         }
-        for level in 0...3 { precondition(speakerImage(level).size == NSSize(width: 20, height: 16), "Speaker horn canvas stays fixed at all volumes") }
+        precondition(mute.symbolTransition == .crossfade, "Speaker waves crossfade on a fixed leading canvas")
     }
     func trafficToBackGap(in root: NSView) -> CGFloat {
         guard let window = playerControlWindow(for: transport), let zoom = window.standardWindowButton(.zoomButton) else { return 10 + transportLeadingSpace }
@@ -208,37 +235,31 @@ import SwiftCrossUI
     }
     private func refresh() {
         let routePlayer = (controller.activeEngine as? PlatformAudioEngine)?.routePlayer
-        if route.picker.player !== routePlayer { route.picker.player = routePlayer }
+        if route.player !== routePlayer { route.player = routePlayer }
         previous.isEnabled = controller.track != nil; next.isEnabled = controller.track != nil
         play.isEnabled = controller.track != nil || selection != nil
-        play.setSymbol(controller.playing ? "pause.fill" : "play.fill", size: 19)
-        play.setAccessibilityLabel(controller.playing ? "Pause" : "Play")
-        if slider.doubleValue != controller.volume { slider.doubleValue = controller.volume }
+        let animate = !showsStop && pendingTransportAnimation?.trackID == controller.track?.id && pendingTransportAnimation?.playing == controller.playing
+        let symbol = showsStop ? "stop.fill" : controller.playing ? "pause.fill" : "play.fill"
+        play.setSymbol(symbol, size: 19, animated: animate)
+        play.setAccessibilityLabel(showsStop ? "Stop" : controller.playing ? "Pause" : "Play")
+        if animate || pendingTransportAnimation?.trackID != controller.track?.id { pendingTransportAnimation = nil }
+        if slider.doubleValue != controller.volume { slider.setVolume(controller.volume, animated: true) }
         let level = controller.volume == 0 ? 0 : controller.volume < 0.33 ? 1 : controller.volume < 0.67 ? 2 : 3
-        if level != speakerLevel { speakerLevel = level; mute.image = speakerImage(level) }
+        if level != speakerLevel {
+            speakerLevel = level
+            mute.setSymbol(level == 0 ? "speaker.slash.fill" : "speaker.wave.\(level).fill", size: 12)
+        }
         mute.setAccessibilityLabel(controller.volume == 0 ? "Unmute" : "Mute")
         // LCD refreshes once through PlayerDisplayController.didChange.
     }
-    private func speakerImage(_ level: Int) -> NSImage {
-        if let cached = speakerImages[level] { return cached }
-        let horn = systemSymbol("speaker.fill", pointSize: 12)
-        let result = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { _ in
-            horn?.draw(in: NSRect(x: 0, y: 3, width: 9, height: 10))
-            NSColor.black.setStroke()
-            if level == 0 {
-                let cross = NSBezierPath(); cross.lineWidth = 1.1; cross.lineCapStyle = .round
-                cross.move(to: NSPoint(x: 12, y: 6)); cross.line(to: NSPoint(x: 16, y: 10))
-                cross.move(to: NSPoint(x: 12, y: 10)); cross.line(to: NSPoint(x: 16, y: 6)); cross.stroke()
-            } else {
-                for wave in 0..<level {
-                    let path = NSBezierPath(); path.lineWidth = 1.15; path.lineCapStyle = .round
-                    path.appendArc(withCenter: NSPoint(x: 7, y: 8), radius: CGFloat(4 + wave * 3), startAngle: -42, endAngle: 42)
-                    path.stroke()
-                }
-            }
-            return true
-        }
-        result.isTemplate = true; speakerImages[level] = result; return result
+    func setHeaderHovered(_ value: Bool, modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+        headerHovered = value; optionHeld = modifiers.contains(.option)
+        pendingTransportAnimation = nil; refresh()
+    }
+    @objc private func activateTransport() {
+        if showsStop { pendingTransportAnimation = nil; controller.close(); return }
+        pendingTransportAnimation = (controller.track?.id ?? selection?.id, !controller.playing)
+        toggle()
     }
     @objc func toggle() {
         if controller.track != nil { controller.toggle() }
@@ -246,7 +267,7 @@ import SwiftCrossUI
     }
     @objc private func goPrevious() { controller.previous() }
     @objc private func goNext() { controller.next() }
-    @objc private func changeVolume() { controller.setVolume(slider.doubleValue) }
+    @objc private func changeVolume() { slider.syncTrackingPosition(); controller.setVolume(slider.doubleValue) }
     func popoverDidClose(_ notification: Notification) {
         if let header = transport.superview { layout(in: header) }
     }
@@ -254,7 +275,7 @@ import SwiftCrossUI
         controller.toggleMute()
         guard compact, !popover.isShown, let view = popover.contentViewController?.view else { return }
         slider.removeFromSuperview(); view.addSubview(slider)
-        slider.frame = NSRect(x: 12, y: 10, width: 136, height: 20)
+        slider.frame = NSRect(x: 12, y: 10, width: 88, height: 20)
         popover.show(relativeTo: mute.bounds, of: mute, preferredEdge: .minY)
     }
 }

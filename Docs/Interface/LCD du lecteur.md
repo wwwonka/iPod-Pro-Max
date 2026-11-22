@@ -1,7 +1,7 @@
 # LCD du lecteur de barre d’outils
 
 
-État visuel au 20 novembre 2026 ; mécanismes de robustesse et mesures actualisés dans [[Corrections de revue du lecteur]]. Architecture et correspondance PLR1–19 : [[Lecteur et session média]]. Constats et limites de validation : [[Revue du lecteur novembre 2026]]. Les sections datées plus bas conservent les étapes et mesures historiques ; le tableau suivant décrit les dimensions actuelles.
+État visuel au 22 novembre 2026 ; mécanismes de robustesse et mesures actualisés dans [[Corrections de revue du lecteur]]. Architecture et correspondance PLR1–19 : [[Lecteur et session média]]. Constats et limites de validation : [[Revue du lecteur novembre 2026]]. Les sections datées plus bas conservent les étapes et mesures historiques ; le tableau suivant décrit les dimensions actuelles.
 
 ## Disposition actuelle
 
@@ -11,16 +11,16 @@
 | Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; instances AppKit réelles, masque d’autoresize retiré |
 | Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 19 pt |
 | Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms |
-| Volume | Slider 132 pt au maximum, réduction progressive jusqu’à 52 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back |
-| Bouton de volume | 7 pt au repos, 12 pt au survol ; couleur opaque ; échelle 100 ms à l’entrée et 90 ms à la sortie ; teinte accentuée après 400 ms |
+| Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back |
+| Bouton de volume | 7 pt au repos, 9 pt au survol ; couleur opaque ; échelle 100 ms à l’entrée et 90 ms à la sortie ; teinte accentuée après 400 ms |
 | Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe |
 | LCD | Hauteur 41 pt, largeur 280–460 pt selon le budget ; ancré au haut, marge inférieure 3 pt ; pochette 41 × 41 pt |
 | AirPlay et file | Plaques 39 × 26 pt, espacées de 8 pt de part et d’autre du LCD ; AirPlay à gauche, file à droite |
-| Modes | Chevrons sur les 16 pt de gauche de la pochette, révélés 130 ms et retirés 100 ms ; cachés en idle |
+| Modes | Chevrons de 16 pt au bord droit du LCD, sous la timeline dans l’ordre de composition, révélés 130 ms et retirés 100 ms ; cachés en idle |
 | Recherche | Champ natif 170 × 28 pt, ou loupe quand la fenêtre se réduit ; focus à l’échelle 1,025 en 120 ms, contour serré, texte suivant le curseur |
 | Défocus recherche | Échap conserve le texte et retire le focus ; clic extérieur transmis normalement ; perte d’activation retire le focus |
 
-Le verre reste actif visuellement quand la fenêtre est en arrière-plan ; les contrôles prennent leur teinte inactive. Le transport remplace le voile par un relief extérieur, renforcé après le délai de survol, presque éteint et réduit à 86 % à l’appui. Le highlight blanc de la cellule native est désactivé. Play/Pause utilise les transitions SF Symbols d’AppKit accélérées, avec le comportement adapté à la version du système et à Réduire les animations.
+Le verre reste actif visuellement quand la fenêtre est en arrière-plan ; les contrôles prennent leur teinte inactive. Le transport remplace le voile par un relief extérieur, renforcé après le délai de survol, presque éteint et réduit à 86 % à l’appui. Le highlight blanc de la cellule native est désactivé. Play/Pause utilise les transitions SF Symbols d’AppKit accélérées uniquement en réponse au clic sur ce bouton. Les changements de piste, raccourcis et commandes distantes mettent le symbole à jour sans effet. Option maintenue pendant le survol du header affiche `stop.fill` ; son clic arrête et décharge la lecture. Les infobulles du transport sont retirées, les libellés d’accessibilité conservés.
 
 Le conteneur macOS reste un verre natif translucide, creusé par des dégradés internes, affleurant le haut de la fenêtre et laissant 3 points sous le panneau. La pochette remplit la hauteur de 41 pt au bord gauche ; la timeline part de son coin inférieur droit jusqu’au bord droit du LCD. Les métadonnées gardent deux lignes. Les commandes auxiliaires reprennent les valeurs du rail et des boutons natifs : attente de 400 ms au survol, fondu entrant de 180 ms et sortant de 160 ms, voile neutre à 6,5 % au survol et 13 % à la pression, glyphes gris secondaires et estompés quand la fenêtre perd le focus. Les trois boutons de transport utilisent désormais une ombre extérieure à la place du voile de survol : opacité 0,40 et rayon 1,7 pt au repos, puis 0,78 et 3,6 pt après le délai de 400 ms. L’appui réduit l’ombre à 0,015 et le rayon à 0,2 pt. Ils passent à 86 % pendant l’appui en 60 ms, puis retrouvent leur taille en 100 ms. Les changements d’ombre prennent 60 ms à l’appui et 120 ms au relâchement/survol. Play/Pause utilise directement les transitions SF Symbols d’AppKit, accélérées avec `.speed(3)` : Magic Replace sous macOS 15 et ultérieur, Replace sous macOS 14. Le système fournit les effets Draw lorsque disponibles sous macOS 26 ; aucun tracé simulé par masque n’est conservé. Réduire les animations donne directement le symbole final.
 
@@ -38,9 +38,20 @@ La waveform utilise les pics existants et les événements du moteur, sans nouve
 
 Le rendu du spectre accepte des trames pré-calculées à 16 bandes par canal, interpole les valeurs et maintient les pics. Le générateur de PLR16 décode la piste avec la waveform dans une seule passe sur Mac, à 44,1 kHz stéréo. Une FFT de 2 048 échantillons fenêtrée Hann produit 16 bandes logarithmiques par canal à 20 Hz. Le cache de PLR17 conserve les trames sur disque ; un format non pris en charge garde la grille éteinte. Lorsqu’elles sont fournies, un CVDisplayLink plafonné à 30 Hz (10 Hz avec Réduire les animations) ne tourne que pendant la lecture, fenêtre visible et mode Spectre affiché. Aucun display link n’est créé pour une grille sans données. Les premières trames sont transmises dès que 200 ms d’audio sont décodées, puis par lots espacés d’au moins 500 ms pendant l’analyse. Un résultat ancien ou plus court ne remplace pas les données les plus récentes. Sur le WAV de contrôle de 2 min, les premières données sont disponibles en 135 ms contre 4,050 s pour le résultat complet dans le build de développement du 17 novembre 2026.
 
-La progression est une vue transparente distincte, toujours au-dessus des métadonnées et indépendante de l’opacité du spectre. Son épaisseur passe de 2 à 4 pt en 180 ms au survol du LCD ; sa largeur de progression reste actualisée directement. Le bouton AirPlay conserve le sélecteur natif AVKit, avec des couleurs publiques par état et une opacité inactive de 30 %, réappliquées sur les événements d’activation de la fenêtre et de l’app.
+La progression est une vue transparente distincte, toujours au-dessus des métadonnées et indépendante de l’opacité du spectre. Son épaisseur passe de 2 à 4 pt en 180 ms au survol de sa propre bande inférieure de 7 pt ; sa largeur de progression reste actualisée directement. Le bouton AirPlay conserve le sélecteur natif AVKit, piloté par une plaque `ToolbarPlaybackButton` de 39 × 26 pt identique à celle de la file. Les deux utilisent des SF Symbols de 14 pt et partagent teinte inactive, survol et appui. AVKit garde la présentation des routes ; le bouton visible relaie son action native et suit ses événements d’ouverture/fermeture.
 
-En mode Spectre, le survol fond le titre et l’artiste au-dessus des barres en 130 ms, puis les retire en 100 ms au départ du pointeur, avec interruption fluide d’une transition en cours. À la pause, les niveaux retombent avec une enveloppe quadratique de 450 ms jusqu’à extinction complète. Les pics restent à leur hauteur pendant cette descente, attendent encore 120 ms, puis s’effacent en 160 ms ; le display link s’arrête à la fin. Les pics ne restent plus sur la rangée inférieure. Une reprise annule cette extinction. Fenêtre masquée ou Réduire les animations : extinction immédiate, sans horloge de transition.
+En mode Spectre, le survol conserve les barres sans superposer les métadonnées ni afficher un temps flottant. L’écart entre canaux est de 24 pt. À la pause, les niveaux descendent à vitesse constante jusqu’à zéro, en 840 ms au maximum ; les colonnes basses s’éteignent plus tôt. Chaque crête attend l’extinction du dernier segment de sa propre colonne, garde sa hauteur 200 ms, puis disparaît en 220 ms. Un seul display link pilote ce relâchement borné ; il s’arrête lorsque tous les niveaux et crêtes sont éteints. Reprise, masquage et Réduire les animations interrompent proprement l’enveloppe.
+
+La pochette sans image dessine un fond translucide avec la note musicale. Le titre et l’artiste descendent de 2 pt ; les temps se rapprochent des extrémités de leur zone, avant les chevrons à droite.
+
+Le volume utilise `speaker.slash.fill` à zéro et les vrais `speaker.wave.1.fill` à `speaker.wave.3.fill`. Une surface d’icône fixe, alignée à gauche, conserve la position du haut-parleur ; un fondu de 140 ms introduit ou retire les ondes. Les changements externes et mute animent aussi le remplissage et le curseur, sans ralentir le glissement natif.
+
+### Nouvelle forme d’onde
+
+`LCDWaveformMac.swift` isole le rendu de l’analyse : une enveloppe symétrique lissée et mise en cache (256 points au maximum), un passage coloré par dégradé et un curseur fin. Les événements existants de position déclenchent des interpolations Core Animation finies de 250 ms, interrompues en pause, seek, masquage ou Réduire les animations. Aucun nouveau timer, décodage ou paquet n’est ajouté.
+
+Références étudiées : [DSWaveformImage](https://github.com/dmrschmidt/DSWaveformImage), pour la séparation données/rendu et la progression colorée, et [AudioKit/Waveform](https://github.com/AudioKit/Waveform), pour le rendu animé. Le choix ici reste un rendu AppKit/Core Animation local utilisant les échantillons déjà disponibles.
+
 
 Le mode de prévisualisation Spectrum utilise désormais le véritable fichier audio ; `spectrum-fixture` réserve les données synthétiques aux contrôles de dessin.
 
@@ -54,6 +65,15 @@ Les activités proviennent des imports, transferts/synchronisations (y compris l
 - L’analyse reste indépendante du dessin : `IPPM_CHECK_ANALYSIS=<fichier>` mesure le décodage réel, vérifie waveform/spectre et leur réutilisation ; `IPPM_CHECK_AUDIO=<WAV>` vérifie aussi les publications de session sur un moteur réel.
 
 Les lancements ordinaires gardent une fenêtre de niveau normal, visible dans Mission Control. `IPPM_FRONT` ne change plus son niveau ; un niveau flottant ne peut être demandé que lors d’une capture explicite `IPPM_SNAPSHOT`.
+
+## Vérification du polissage — 22 novembre 2026
+
+- Build macOS de développement et build optimisé réussis ; `swift test` : 131 tests, 7 ignorés, aucun échec.
+- `IPPM_CHECK_PLAYER=1` : clics Play/Pause animés, commandes externes et changement de piste sans transition, Option-Stop et retrait des infobulles ; volume opaque, extrémités/glissements et survol 7→9 pt ; plein écran et retour ; session système et arrêt des horloges.
+- Prévisualisation réelle WAV 2 min, son coupé, en thèmes clair et sombre : composition Titre/Spectre/Waveform, pause/reprise, cache vidé pendant la lecture, plein écran, fermeture/réouverture. Captures de contrôle dans `/tmp/plr-composition-*.png` et `/tmp/plr-final-*.png` (artefacts locaux éphémères).
+- Capture de la fenêtre native et ouverture du vrai popover AirPlay via Orca : plaque alignée à la file et sélecteur AVKit présent. Aucun appareil AirPlay externe ni touche média physique disponible pour cette vérification.
+- Disposition synchrone de la fenêtre de contrôle à 820–1 600 pt : médiane 2,48 ms, maximum 3,47 ms dans le scénario clair ; mesure de cette fenêtre de test, sans prétendre mesurer les performances d’une grande bibliothèque.
+- Limite distincte : `IPPM_CHECK_INTERACTIONS=1` s’arrête sur `NativeInteractionCheck.swift:390`, assertion du nombre d’éléments du menu des colonnes. Ce chemin n’est pas modifié par ce lot ; les contrôles ciblés du player passent. Le contrôle global ne doit pas être déclaré réussi.
 
 ## Mesure de disposition
 
