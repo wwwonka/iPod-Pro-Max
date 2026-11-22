@@ -55,7 +55,7 @@ import SwiftCrossUI
         transport.identifier = NSUserInterfaceItemIdentifier("playerTransport")
         transport.wantsLayer = true; transport.layer?.masksToBounds = false
         volumeView.identifier = NSUserInterfaceItemIdentifier("playerVolume")
-        volumeView.clipsToBounds = false
+        volumeView.wantsLayer = true; volumeView.clipsToBounds = false
         lcd.identifier = NSUserInterfaceItemIdentifier("playerLCD")
         slider.controlSize = .small
         for (button, symbol, label, action, x) in [
@@ -169,23 +169,28 @@ import SwiftCrossUI
         animateTransportPlacement { self.trafficLightsRevealed = revealed }
     }
     private func animateTransportPlacement(_ change: () -> Void) {
-        let presentationOffset = transport.layer?.presentation()?.transform.m41 ?? 0
-        let oldX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0) + presentationOffset
+        let controls = [transport, volumeView]
+        let origins = controls.map { $0.frame.minX + ($0.layer?.presentation()?.transform.m41 ?? 0) }
+        let oldTransportInset = transport.subviews.first?.frame.minX ?? 0
         change()
         if let header = transport.superview { layout(in: header) }
-        let newX = transport.frame.minX + (transport.subviews.first?.frame.minX ?? 0)
-        transport.layer?.removeAnimation(forKey: "fullScreenSpacing")
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, abs(oldX - newX) > 0.5 else { return }
-        let movement = CABasicAnimation(keyPath: "transform.translation.x")
-        movement.fromValue = oldX - newX; movement.toValue = 0; movement.duration = 0.25
-        movement.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        transport.layer?.add(movement, forKey: "fullScreenSpacing")
+        let transportInset = transport.subviews.first?.frame.minX ?? 0
+        for (index, view) in controls.enumerated() {
+            view.layer?.removeAnimation(forKey: "fullScreenSpacing")
+            let insetDelta = view === transport ? oldTransportInset - transportInset : 0
+            let offset = origins[index] - view.frame.minX + insetDelta
+            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, abs(offset) > 0.5 else { continue }
+            let movement = CABasicAnimation(keyPath: "transform.translation.x")
+            movement.fromValue = offset; movement.toValue = 0; movement.duration = 0.25
+            movement.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            view.layer?.add(movement, forKey: "fullScreenSpacing")
+        }
     }
     /// Geometry is owned by the content header; AppKit never reparents these views.
     func layout(in header: NSView) {
         updateWidth()
         transport.frame.origin = NSPoint(x: fullScreenLayout ? (trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) : 74, y: 6)
-        let gap = fullScreenLayout ? 18 : trafficToBackGap(in: header)
+        let gap = (fullScreenLayout ? 18 : trafficToBackGap(in: header)) + 3
         volumeTargetGap = gap
         let nextInk = next.cell?.imageRect(forBounds: next.bounds) ?? next.bounds
         let nextRight = next.convert(nextInk, to: header).maxX
@@ -193,15 +198,15 @@ import SwiftCrossUI
         volumeView.frame.origin = NSPoint(x: nextRight + gap - muteInk.minX, y: 6)
         // Share the available width with the LCD, rather than dropping the slider
         // at a fixed window-width threshold. Reserve the actual search control.
-        let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 23
+        let budget = header.bounds.width - trailingControlsWidth - 47 - 59 - volumeView.frame.minX - 21
         compact = budget < 280 + 44
         volumeSliderWidth = compact ? 0 : min(88, max(44, 88 - max(0, 460 + 88 - budget) * 0.4))
-        volumeView.setFrameSize(NSSize(width: 23 + volumeSliderWidth, height: 32))
+        volumeView.setFrameSize(NSSize(width: 21 + volumeSliderWidth, height: 32))
         if !popover.isShown {
             if compact { slider.removeFromSuperview() }
             else {
                 if slider.superview !== volumeView { slider.removeFromSuperview(); volumeView.addSubview(slider) }
-                slider.frame = NSRect(x: 23, y: 6, width: volumeSliderWidth, height: 20)
+                slider.frame = NSRect(x: 21, y: 6, width: volumeSliderWidth, height: 20)
             }
         }
         volumeView.centerControls()

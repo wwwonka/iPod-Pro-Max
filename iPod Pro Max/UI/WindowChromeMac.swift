@@ -126,7 +126,7 @@
                     let leftGap = player.nextToVolumeGap(in: root)
                     let reference = player.trafficToBackGap(in: root)
                     log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
-                    precondition(abs(leftGap - reference) <= 1, "Next/volume margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
+                    precondition(abs(leftGap - reference - 3) <= 1, "Next/volume margin adds 3 pt to traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
                 precondition((player.volumeSliderWidth == 0 || (44...88).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
                 precondition(player.volumeView.frame.maxX + 12 <= player.route.frame.minX + 0.5, "Adaptive volume clears AirPlay")
@@ -149,11 +149,18 @@
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
             window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
+            if let zoom = window.standardWindowButton(.zoomButton) {
+                let expected = zoom.frame
+                zoom.setFrameOrigin(NSPoint(x: expected.minX, y: expected.minY - 4))
+                playerHeader?.layoutSubtreeIfNeeded()
+                precondition(abs(zoom.frame.midY - expected.midY) < 0.1, "Native zoom-button drift is reconciled on frame notifications")
+            }
             player.checkVolumeSlider()
             player.setFullScreenLayout(true)
             precondition(playerUsesFullScreenSpacing, "Full screen removes the window-button clearance")
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 precondition(player.transport.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Spacing uses a bounded native animation")
+                precondition(player.volumeView.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Volume follows the same bounded transition")
             }
             player.setFullScreenLayout(false)
             precondition(player.transport.frame.minX == 74 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
@@ -368,7 +375,10 @@
             settleFullScreenPresentation?(fullScreen)
         }
         var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
-        var fullScreenTrafficLightsVisible: Bool { player.fullScreenLayout && !hidingTrafficLights && hostedTrafficLights.count == 3 && hostedTrafficLights.allSatisfy { !$0.isHidden } }
+        var fullScreenTrafficLightsVisible: Bool {
+            guard player.fullScreenLayout, !hidingTrafficLights, hostedTrafficLights.count == 3, let header = playerHeader else { return false }
+            return hostedTrafficLights.allSatisfy { !$0.isHidden && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
+        }
         private func updateFullScreenTrafficLights() {
             guard player.fullScreenLayout else { return }
             let visible = nativeTitlebarRevealed || holdingTrafficLightReveal
@@ -392,9 +402,12 @@
             nativeButtonFrameObservers.removeAll(); observedNativeButtonViews = views
             for view in views {
                 view.postsFrameChangedNotifications = true
-                nativeButtonFrameObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { _ in
-                    MainActor.assumeIsolated { onChange() }
-                })
+                view.postsBoundsChangedNotifications = true
+                for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+                    nativeButtonFrameObservers.append(NotificationCenter.default.addObserver(forName: name, object: view, queue: .main) { _ in
+                        MainActor.assumeIsolated { onChange() }
+                    })
+                }
             }
         }
         private var titlebarSuppressionObservations: [NSKeyValueObservation] = []
@@ -449,8 +462,15 @@
         }
         /// Relayout after search visibility changes and native title-area events.
         private var relayoutTitleArea: (() -> Void)?
+        private var titleAreaRelayoutPending = false
         private func scheduleTitleAreaRelayout() {
-            DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.relayoutTitleArea?() } }
+            guard !titleAreaRelayoutPending else { return }
+            titleAreaRelayoutPending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.titleAreaRelayoutPending = false
+                self.relayoutTitleArea?()
+            }
         }
 
         /// Keep actual AppKit window buttons in the same stable row as playback.
@@ -461,10 +481,10 @@
             var centering = false
             var exitingFullScreen = false
             func center() {
-                guard !centering else { return }; centering = true; defer { centering = false }
+                guard !centering else { self.scheduleTitleAreaRelayout(); return }; centering = true; defer { centering = false }
                 guard let header = self.playerHeader else { return }
                 let native = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-                if !native.isEmpty && native.map(ObjectIdentifier.init) != self.hostedTrafficLights.map(ObjectIdentifier.init) {
+                if native.count == 3 && native.map(ObjectIdentifier.init) != self.hostedTrafficLights.map(ObjectIdentifier.init) {
                     self.hostedTrafficLights.forEach { if $0.superview === header { $0.removeFromSuperview() } }
                     self.hostedTrafficLights = native
                 }
@@ -472,9 +492,13 @@
                 for (index, button) in self.hostedTrafficLights.enumerated() {
                     if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
                     button.autoresizingMask = []
-                    button.isHidden = self.hidingTrafficLights
-                    button.setFrameOrigin(NSPoint(x: 20 + CGFloat(index) * 18 - button.bounds.width / 2,
-                                                  y: header.bounds.height - 22 - button.bounds.height / 2))
+                    if button.isHidden != self.hidingTrafficLights { button.isHidden = self.hidingTrafficLights }
+                    // AppKit may change the zoom button's frame/bounds during
+                    // reveal. Center its actual frame, then reconcile after any
+                    // nested notification rather than losing that update.
+                    let origin = NSPoint(x: 20 + CGFloat(index) * 18 - button.frame.width / 2,
+                                         y: header.bounds.height - 22 - button.frame.height / 2)
+                    if button.frame.origin != origin { button.setFrameOrigin(origin) }
                     if exitingFullScreen && !button.isHiddenOrHasHiddenAncestor {
                         self.exitButtonLayoutSamples += 1
                         if button.visibleRect.height < button.bounds.height - 0.5 { self.exitButtonClippedSamples += 1 }
@@ -665,7 +689,11 @@
             header.identifier = NSUserInterfaceItemIdentifier("playerHeader")
             header.autoresizingMask = [.width, .minYMargin]
             header.onPointerPresence = { [weak self] in self?.player.setHeaderHovered($0) }
-            header.onLayout = { [weak self] in self?.layoutPlayerHeader() }
+            header.onLayout = { [weak self] in
+                guard let self else { return }
+                if let relayout = self.relayoutTitleArea { relayout() }
+                else { self.layoutPlayerHeader() }
+            }
             playerHeader = header
             let trafficArea = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self)
             header.addTrackingArea(trafficArea); trafficLightArea = trafficArea

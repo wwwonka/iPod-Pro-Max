@@ -10,10 +10,10 @@
 | Header | 44 pt, dans le contenu de la fenêtre ; aucune `NSToolbar` |
 | Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; instances AppKit réelles, masque d’autoresize retiré |
 | Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 20 pt ; entraxe 27 pt |
-| Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms |
-| Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back |
+| Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms commune au transport et au volume |
+| Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back + 3 pt |
 | Bouton de volume | 7 pt au repos, 9 pt au survol ; couleur opaque ; échelle 100 ms à l’entrée et 90 ms à la sortie ; teinte accentuée après 400 ms |
-| Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe ; symbole 10 pt et slider rapproché de 5 pt |
+| Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe ; symbole 10 pt et slider rapproché de 7 pt |
 | LCD | Hauteur 41 pt, largeur 280–460 pt selon le budget ; ancré au haut, marge inférieure 3 pt ; pochette 41 × 41 pt |
 | AirPlay et file | Plaques 39 × 26 pt, espacées de 8 pt de part et d’autre du LCD ; AirPlay à gauche, file à droite |
 | Modes | Chevrons de 16 pt au bord droit du LCD, sous la timeline dans l’ordre de composition, révélés 130 ms et retirés 100 ms ; cachés en idle |
@@ -81,6 +81,14 @@ Titre et sous-titre trop longs utilisent deux copies de texte pour un défilemen
 Builds de développement et optimisé ; 131 tests, 7 ignorés, aucun échec. L’intégration native en clair/sombre remplace réellement la piste AVPlayer et vérifie l’absence d’état pause intermédiaire, puis contrôle la composition avec des titres longs, les deux copies de défilement, leur suppression en pause et leur reprise. Les contrôles de volume vérifient la sensibilité réduite et l’absence de grossissement après scroll jusqu’au mouvement du pointeur. Plein écran, pause/reprise et arrêt des horloges restent validés.
 
 Un lancement du contrôle direct de disposition a rencontré le `PackageDropOverlayView` du module de plug-ins lors d’un `hitTest` hors événement pointeur (`WindowChromeMac.swift:141`). Ce contrôle dépend de `NSApp.currentEvent` ; le scénario d’intégration avec la fenêtre active valide les mêmes contrôles de géométrie. Le chemin de dépôt de plug-ins n’est pas changé par ce lot. La limitation du contrôle global des menus de colonnes signalée plus bas reste distincte.
+
+### Stabilisation des boutons système et glissement du volume
+
+Le centrage suit les notifications de frame et de bounds des trois boutons natifs, ainsi que la fin de la disposition du header. Une modification réentrante programme une unique passe de réconciliation sur le prochain tour du main thread ; les coordonnées identiques ne sont pas réappliquées. Les tailles utilisées pour le centrage sont celles des frames réelles. Un jeu natif partiel pendant une transition ne remplace pas les trois boutons déjà hébergés. Aucun timer ou polling n’est ajouté.
+
+Le volume et le transport prennent chacun leur position de présentation courante, puis rejoignent ensemble leur nouvelle position en 250 ms à l’entrée/sortie du plein écran ou lors de la révélation des boutons système. La marge Next/volume augmente de 3 pt ; le slider commence à x = 21 pt dans son groupe, soit 2 pt plus proche de l’icône qu’à l’étape précédente. Les chevrons du LCD se retirent de 8 pt vers la droite avec leur fondu, sous le masque du panneau.
+
+Le contrôle de disposition décale volontairement le bouton vert de 4 pt, vérifie sa remise en place, et contrôle la présence des deux animations bornées. Le contrôle de révélation plein écran exige également que les trois boutons visibles partagent le même centre vertical. Build de développement et intégration native sombre/clair validés, y compris plein écran, retour et réouverture. Un premier lancement clair n’a pas atteint l’état audio prêt ; la relance du scénario complet réussit. Le parcours sombre mesure une disposition synchrone médiane de 1,80 ms et un maximum de 3,47 ms sur la fenêtre de contrôle à 820–1 600 pt.
 
 ## Vérification du polissage — 22 novembre 2026
 

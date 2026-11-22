@@ -256,8 +256,8 @@ import MediaKit
             animation.duration = hovered ? 0.13 : 0.16
             if view === previousMode || view === nextMode {
                 let move = CABasicAnimation(keyPath: "transform.translation.x")
-                move.fromValue = view.layer?.presentation()?.transform.m41 ?? (hovered ? -8 : 0)
-                move.toValue = hovered ? 0 : -8; move.duration = animation.duration
+                move.fromValue = view.layer?.presentation()?.transform.m41 ?? (hovered ? 8 : 0)
+                move.toValue = hovered ? 0 : 8; move.duration = animation.duration
                 move.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 view.layer?.add(move, forKey: "modeReveal")
             }
