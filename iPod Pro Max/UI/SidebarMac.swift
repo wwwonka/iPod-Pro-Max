@@ -359,6 +359,25 @@
         }
 
         final class SidebarCell: NSTableCellView, NSTextViewDelegate {
+            private var emphasisObservers: [NSObjectProtocol] = []
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                emphasisObservers.forEach(NotificationCenter.default.removeObserver); emphasisObservers.removeAll()
+                if let window {
+                    for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                        emphasisObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                            MainActor.assumeIsolated { self?.updateTextEmphasis() }
+                        })
+                    }
+                }
+                updateTextEmphasis()
+            }
+            private func updateTextEmphasis() {
+                let opacity: CGFloat = window?.isKeyWindow == true ? 1 : 0.45
+                textField?.alphaValue = opacity; headerLabel?.alphaValue = opacity
+            }
+            deinit { emphasisObservers.forEach(NotificationCenter.default.removeObserver) }
+
             var dimmed = false { didSet { updateTint() } }
             var forceBlackIcon = false { didSet { updateTint() } }
             var customIcon: NSImage? { didSet { updateTint() } }

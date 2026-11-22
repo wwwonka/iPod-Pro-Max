@@ -52,6 +52,12 @@ import MediaKit
         log("PASS: real AVPlayer track replacement keeps Pause stable throughout loading")
     }
     (originalLCD as? PlayerLCD)?.checkComposition()
+    let probe = NSWindow(contentRect: NSRect(x: 20, y: 20, width: 80, height: 50), styleMask: [.titled], backing: .buffered, defer: false)
+    probe.isReleasedWhenClosed = false; NSApp.activate(ignoringOtherApps: true); probe.makeKeyAndOrderFront(nil)
+    guard require(await waitUntil { !window.isKeyWindow }, "inactive-window probe takes key status") else { return false }
+    (originalLCD as? PlayerLCD)?.checkInactiveAppearance()
+    probe.orderOut(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    _ = await waitUntil { window.isKeyWindow }
     let center = MPNowPlayingInfoCenter.default()
     guard require(center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == playback.track?.title, "live system Now Playing metadata") else { return false }
 
@@ -153,13 +159,13 @@ import MediaKit
     guard require(window.styleMask.contains(.titled) && window.standardWindowButton(.closeButton)?.window === window, "native window buttons remain after final AppKit style restoration") else { return false }
     log("PASS: enter/exit full screen keeps the content player stable without auxiliary toolbar, audio playing")
 
-    window.standardWindowButton(.miniaturizeButton)?.performClick(nil)
+    MacChrome.shared.windowControl(.miniaturizeButton)?.performClick(nil)
     let minimized = await waitUntil { window.isMiniaturized }
     guard require(minimized && playback.playing, "hosted native minimize button preserves playback") else { return false }
     window.deminiaturize(nil)
     let restored = await waitUntil { !window.isMiniaturized && window.isVisible }
     guard require(restored, "native window returns from the Dock") else { return false }
-    window.standardWindowButton(.closeButton)?.performClick(nil)
+    MacChrome.shared.windowControl(.closeButton)?.performClick(nil)
     guard require(!window.isVisible && playback.playing && center.nowPlayingInfo != nil, "closing hides the window and preserves playback/system session") else { return false }
     let auxiliary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 140, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
     auxiliary.isReleasedWhenClosed = false; auxiliary.orderFront(nil)

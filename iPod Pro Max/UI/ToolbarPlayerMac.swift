@@ -230,7 +230,7 @@ import SwiftCrossUI
         precondition(mute.symbolTransition == .crossfade, "Speaker waves crossfade on a fixed leading canvas")
     }
     func trafficToBackGap(in root: NSView) -> CGFloat {
-        guard let window = playerControlWindow(for: transport), let zoom = window.standardWindowButton(.zoomButton) else { return 10 + transportLeadingSpace }
+        guard playerControlWindow(for: transport) != nil, let zoom = MacChrome.shared.windowControl(.zoomButton) else { return 10 + transportLeadingSpace }
         let symbolRect = previous.cell?.imageRect(forBounds: previous.bounds) ?? previous.bounds
         let backLeft = previous.convert(symbolRect, to: root).minX
         let lightsRight = zoom.convert(zoom.bounds, to: root).maxX

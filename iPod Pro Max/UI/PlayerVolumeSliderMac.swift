@@ -19,15 +19,15 @@ import AppKit
     override func drawKnob(_ knobRect: NSRect) {} // Opaque layer, native cell tracking.
     override func drawBar(inside rect: NSRect, flipped: Bool) {
         // Keep barRect native: its metrics also drive AppKit's drag calculation.
-        let bar = visibleTrackRect
-        let dark = controlView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        NSColor(white: dark ? 0.06 : 0.55, alpha: dark ? 0.8 : 0.3).setFill()
-        NSBezierPath(roundedRect: bar, xRadius: 2, yRadius: 2).fill()
+        // The inactive channel is a native glass view below the fill layer.
 
     }
 }
 
 @MainActor final class PlayerVolumeSlider: NSSlider {
+    private let channelGlass = NSVisualEffectView()
+    private let controlOverlay = NSView()
+    private let channelTint = CALayer()
     private let thumb = CALayer()
     private let volumeFill = CALayer()
     private var animateNextValueChange = false
@@ -47,14 +47,23 @@ import AppKit
         let volumeCell = PlayerVolumeCell(); volumeCell.minValue = 0; volumeCell.maxValue = 1
         cell = volumeCell; wantsLayer = true; clipsToBounds = false
         layer?.masksToBounds = false
+        channelGlass.material = .underWindowBackground
+        channelGlass.blendingMode = .behindWindow; channelGlass.state = .active
+        channelGlass.wantsLayer = true; channelGlass.layer?.cornerRadius = 2; channelGlass.layer?.masksToBounds = true
+        channelGlass.layer?.addSublayer(channelTint)
+        channelGlass.setAccessibilityHidden(true); addSubview(channelGlass)
+        controlOverlay.wantsLayer = true; controlOverlay.clipsToBounds = false
+        controlOverlay.setAccessibilityHidden(true); addSubview(controlOverlay, positioned: .above, relativeTo: channelGlass)
         volumeFill.anchorPoint = CGPoint(x: 0, y: 0.5); volumeFill.cornerRadius = 2
-        layer?.addSublayer(volumeFill); layer?.addSublayer(thumb)
+        volumeFill.zPosition = 1; thumb.zPosition = 2
+        controlOverlay.layer?.addSublayer(volumeFill); controlOverlay.layer?.addSublayer(thumb)
         thumb.cornerRadius = PlayerVolumeCell.thumbDiameter / 2
         thumb.opacity = 1
         thumb.shadowColor = NSColor.black.cgColor; thumb.shadowOffset = CGSize(width: 0, height: -1)
         thumb.shadowRadius = 1.5; thumb.borderWidth = 0.5
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
     override func draw(_ dirtyRect: NSRect) { super.draw(dirtyRect); positionThumb() }
     override func layout() { super.layout(); positionThumb() }
     func setVolume(_ value: Double, animated: Bool) {
@@ -71,6 +80,10 @@ import AppKit
         let oldPosition = thumb.presentation()?.position ?? thumb.position
         let oldWidth = volumeFill.presentation()?.bounds.width ?? volumeFill.bounds.width
         let bar = visibleTrackRect
+        controlOverlay.frame = bounds
+        channelGlass.frame = bar
+        channelTint.frame = channelGlass.bounds
+        channelTint.backgroundColor = NSColor.black.withAlphaComponent(railGlassTint).cgColor
         CATransaction.begin(); CATransaction.setDisableActions(true)
         thumb.bounds = NSRect(x: 0, y: 0, width: PlayerVolumeCell.thumbDiameter, height: PlayerVolumeCell.thumbDiameter)
         thumb.position = NSPoint(x: rect.midX, y: rect.midY)

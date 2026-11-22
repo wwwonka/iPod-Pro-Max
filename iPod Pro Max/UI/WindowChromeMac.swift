@@ -109,10 +109,10 @@
                 window.contentView?.superview?.layoutSubtreeIfNeeded()
                 relayoutTitleArea?()
                 layoutPlayerHeader()
-                if let root = window.contentView?.superview, let close = window.standardWindowButton(.closeButton) {
+                if let root = window.contentView?.superview, let close = windowControl(.closeButton) {
                     let y = close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: root).y
                     for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
-                        guard let button = window.standardWindowButton(type) else { preconditionFailure("Native window control missing") }
+                        guard let button = windowControl(type) else { preconditionFailure("Native window control missing") }
                         let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
                         precondition(abs(center.x - (20 + CGFloat(index) * 18)) <= 0.5 && abs(root.bounds.height - center.y - 22) <= 0.5, "Traffic lights retain the reference offsets")
                     }
@@ -149,11 +149,18 @@
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
             window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
-            if let zoom = window.standardWindowButton(.zoomButton) {
+            if let zoom = windowControl(.zoomButton) {
                 let expected = zoom.frame
                 zoom.setFrameOrigin(NSPoint(x: expected.minX, y: expected.minY - 4))
                 playerHeader?.layoutSubtreeIfNeeded()
                 precondition(abs(zoom.frame.midY - expected.midY) < 0.1, "Native zoom-button drift is reconciled on frame notifications")
+            }
+            if let nativeZoom = window.standardWindowButton(.zoomButton), let zoom = windowControl(.zoomButton) {
+                precondition(nativeZoom !== zoom && nativeZoom.isHidden, "Header controls must be independent of the titlebar-owned instances")
+                let expected = zoom.frame, original = nativeZoom.frame
+                nativeZoom.setFrameOrigin(NSPoint(x: original.minX, y: original.minY - 5))
+                precondition(zoom.frame == expected, "Native titlebar updates cannot move the visible green button")
+                nativeZoom.frame = original
             }
             player.checkVolumeSlider()
             player.setFullScreenLayout(true)
@@ -362,6 +369,18 @@
         private var nativeButtonFrameObservers: [NSObjectProtocol] = []
         private var observedNativeButtonViews: [NSView] = []
         private var hostedTrafficLights: [NSButton] = []
+        func windowControl(_ type: NSWindow.ButtonType) -> NSButton? {
+            let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+            guard let index = types.firstIndex(of: type), hostedTrafficLights.indices.contains(index) else { return nil }
+            return hostedTrafficLights[index]
+        }
+        @objc private func closePrimaryWindow() { window?.performClose(nil) }
+        @objc private func minimizePrimaryWindow() { window?.performMiniaturize(nil) }
+        @objc private func zoomPrimaryWindow() {
+            if NSEvent.modifierFlags.contains(.option) { window?.performZoom(nil) }
+            else { window?.toggleFullScreen(nil) }
+        }
+        private var trafficLightHideWork: DispatchWorkItem?
         private var hidingTrafficLights = false
         private var nativeTitlebarRevealed = false
         private var holdingTrafficLightReveal = false
@@ -377,7 +396,7 @@
         var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
         var fullScreenTrafficLightsVisible: Bool {
             guard player.fullScreenLayout, !hidingTrafficLights, hostedTrafficLights.count == 3, let header = playerHeader else { return false }
-            return hostedTrafficLights.allSatisfy { !$0.isHidden && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
+            return hostedTrafficLights.allSatisfy { !$0.isHidden && $0.alphaValue == 1 && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
         }
         private func updateFullScreenTrafficLights() {
             guard player.fullScreenLayout else { return }
@@ -480,19 +499,39 @@
             let originalContainer = window.standardWindowButton(.closeButton)?.superview?.superview
             var centering = false
             var exitingFullScreen = false
+            var lastHidden = false
             func center() {
                 guard !centering else { self.scheduleTitleAreaRelayout(); return }; centering = true; defer { centering = false }
                 guard let header = self.playerHeader else { return }
-                let native = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-                if native.count == 3 && native.map(ObjectIdentifier.init) != self.hostedTrafficLights.map(ObjectIdentifier.init) {
-                    self.hostedTrafficLights.forEach { if $0.superview === header { $0.removeFromSuperview() } }
-                    self.hostedTrafficLights = native
+                let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+                // Separate standard AppKit controls from the titlebar-owned
+                // instances: AppKit animates the latter during menu-bar reveal.
+                if self.hostedTrafficLights.isEmpty {
+                    let actions = [#selector(self.closePrimaryWindow), #selector(self.minimizePrimaryWindow), #selector(self.zoomPrimaryWindow)]
+                    for (index, type) in types.enumerated() {
+                        guard let button = NSWindow.standardWindowButton(type, for: window.styleMask) else { continue }
+                        button.target = self; button.action = actions[index]
+                        button.wantsLayer = true
+                        self.hostedTrafficLights.append(button)
+                    }
                 }
+                for type in types { window.standardWindowButton(type)?.isHidden = true }
                 self.observeNativeButtonFrames(self.hostedTrafficLights, onChange: center)
                 for (index, button) in self.hostedTrafficLights.enumerated() {
                     if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
                     button.autoresizingMask = []
-                    if button.isHidden != self.hidingTrafficLights { button.isHidden = self.hidingTrafficLights }
+                    let opacity: CGFloat = self.hidingTrafficLights ? 0 : 1
+                    if button.alphaValue != opacity {
+                        let from = button.layer?.presentation()?.opacity ?? Float(button.alphaValue)
+                        button.alphaValue = opacity
+                        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                            let fade = CABasicAnimation(keyPath: "opacity")
+                            fade.fromValue = from; fade.toValue = opacity; fade.duration = 0.16
+                            button.layer?.add(fade, forKey: "windowControlVisibility")
+                        }
+                    }
+                    if !self.hidingTrafficLights { button.isHidden = false }
+                    button.isEnabled = index != 1 || !self.player.fullScreenLayout
                     // AppKit may change the zoom button's frame/bounds during
                     // reveal. Center its actual frame, then reconcile after any
                     // nested notification rather than losing that update.
@@ -502,6 +541,18 @@
                     if exitingFullScreen && !button.isHiddenOrHasHiddenAncestor {
                         self.exitButtonLayoutSamples += 1
                         if button.visibleRect.height < button.bounds.height - 0.5 { self.exitButtonClippedSamples += 1 }
+                    }
+                }
+                if lastHidden != self.hidingTrafficLights {
+                    lastHidden = self.hidingTrafficLights
+                    self.trafficLightHideWork?.cancel()
+                    if lastHidden {
+                        let work = DispatchWorkItem { [weak self] in
+                            guard let self, self.hidingTrafficLights else { return }
+                            self.hostedTrafficLights.forEach { $0.isHidden = true }
+                        }
+                        self.trafficLightHideWork = work
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
                     }
                 }
                 self.layoutPlayerHeader()

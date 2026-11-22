@@ -61,6 +61,8 @@ import MediaKit
             button.wantsLayer = true; button.alphaValue = 0
         }
         mode.makeMenu = { [weak self] in self?.modeMenu() ?? NSMenu() }
+        remaining.textOnlyHover = true
+        (remaining.cell as? NSButtonCell)?.highlightsBy = []
         remaining.alignment = .right
         remaining.title = ""
         remaining.isBordered = false; remaining.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
@@ -92,7 +94,7 @@ import MediaKit
             guard self?.display.resolvedMode == .title else { return }; self?.revealTrack()
         }
         displaySubscription = display.didChange.observe { [weak self] in self?.refresh() }
-        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification] {
+        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 MainActor.assumeIsolated {
                     guard let self, notification.object as? NSWindow === self.window else { return }
@@ -198,7 +200,8 @@ import MediaKit
         title.canAnimate = playback.playing && activity == nil && isDisplayVisible && (effective == .title || effective == .lyrics)
         let trackOpacity: CGFloat = track != nil && !playback.playing && activity == nil ? 0.65 : 1
         let spectrumOverlay = available && effective == .spectrum
-        let metadataOpacity: CGFloat = spectrumOverlay ? 0 : trackOpacity
+        let active = window?.isKeyWindow == true
+        let metadataOpacity: CGFloat = spectrumOverlay ? 0 : trackOpacity * (active ? 1 : 0.45)
         fade(title, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(subtitle, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(more, to: hovered && available && showTitle ? 1 : 0, animated: hoverChanged)
@@ -215,6 +218,8 @@ import MediaKit
             timeTrackID = track?.id
         }
         elapsed.alphaValue = 1; remaining.alphaValue = 1
+        elapsed.textColor = active ? .secondaryLabelColor : NSColor.labelColor.withAlphaComponent(0.3)
+        remaining.refreshTextTint()
         subtitle.canAnimate = title.canAnimate
         fade(plot, to: 1, animated: false)
         plot.update(trackID: track?.id, position: position, duration: playback.duration, mode: effective, samples: playback.samples, chapters: display.chapters)
@@ -254,13 +259,6 @@ import MediaKit
             let animation = CABasicAnimation(keyPath: "opacity")
             animation.fromValue = start; animation.toValue = Float(opacity)
             animation.duration = hovered ? 0.13 : 0.16
-            if view === previousMode || view === nextMode {
-                let move = CABasicAnimation(keyPath: "transform.translation.x")
-                move.fromValue = view.layer?.presentation()?.transform.m41 ?? (hovered ? 8 : 0)
-                move.toValue = hovered ? 0 : 8; move.duration = animation.duration
-                move.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                view.layer?.add(move, forKey: "modeReveal")
-            }
             animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             view.layer?.add(animation, forKey: "metadataHover")
         }
@@ -274,7 +272,7 @@ import MediaKit
         mode.frame = .zero
         previousMode.frame = NSRect(x: width - 16, y: height - 18, width: 16, height: 16)
         nextMode.frame = NSRect(x: width - 16, y: 4, width: 16, height: 16)
-        let left = artEdge + 6, right: CGFloat = 22
+        let left = artEdge + 6, right: CGFloat = 19
         let availableWidth = max(0, width - left - right)
         let titleWidth = min(max(0, availableWidth - 40), title.naturalWidth)
         let start = left + (availableWidth - titleWidth) / 2
@@ -350,6 +348,26 @@ import MediaKit
         log("PASS: LCD vertical/horizontal scroll and click/drag without responder recursion; idle title hidden")
     }
 
+    func checkInactiveAppearance() {
+        guard let window, !window.isKeyWindow else { preconditionFailure("Inactive appearance requires a background window") }
+        let oldMode = display.mode
+        display.choose(.title); refresh(force: true)
+        precondition(abs(title.alphaValue - 0.45) < 0.001 && abs(subtitle.alphaValue - 0.45) < 0.001)
+        precondition(abs((elapsed.textColor?.alphaComponent ?? 1) - 0.3) < 0.001)
+        let tint = remaining.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        precondition(abs((tint?.alphaComponent ?? 1) - 0.3) < 0.001)
+        func checkSidebar(_ view: NSView) {
+            if let cell = view as? Sidebar.SidebarCell {
+                if let text = cell.textField { precondition(abs(text.alphaValue - 0.45) < 0.001) }
+                if let header = cell.headerLabel { precondition(abs(header.alphaValue - 0.45) < 0.001) }
+            }
+            view.subviews.forEach(checkSidebar)
+        }
+        if let root = window.contentView { checkSidebar(root) }
+        display.choose(oldMode); refresh(force: true)
+        log("PASS: inactive LCD metadata, both clocks and sidebar headings share restrained emphasis")
+    }
+
     func checkComposition() {
         guard playback.track != nil, activities.list.selected == nil else { return }
         func snapshot(_ name: String) {
@@ -363,9 +381,10 @@ import MediaKit
         precondition(cover.frame == NSRect(x: 0, y: 0, width: bounds.height, height: bounds.height))
         precondition(progressOverlay.frame.minX == cover.frame.maxX && progressOverlay.frame.maxX == bounds.maxX)
         precondition(!more.isHidden && more.usesAccentTint && more.frame.minX == title.frame.maxX + 2)
-        precondition(abs(title.frame.midX - (cover.frame.maxX + 6 + bounds.width - 22) / 2) < 0.1, "Title centering does not include the actions button")
+        precondition(abs(title.frame.midX - (cover.frame.maxX + 6 + bounds.width - 19) / 2) < 0.1, "Title centering does not include the actions button")
         precondition(layer?.animation(forKey: "LCDContent") == nil, "Track transitions must never fade the whole LCD")
         precondition(elapsed.alphaValue == 1 && remaining.alphaValue == 1)
+        precondition(remaining.textOnlyHover, "The remaining time uses glyph feedback without a hover plate")
         title.checkLoop(); subtitle.checkLoop()
         snapshot("title")
         hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
@@ -547,7 +566,7 @@ import MediaKit
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               label.layer?.animation(forKey: "marquee") == nil else { return }
         let distance = naturalWidth + 32
-        let travel = Double(distance) / 28, rest = 1.2
+        let travel = Double(distance) / 20, rest = 2.4
         let animation = CAKeyframeAnimation(keyPath: "transform.translation.x")
         animation.values = [0, 0, -distance]
         animation.keyTimes = [0, NSNumber(value: rest / (rest + travel)), 1]

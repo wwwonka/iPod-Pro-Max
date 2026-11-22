@@ -53,6 +53,7 @@ import AppKit
         addSubview(content)
     }
     var isSpectrumAnimating: Bool { content.isSpectrumAnimating }
+    func checkInactiveAppearance() { content.checkInactiveAppearance() }
     func checkComposition() { content.checkComposition() }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {

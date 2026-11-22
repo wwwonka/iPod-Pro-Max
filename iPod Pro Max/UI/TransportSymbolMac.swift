@@ -30,10 +30,21 @@ import Symbols
     override func layout() {
         super.layout()
         let frame = transition == .crossfade ? NSRect(x: (bounds.width - 20) / 2, y: (bounds.height - 16) / 2, width: 20, height: 16) : bounds
-        for view in [current, outgoing] { view.frame = frame; view.imageAlignment = transition == .crossfade ? .alignLeft : .alignCenter }
+        for view in [current, outgoing] {
+            if transition == .crossfade, let image = view.image {
+                // SF Symbols share a typographic baseline, not necessarily a
+                // bounding-box center (wave.3 is taller than wave.2).
+                let baseline = bounds.midY - 3
+                view.frame = NSRect(x: frame.minX - image.alignmentRect.minX,
+                                    y: baseline - image.alignmentRect.minY,
+                                    width: image.size.width, height: image.size.height)
+            } else { view.frame = frame }
+            view.imageAlignment = .alignCenter
+        }
     }
     func setSymbol(_ name: String, image: NSImage?, animated: Bool) {
         symbol = name
+        needsLayout = true
         guard animated, current.image != nil, let image, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             if #available(macOS 14, *) { current.removeAllSymbolEffects() }
             current.layer?.removeAllAnimations(); outgoing.layer?.removeAllAnimations()
@@ -42,6 +53,7 @@ import Symbols
         if transition == .crossfade {
             outgoing.image = current.image; outgoing.contentTintColor = current.contentTintColor
             current.image = image
+            needsLayout = true; layoutSubtreeIfNeeded()
             let alpha = tint?.alphaComponent ?? 1
             CATransaction.begin(); CATransaction.setDisableActions(true)
             outgoing.alphaValue = 0; current.alphaValue = alpha

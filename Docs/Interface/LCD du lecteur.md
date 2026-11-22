@@ -8,7 +8,7 @@
 | Élément | Géométrie et interaction |
 |---|---|
 | Header | 44 pt, dans le contenu de la fenêtre ; aucune `NSToolbar` |
-| Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; instances AppKit réelles, masque d’autoresize retiré |
+| Boutons système | Centres x = 20/38/56 pt ; y = 22 pt sous le haut ; boutons standard créés par AppKit dans le header, indépendants des instances du titlebar ; masque d’autoresize retiré |
 | Transport | Groupe x = 74 pt avec espace adaptatif 0–8 pt ; SF Symbols 13 pt et Play/Pause 20 pt ; entraxe 27 pt |
 | Plein écran | Groupe x = 56 pt au repos, soit rail 44 pt + 12 pt ; x = 82 pt lorsque les boutons système sont révélés ; translation 250 ms commune au transport et au volume |
 | Volume | Slider 88 pt au maximum (deux tiers de 132 pt), réduction progressive jusqu’à 44 pt puis popover compact si nécessaire ; espace après Next égal à l’espace visible feux/Back + 3 pt |
@@ -16,7 +16,7 @@
 | Réglage du volume | Clic de piste : bouton et remplissage animés 140 ms ; glissement natif direct ; trompette de l’icône fixe ; symbole 10 pt et slider rapproché de 7 pt |
 | LCD | Hauteur 41 pt, largeur 280–460 pt selon le budget ; ancré au haut, marge inférieure 3 pt ; pochette 41 × 41 pt |
 | AirPlay et file | Plaques 39 × 26 pt, espacées de 8 pt de part et d’autre du LCD ; AirPlay à gauche, file à droite |
-| Modes | Chevrons de 16 pt au bord droit du LCD, sous la timeline dans l’ordre de composition, révélés 130 ms et retirés 100 ms ; cachés en idle |
+| Modes | Chevrons de 16 pt au bord droit du LCD, sous la timeline dans l’ordre de composition, révélés 130 ms et retirés 160 ms ; cachés en idle |
 | Recherche | Champ natif 170 × 28 pt, ou loupe quand la fenêtre se réduit ; focus à l’échelle 1,025 en 120 ms, contour serré, texte suivant le curseur |
 | Défocus recherche | Échap conserve le texte et retire le focus ; clic extérieur transmis normalement ; perte d’activation retire le focus |
 
@@ -74,7 +74,7 @@ Le contrôleur ignore les états moteur synchrones pendant le remplacement. Sur 
 
 L’infobulle de la mini timeline suit le point local du curseur avec un décalage de 4 pt et se borne aux bords horizontaux. Le volume utilise une sensibilité de 0,0015 par unité de défilement précis et 0,004 par unité de molette. Le scroll retire le survol du curseur et le bloque jusqu’au prochain mouvement de souris ; aucun délai ou polling n’est ajouté.
 
-Titre et sous-titre trop longs utilisent deux copies de texte pour un défilement continu vers la gauche à 28 pt/s, avec une pause de 1,2 s au début de chaque boucle. Les animations sont retirées en pause ou quand la fenêtre est masquée ; les textes qui tiennent dans leur zone et Réduire les animations restent immobiles. Aucun timer ne pilote le défilement.
+Titre et sous-titre trop longs utilisent deux copies de texte pour un défilement continu vers la gauche à 20 pt/s, avec une pause de 2,4 s au début de chaque boucle. Les animations sont retirées en pause ou quand la fenêtre est masquée ; les textes qui tiennent dans leur zone et Réduire les animations restent immobiles. Aucun timer ne pilote le défilement.
 
 ### Validation du complément
 
@@ -86,9 +86,17 @@ Un lancement du contrôle direct de disposition a rencontré le `PackageDropOver
 
 Le centrage suit les notifications de frame et de bounds des trois boutons natifs, ainsi que la fin de la disposition du header. Une modification réentrante programme une unique passe de réconciliation sur le prochain tour du main thread ; les coordonnées identiques ne sont pas réappliquées. Les tailles utilisées pour le centrage sont celles des frames réelles. Un jeu natif partiel pendant une transition ne remplace pas les trois boutons déjà hébergés. Aucun timer ou polling n’est ajouté.
 
-Le volume et le transport prennent chacun leur position de présentation courante, puis rejoignent ensemble leur nouvelle position en 250 ms à l’entrée/sortie du plein écran ou lors de la révélation des boutons système. La marge Next/volume augmente de 3 pt ; le slider commence à x = 21 pt dans son groupe, soit 2 pt plus proche de l’icône qu’à l’étape précédente. Les chevrons du LCD se retirent de 8 pt vers la droite avec leur fondu, sous le masque du panneau.
+Le volume et le transport prennent chacun leur position de présentation courante, puis rejoignent ensemble leur nouvelle position en 250 ms à l’entrée/sortie du plein écran ou lors de la révélation des boutons système. La marge Next/volume augmente de 3 pt ; le slider commence à x = 21 pt dans son groupe, soit 2 pt plus proche de l’icône qu’à l’étape précédente. Les chevrons du LCD se retirent par fondu seul, sans translation.
 
 Le contrôle de disposition décale volontairement le bouton vert de 4 pt, vérifie sa remise en place, et contrôle la présence des deux animations bornées. Le contrôle de révélation plein écran exige également que les trois boutons visibles partagent le même centre vertical. Build de développement et intégration native sombre/clair validés, y compris plein écran, retour et réouverture. Un premier lancement clair n’a pas atteint l’état audio prêt ; la relance du scénario complet réussit. Le parcours sombre mesure une disposition synchrone médiane de 1,80 ms et un maximum de 3,47 ms sur la fenêtre de contrôle à 820–1 600 pt.
+
+### Contrôles AppKit indépendants et cohérence inactive
+
+Le centrage des instances possédées par le titlebar ne suffisait pas : le bouton vert restait soumis aux animations natives de révélation. Le header crée désormais ses trois contrôles avec `NSWindow.standardWindowButton(_:for:)` ; les instances du titlebar restent masquées. Les actions ferment, minimisent ou basculent la fenêtre en plein écran ; Option-clic sur le vert garde le zoom. Un test déplace l’instance native masquée et vérifie que le contrôle visible reste immobile. La révélation et le retrait utilisent un fondu de 160 ms ; les contrôles sont masqués à la fin du fondu pour libérer leur zone de clic. Les chevrons LCD utilisent eux aussi un fondu seul.
+
+Le volume aligne les images SF sur leur `alignmentRect` typographique : à 10 pt, `speaker.wave.2.fill` mesure 14 × 10 pt et `speaker.wave.3.fill` 17 × 11 pt, ce qui rendait leur centrage par boîte instable. Le canal vide est un `NSVisualEffectView` under-window actif, avec le même voile `railGlassTint` que la sidebar. Remplissage et curseur restent au-dessus de ce verre.
+
+La perte du focus atténue le titre et le sous-titre du LCD, les textes des cellules de sidebar et leurs grands titres à 45 %. Les horloges utilisent le gris inactif des commandes ; leur opacité de vue reste 1 pour préserver les fondus de contenu. Le temps restant se rapproche encore de 3 pt du bord droit et ne dessine plus de plaque au survol : seul son texte s’accentue. Les animations de texte avancent à 20 pt/s et se reposent 2,4 s, soit deux fois la pause précédente. Ces mises à jour suivent les notifications de fenêtre, sans horloge inactive.
 
 ## Vérification du polissage — 22 novembre 2026
 
@@ -251,3 +259,5 @@ Validation macOS : volumes 0/25/50/75/100 %, clic animé et survol réversible, 
 Le slider atteint 132 pt, contre 72 pt auparavant. Sa largeur partage le budget horizontal avec le LCD : elle descend progressivement jusqu’à 52 pt selon la place réellement disponible, après réservation d’AirPlay, de la file et du champ de recherche ou de sa loupe. Le passage compact ne dépend plus du seuil fixe de 1 000 pt ; il intervient uniquement lorsque le slider minimal et le LCD de 280 pt ne tiennent plus ensemble. Les espacements des commandes et la taille du bouton de volume sont conservés. Le redimensionnement réutilise la vue native et ne réinstalle pas le slider à chaque passe de disposition.
 
 Contrôle natif sombre : slider de 132 pt à 1 240/1 600 pt, 94,6 pt à 1 000 pt et 77 pt à 820 pt avec recherche réduite. Les assertions vérifient la plage 52–132 pt et l’absence de chevauchement avec AirPlay et les contrôles à droite, y compris après le plein écran.
+
+Validation du dernier complément : builds macOS de développement et optimisé, scénarios natifs clair/sombre, contrôle explicite de perte de focus (métadonnées, deux horloges et titres de sidebar), ainsi que réduction/fermeture/plein écran depuis les boutons visibles du header. Un premier contrôle de remplacement audio puis un essai de transfert du focus ont nécessité une relance du scénario ; la suite finale réussit.
