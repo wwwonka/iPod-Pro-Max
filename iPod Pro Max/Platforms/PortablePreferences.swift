@@ -12,7 +12,7 @@ final class PortablePreferences {
         var lastTab: String?
         var sectionTabs: [String: String] = [:]
         var sidebarOpen: Bool?
-        var albumArtworkSize: Double?
+        var gridArtworkSizes: [String: Double] = [:]
         var syncArtwork: Bool?
         var favoriteIcon: String?
         var hiddenTrackColumns: [String]?
@@ -42,8 +42,8 @@ final class PortablePreferences {
     func stageSidebarOpen(_ open: Bool, store: PortableLibraryStore) {
         stage(store) { guard $0.sidebarOpen != open else { return false }; $0.sidebarOpen = open; return true }
     }
-    func stageAlbumArtworkSize(_ size: Double, store: PortableLibraryStore) {
-        stage(store) { guard $0.albumArtworkSize != size else { return false }; $0.albumArtworkSize = size; return true }
+    func stageGridArtworkSize(_ size: Double, section: String, store: PortableLibraryStore) {
+        stage(store) { guard $0.gridArtworkSizes[section] != size else { return false }; $0.gridArtworkSizes[section] = size; return true }
     }
     func stageSyncArtwork(_ value: Bool, store: PortableLibraryStore) {
         stage(store) { guard $0.syncArtwork != value else { return false }; $0.syncArtwork = value; return true }
@@ -90,12 +90,12 @@ final class PortablePreferences {
     }
     func flush() async throws {
         while let value = pending {
-            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, albumArtworkSize: value.albumArtworkSize, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, preferredFormats: value.preferredFormats, minimumBitrateKbps: value.minimumBitrateKbps, acceptYouTubeFallback: value.acceptYouTubeFallback, store: value.store)
+            try await writer.write(mode: value.mode, sidebarWidth: value.sidebarWidth, lastTab: value.lastTab, sectionTabs: value.sectionTabs, sidebarOpen: value.sidebarOpen, gridArtworkSizes: value.gridArtworkSizes, syncArtwork: value.syncArtwork, favoriteIcon: value.favoriteIcon, hiddenTrackColumns: value.hiddenTrackColumns, sidebarOrder: value.sidebarOrder, preferredFormats: value.preferredFormats, minimumBitrateKbps: value.minimumBitrateKbps, acceptYouTubeFallback: value.acceptYouTubeFallback, store: value.store)
             if pending?.revision == value.revision { pending = nil }
         }
     }
     private actor Writer {
-        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, albumArtworkSize: Double?, syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], preferredFormats: [String]?, minimumBitrateKbps: Int?, acceptYouTubeFallback: Bool?, store: PortableLibraryStore) throws {
+        func write(mode: String?, sidebarWidth: Double?, lastTab: String?, sectionTabs: [String: String], sidebarOpen: Bool?, gridArtworkSizes: [String: Double], syncArtwork: Bool?, favoriteIcon: String?, hiddenTrackColumns: [String]?, sidebarOrder: [String: [String]], preferredFormats: [String]?, minimumBitrateKbps: Int?, acceptYouTubeFallback: Bool?, store: PortableLibraryStore) throws {
             try store.data.requireAvailableStorage()
             var value = try store.data.readChecked(PortableSettings.self, from: "settings.json") ?? PortableSettings()
             guard value.version == 1 else { throw IPodDBError.unsupported("Unsupported settings.json version") }
@@ -105,7 +105,7 @@ final class PortablePreferences {
             if let lastTab, value.lastTab != lastTab { value.lastTab = lastTab; changed = true }
             for (section, tab) in sectionTabs where value.sectionTabs[section] != tab { value.sectionTabs[section] = tab; changed = true }
             if let sidebarOpen, value.sidebarOpen != sidebarOpen { value.sidebarOpen = sidebarOpen; changed = true }
-            if let albumArtworkSize, value.albumArtworkSize != albumArtworkSize { value.albumArtworkSize = albumArtworkSize; changed = true }
+            for (section, size) in gridArtworkSizes where value.gridArtworkSizes[section] != size { value.gridArtworkSizes[section] = size; changed = true }
             if let syncArtwork, value.syncArtwork != syncArtwork { value.syncArtwork = syncArtwork; changed = true }
             if let favoriteIcon, value.favoriteIcon != favoriteIcon { value.favoriteIcon = favoriteIcon; changed = true }
             if let hiddenTrackColumns, value.hiddenTrackColumns != hiddenTrackColumns { value.hiddenTrackColumns = hiddenTrackColumns; changed = true }

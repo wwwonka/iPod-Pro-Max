@@ -249,13 +249,13 @@ final class PortableFailureTests: XCTestCase {
         let decoder = JSONDecoder()
         let partial = try decoder.decode(PortableSettings.self, from: Data(#"{"musicViewMode":"By Artist","futureField":42}"#.utf8))
         XCTAssertEqual(partial.version, 1); XCTAssertTrue(partial.syncArtwork); XCTAssertEqual(partial.musicViewMode, "By Artist")
-        XCTAssertTrue(partial.sidebarOpen); XCTAssertTrue(partial.sectionTabs.isEmpty); XCTAssertEqual(partial.albumArtworkSize, 172)
+        XCTAssertTrue(partial.sidebarOpen); XCTAssertTrue(partial.sectionTabs.isEmpty); XCTAssertTrue(partial.gridArtworkSizes.isEmpty)
         var choices = partial
-        choices.lastTab = "movies"; choices.sidebarWidth = 287; choices.sidebarOpen = false; choices.albumArtworkSize = 220
+        choices.lastTab = "movies"; choices.sidebarWidth = 287; choices.sidebarOpen = false; choices.gridArtworkSizes["albums"] = 220
         choices.sectionTabs = ["music": "albums", "videos": "movies"]
         let saved = try decoder.decode(PortableSettings.self, from: JSONEncoder().encode(choices))
         XCTAssertEqual(saved.lastTab, "movies"); XCTAssertEqual(saved.sidebarWidth, 287)
-        XCTAssertFalse(saved.sidebarOpen); XCTAssertEqual(saved.sectionTabs, choices.sectionTabs); XCTAssertEqual(saved.albumArtworkSize, 220)
+        XCTAssertFalse(saved.sidebarOpen); XCTAssertEqual(saved.sectionTabs, choices.sectionTabs); XCTAssertEqual(saved.gridArtworkSizes["albums"], 220)
         let roundTrip = try decoder.decode(PortableSettings.self, from: JSONEncoder().encode(partial))
         XCTAssertEqual(roundTrip.musicViewMode, partial.musicViewMode)
         // The favorite icon and the hidden list columns: defaults when absent, kept once chosen.

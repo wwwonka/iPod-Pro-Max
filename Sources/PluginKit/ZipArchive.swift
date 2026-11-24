@@ -39,7 +39,19 @@ public enum ZipArchive {
         return try read(data: data)
     }
 
-    public static func read(data: Data) throws -> [ZipEntry] {
+    /// Reads only the named entries, mapping the file instead of loading it: a 60 MB game
+    /// archive costs the pages of its central directory and of those entries.
+    public static func read(from url: URL, only names: Set<String>) throws -> [ZipEntry] {
+        try read(from: url) { names.contains($0) }
+    }
+
+    /// Same, for the entries whose raw name passes `include`.
+    public static func read(from url: URL, where include: (String) -> Bool) throws -> [ZipEntry] {
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
+        return try withoutActuallyEscaping(include) { try read(data: data, where: $0) }
+    }
+
+    public static func read(data: Data, where include: ((String) -> Bool)? = nil) throws -> [ZipEntry] {
         guard data.count >= 22 else {
             throw ZipArchiveError.invalidArchive("file too small")
         }
@@ -99,6 +111,7 @@ public enum ZipArchive {
 
             // Skip directory entries (ending with '/')
             if rawName.hasSuffix("/") { continue }
+            if let include, !include(rawName) { continue }
 
             let cleanPath = try sanitizeRelativePath(rawName)
 
