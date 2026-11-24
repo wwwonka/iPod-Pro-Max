@@ -234,6 +234,32 @@ public enum SpotifyParsers {
         return ParsedTracksPage(tracks: tracks, totalCount: max(totalCount, tracks.count), nextOffset: nextOffset, warnings: warnings)
     }
 
+    public static func parseSearchDesktopTracks(data: [String: Any]) -> [TrackRef] {
+        let searchRoot = (data["searchV2"] as? [String: Any]) ?? (data["search"] as? [String: Any])
+        guard let tracksSection = searchRoot?["tracksV2"] as? [String: Any],
+              let rawItems = tracksSection["items"] as? [[String: Any]] else {
+            return []
+        }
+        var out: [TrackRef] = []
+        var warnings: [String] = []
+        out.reserveCapacity(rawItems.count)
+        for wrapper in rawItems {
+            let itemObj = (wrapper["item"] as? [String: Any]) ?? wrapper
+            let node = (itemObj["data"] as? [String: Any]) ?? itemObj
+            if let ref = parseTrackNode(
+                node,
+                defaultAlbumName: nil,
+                defaultAlbumArtist: nil,
+                defaultArtworkURL: nil,
+                defaultReleaseDate: nil,
+                warnings: &warnings
+            ) {
+                out.append(ref)
+            }
+        }
+        return out
+    }
+
     // MARK: - Revision Hash (`SPO-7`)
 
     /// Computes a deterministic portable SHA-256 hex digest over `<title>\n<trackID1>\n<trackID2>…`.

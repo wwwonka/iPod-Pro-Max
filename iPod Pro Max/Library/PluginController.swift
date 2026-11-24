@@ -94,6 +94,7 @@ final class PluginController {
     }
 
     private var discoverTask: Task<Void, Never>?
+    private var launchSpotifyRefreshTask: Task<Void, Never>?
     private var debounceTasks: [String: Task<Void, Never>] = [:]
     private var accountTasks: [String: Task<Void, Never>] = [:]
     private var oauthContinuations: [String: CheckedContinuation<PluginAccountStatus, Error>] = [:]
@@ -106,6 +107,8 @@ final class PluginController {
     func attach(_ store: PortableLibraryStore?) {
         self.store = store
         discoverTask?.cancel()
+        launchSpotifyRefreshTask?.cancel()
+        launchSpotifyRefreshTask = nil
 
         guard let store else {
             registry = nil
@@ -176,6 +179,27 @@ final class PluginController {
 
             self.applyDiscovery(discovered: discovered, regState: regState, snapshot: snapshot)
             self.launchEnabledSharePlugins()
+            self.scheduleLaunchSpotifySessionRefresh()
+        }
+    }
+
+    private func scheduleLaunchSpotifySessionRefresh() {
+        guard SpotifyWebBridge.shared.isSupportedOnPlatform,
+              enabledIDs.contains("spotify"),
+              plugins.contains(where: { $0.id == "spotify" && !$0.overriddenByUnpacked && $0.isEnabledEligible }),
+              let registry else { return }
+        let hasSecrets = registry.settingsStore(for: "spotify").hasAccountSecrets
+        let isSignedIn: Bool = {
+            if case .signedIn = accountStates["spotify"]?.phase { return true }
+            return false
+        }()
+        guard hasSecrets || isSignedIn else { return }
+
+        launchSpotifyRefreshTask?.cancel()
+        launchSpotifyRefreshTask = Task(priority: .utility) { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            _ = await self?.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil)
         }
     }
 
@@ -844,8 +868,15 @@ final class PluginController {
     func refreshSpotifyWebSessionIfPossible(preferredPlaylistID: String?) async -> Bool {
         guard let runtime = registry?.runtime(for: "spotify"),
               let registry,
-              SpotifyWebBridge.shared.isSupportedOnPlatform,
-              let webSession = await SpotifyWebBridge.shared.refreshSilently(preferredPlaylistID: preferredPlaylistID) else {
+              SpotifyWebBridge.shared.isSupportedOnPlatform else {
+            return false
+        }
+        if (await SpotifyWebBridge.readSpDCCookie())?.isEmpty != false,
+           let savedSpDC = registry.settingsStore(for: "spotify").loadSecretsDict()["sp_dc"]?.stringValue,
+           !savedSpDC.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await SpotifyWebBridge.shared.seedSpDCCookie(savedSpDC)
+        }
+        guard let webSession = await SpotifyWebBridge.shared.refreshSilently(preferredPlaylistID: preferredPlaylistID) else {
             return false
         }
         let fields = Self.loginFields(from: webSession)

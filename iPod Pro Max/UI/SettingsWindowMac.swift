@@ -52,6 +52,16 @@ final class SettingsChromeProbe: NSView {
         window.isRestorable = false
         installGlass(on: window)
         centerWhenSized(window)
+        if let path = ProcessInfo.processInfo.environment["IPPM_SETTINGS_SNAPSHOT"] {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let view = window.contentView?.superview else { return }
+                view.layoutSubtreeIfNeeded()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+        }
     }
 
     /// The window appears centered on the screen of the main window, not at the corner AppKit starts

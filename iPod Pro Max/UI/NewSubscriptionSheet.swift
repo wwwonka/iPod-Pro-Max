@@ -181,3 +181,126 @@ struct NewSubscriptionSheet: View {
         }
     }
 }
+
+/// Modal sheet to create a new playlist directly on Spotify and subscribe to it in the app.
+struct NewSpotifyPlaylistSheet: View {
+    @Binding var isPresented: Bool
+    var pluginRevision: Int = 0
+
+    @State private var nameText = ""
+    @State private var descriptionText = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    private var spotifyPlugin: DiscoveredPlugin? {
+        let _ = pluginRevision
+        return PluginController.shared.plugins.first(where: { $0.id == "spotify" && !$0.overriddenByUnpacked })
+    }
+
+    private var isSignedIn: Bool {
+        let _ = pluginRevision
+        if case .signedIn = PluginController.shared.accountStates["spotify"]?.phase {
+            return true
+        }
+        return false
+    }
+
+    var body: some View {
+        let _ = pluginRevision
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New Spotify Playlist")
+                .font(.system(size: 16, weight: .semibold))
+
+            Text("Creates a new playlist on your Spotify account and links it here.")
+                .font(.system(size: 12))
+                .foregroundColor(MacColor.secondaryText)
+
+            TextField("Playlist name", text: $nameText)
+                .frame(maxWidth: .infinity)
+
+            TextField("Optional description", text: $descriptionText)
+                .frame(maxWidth: .infinity)
+
+            if !isSignedIn {
+                HStack(spacing: 8) {
+                    Symbol(
+                        name: "exclamationmark.triangle.fill",
+                        size: 14,
+                        pointSize: 12,
+                        tint: .color(SystemColor(light: 0xB87300, dark: 0xF5B82E))
+                    )
+                    Text("Sign in to your Spotify account in Plug-in Settings first.")
+                        .font(.system(size: 12))
+                        .foregroundColor(MacColor.secondaryText)
+                }
+            }
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundColor(Color(red: 0.85, green: 0.25, blue: 0.20))
+            }
+
+            HStack(spacing: 10) {
+                Button("Plug-in Settings…") {
+                    isPresented = false
+                    AppCommands.openSettings?()
+                }
+                .disabled(isSubmitting)
+
+                Spacer()
+
+                Button("Cancel") {
+                    errorMessage = nil
+                    isPresented = false
+                }
+                .disabled(isSubmitting)
+
+                if isSubmitting {
+                    ProgressView()
+                }
+
+                Button("Create") {
+                    submit()
+                }
+                .disabled(isSubmitting || spotifyPlugin == nil || nameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
+    private func submit() {
+        let trimmed = nameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "Enter a playlist name."
+            return
+        }
+        guard let plugin = spotifyPlugin else {
+            errorMessage = "Spotify plug-in is not installed."
+            return
+        }
+        if !PluginController.shared.isEnabled(plugin.id) {
+            PluginController.shared.enableWithConsent(
+                pluginID: plugin.id,
+                consent: PluginController.shared.needsConsent(for: plugin)
+            )
+        }
+        errorMessage = nil
+        isSubmitting = true
+        let desc = descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            defer { isSubmitting = false }
+            do {
+                _ = try await SubscriptionController.shared.createUpstreamPlaylist(
+                    name: trimmed,
+                    description: desc.isEmpty ? nil : desc,
+                    pluginID: "spotify"
+                )
+                isPresented = false
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}

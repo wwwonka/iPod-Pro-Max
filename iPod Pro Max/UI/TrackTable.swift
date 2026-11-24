@@ -154,6 +154,7 @@ extension Array {
 
         func updateNSView(_ scroll: NSScrollView, context: Context) {
             let coordinator = context.coordinator
+            defer { NativePlaybackReveal.apply() }
             coordinator.onPlay = onPlay
             coordinator.artworkFolder = artworkFolder
             coordinator.playlists = playlists
@@ -173,6 +174,7 @@ extension Array {
             coordinator.subscriptionRevision = subscriptionRevision
             coordinator.onRetrySubscribedTrack = onRetrySubscribedTrack
             coordinator.setActive(isActive, in: scroll)
+            if isActive { NativePlaybackReveal.active = coordinator }
             guard let table = scroll.documentView as? NSTableView else { return }
             if subChanged {
                 coordinator.applyColumns()
@@ -433,6 +435,7 @@ extension Array {
                 guard isActive else { return nil }
                 if dragPayload == nil {
                     let indexes = tableView.selectedRowIndexes.contains(row) ? tableView.selectedRowIndexes : IndexSet(integer: row)
+                    // Only resolved local/downloaded tracks carry a UUID suitable for iPod sync or playlist matching.
                     let downloadedIDs = indexes.compactMap { rows.indices.contains($0) && rows[$0].path != nil ? rows[$0].id : nil }
                     let allSelectedIDs = indexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
                     let reorderTargets = canReorderPlaylist && subscriptionPlaylistID != nil ? allSelectedIDs : downloadedIDs
@@ -529,6 +532,12 @@ extension Array {
                 copy.representedObject = clickedRow.artist.isEmpty ? clickedRow.title : "\(clickedRow.artist) - \(clickedRow.title)"
                 copy.target = self
                 menu.addItem(copy)
+                if coordinator.currentPlaylistID != nil {
+                    menu.addItem(.separator())
+                    let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
+                    remove.target = self
+                    menu.addItem(remove)
+                }
                 return menu
             }
             if !selectedRowIndexes.contains(clicked) { selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false) }
@@ -538,6 +547,9 @@ extension Array {
                 play.target = self
                 menu.addItem(play)
                 menu.addItem(.separator())
+            }
+            for (title, action) in [("Play Next", #selector(playNext)), ("Add to Queue", #selector(addToQueue))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; menu.addItem(item)
             }
             let targetPlaylists = coordinator.playlists.filter { !$0.isFolder && $0.id != coordinator.currentPlaylistID }
             if !targetPlaylists.isEmpty {
@@ -553,7 +565,7 @@ extension Array {
                 parent.submenu = choices
                 menu.addItem(parent)
             }
-            if coordinator.currentPlaylistID != nil && coordinator.subscriptionPlaylistID == nil {
+            if coordinator.currentPlaylistID != nil {
                 let remove = NSMenuItem(title: "Remove from Playlist", action: #selector(removeFromPlaylist), keyEquivalent: "")
                 remove.target = self
                 menu.addItem(remove)
@@ -588,6 +600,12 @@ extension Array {
                 showTrackInfo()
                 return
             }
+            if (event.keyCode == 51 || event.keyCode == 117),
+               let coordinator, coordinator.isActive, coordinator.currentPlaylistID != nil,
+               !selectedRowIndexes.isEmpty {
+                removeFromPlaylist()
+                return
+            }
             super.keyDown(with: event)
         }
 
@@ -612,10 +630,23 @@ extension Array {
         }
         @objc private func removeFromPlaylist() {
             guard let coordinator, let playlist = coordinator.currentPlaylistID else { return }
-            let ids = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].id : nil }
+            let isSubscribed = coordinator.subscriptionPlaylistID != nil
+            let ids = selectedRowIndexes.compactMap { row -> String? in
+                guard coordinator.rows.indices.contains(row) else { return nil }
+                // Use the per-position occurrence key on subscribed playlists so duplicate songs don't get bulk-deleted.
+                return isSubscribed ? (coordinator.rows[row].subscriptionKey ?? coordinator.rows[row].id) : coordinator.rows[row].id
+            }
             coordinator.onRemoveFromPlaylist(ids, playlist)
         }
 
+        @objc private func playNext() { enqueueSelection(next: true) }
+        @objc private func addToQueue() { enqueueSelection(next: false) }
+        private func enqueueSelection(next: Bool) {
+            guard let coordinator else { return }
+            let selected = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0] : nil }
+            PlayerArtwork.folder = coordinator.artworkFolder
+            PlaybackController.shared.enqueue(selected, next: next)
+        }
         @objc private func revealSelection() {
             guard let coordinator else { return }
             let urls = selectedRowIndexes.compactMap { coordinator.rows.indices.contains($0) ? coordinator.rows[$0].path.map { URL(fileURLWithPath: $0) } : nil }
@@ -1601,4 +1632,30 @@ extension Array {
             Color.adaptive(light: Color(white: 1, opacity: 0.50), dark: Color(white: 0, opacity: 0.50))
         }
     }
+#endif
+
+#if canImport(AppKitBackend)
+@MainActor enum NativePlaybackReveal {
+    static weak var active: TrackTable.Coordinator?
+    enum Kind { case table, artist, album }
+    private static var kind: Kind = .table
+    private static var pending: String?
+    static func request(_ id: String, kind: Kind = .table) { pending = id; self.kind = kind }
+    static func applyArtist(_ coordinator: ArtistTrackList.Coordinator) {
+        guard kind == .artist, let id = pending, let table = coordinator.table,
+              let index = coordinator.entries.firstIndex(where: { if case .song(let row) = $0 { return row.id == id }; return false }) else { return }
+        pending = nil
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+    }
+    static var pendingAlbumID: String? { kind == .album ? pending : nil }
+    static func completeAlbum() { if kind == .album { pending = nil } }
+    static func apply() {
+        guard kind == .table, let id = pending, let active, active.isActive, let table = active.table,
+              let index = active.rows.firstIndex(where: { $0.id == id }) else { return }
+        pending = nil
+        table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        table.scrollRowToVisible(index)
+    }
+}
 #endif

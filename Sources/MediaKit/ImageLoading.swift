@@ -144,5 +144,64 @@ public enum ImageLoading {
         guard CGImageDestinationFinalize(dest) else { return nil }
         return out as Data
     }
+
+    /// Formats a cover image to match Spotify playlist cover requirements:
+    /// center-cropped 1:1 square, 300–640 px, sRGB JPEG <= 256 KB.
+    public static func spotifyCoverJPEG(
+        from url: URL,
+        targetDimension: Int = 640,
+        minDimension: Int = 300,
+        maxBytes: Int = 256 * 1024
+    ) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2048,
+            kCGImageSourceShouldCache: false,
+        ]
+        guard let oriented = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let w = oriented.width
+        let h = oriented.height
+        guard w > 0 && h > 0 else { return nil }
+
+        let cropSide = min(w, h)
+        let cropRect = CGRect(x: (w - cropSide) / 2, y: (h - cropSide) / 2, width: cropSide, height: cropSide)
+        let cropped = oriented.cropping(to: cropRect) ?? oriented
+
+        let finalSide = min(max(cropSide, minDimension), targetDimension)
+        guard let ctx = CGContext(
+            data: nil,
+            width: finalSide,
+            height: finalSide,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: finalSide, height: finalSide))
+        guard let squared = ctx.makeImage() else { return nil }
+
+        for quality in [0.90, 0.82, 0.72, 0.60, 0.45] {
+            let out = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { continue }
+            CGImageDestinationAddImage(dest, squared, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+            if CGImageDestinationFinalize(dest), out.length <= maxBytes {
+                return out as Data
+            }
+        }
+        return jpegData(from: squared, maxDimension: finalSide, quality: 0.40)
+    }
+    #else
+    /// Non-ImageIO fallback reusing `photoJPEG` until platform-specific square cropping is needed.
+    public static func spotifyCoverJPEG(
+        from url: URL,
+        targetDimension: Int = 640,
+        minDimension _: Int = 300,
+        maxBytes _: Int = 256 * 1024
+    ) -> Data? {
+        photoJPEG(from: url, maxDimension: targetDimension, quality: 0.85)
+    }
     #endif
 }

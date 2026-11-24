@@ -1,5 +1,7 @@
 # Barre de titre à 44 pt (macOS)
 
+> Historique du 7 novembre 2026. Depuis l’intégration du lecteur, le header de 44 pt appartient au contenu et `window.toolbar` vaut `nil`. Les contrôles et les boutons système sont hébergés dans ce header ; la manipulation de `NSToolbarView` décrite ici n’est plus le chemin courant. Voir [[LCD du lecteur]] et [[Lecteur et session média]].
+
 Passage de la zone de titre de 52 à 44 pt, le 7 novembre 2026 (MacBook Pro M1 Max, macOS 15.7.1). Code dans `UI/WindowChrome.swift` (`titleBarHeight`) et `UI/WindowChromeMac.swift` (`keepTrafficLightsCentered`). Cadre général : [[Refonte verre macOS]].
 
 ## Le problème

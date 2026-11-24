@@ -11,6 +11,7 @@ enum AppCommands {
     static var canOpenTrackInfo: (() -> Bool)?
     static var createPlaylist: ((_ isFolder: Bool) -> Void)?
     static var newSubscription: (() -> Void)?
+    static var newSpotifyPlaylist: (() -> Void)?
     static var newSubscriptionWithURL: ((_ url: String) -> Void)?
     static var openPlaylistByID: ((_ playlistID: String) -> Void)?
     /// Records a folder (kind = `SourceKind.rawValue`) chosen in the Settings window, then refreshes the

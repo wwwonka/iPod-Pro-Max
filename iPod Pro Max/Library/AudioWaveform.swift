@@ -8,12 +8,17 @@ enum AudioWaveform {
     }()
     static func samples(_ url: URL) async -> [Float] {
         let worker = Task.detached(priority: .utility) { () -> [Float] in
-            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-            let key = "\(url.path)|\(attributes?[.size] ?? 0)|\(attributes?[.modificationDate] ?? Date.distantPast)" as NSString
+            let diskKey = TemporaryMediaCache.key(for: url)
+            let key = diskKey as NSString
             if let data = cache.object(forKey: key) {
                 var result = [Float](repeating: 0, count: data.length / MemoryLayout<Float>.size)
                 result.withUnsafeMutableBytes { if let p = $0.baseAddress { data.getBytes(p, length: $0.count) } }
+                TemporaryMediaCache.shared.touch(.waveforms, key: diskKey)
                 return result
+            }
+            if let data = TemporaryMediaCache.shared.read(.waveforms, key: diskKey), let values = AudioAnalysis.decodeWaveform(data) {
+                values.withUnsafeBytes { bytes in if let base = bytes.baseAddress { cache.setObject(NSData(bytes: base, length: bytes.count), forKey: key, cost: bytes.count) } }
+                return values
             }
             let peaks: [Float]
             #if os(macOS)
@@ -37,6 +42,7 @@ enum AudioWaveform {
             bounded.withUnsafeBytes { bytes in
                 if let p = bytes.baseAddress { cache.setObject(NSData(bytes: p, length: bytes.count), forKey: key, cost: bytes.count) }
             }
+            TemporaryMediaCache.shared.write(AudioAnalysis.encodeWaveform(bounded), category: .waveforms, key: diskKey)
             return bounded
         }
         return await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }

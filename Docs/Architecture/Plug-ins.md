@@ -80,6 +80,10 @@ Transport : **une ligne JSON UTF-8 terminée par `\n` par message**, sur `stdin`
 | `source/fetch` | app → plug-in | `{url}` → `{playlist: Playlist, tracks: [TrackRef]}` |
 | `source/reorder` | app → plug-in | `PlaylistReorderRequest` → `{}` (optionnel, `PlaylistReorderable`) |
 | `source/addTracks` | app → plug-in | `PlaylistAddTracksRequest` → `{added, notFoundTitles}` (optionnel, `PlaylistEditable`) |
+| `source/removeTracks` | app → plug-in | `PlaylistRemoveTracksRequest` (`playlistID`, `trackIDs`, `itemUIDs`) → `{}` (optionnel, `PlaylistEditable`) |
+| `source/rename` | app → plug-in | `PlaylistRenameRequest` (`playlistID`, `name`) → `{}` (optionnel, `PlaylistEditable`) |
+| `source/createPlaylist` | app → plug-in | `PlaylistCreateRequest` (`name`, `description?`) → `PlaylistCreateResult` (`playlist`, `url`) (optionnel, `PlaylistEditable`) |
+| `source/setArtwork` | app → plug-in | `PlaylistArtworkRequest` (`playlistID`, `jpegData?`) → `{}` (optionnel, `PlaylistEditable`) |
 | `resolver/search` | app → plug-in | `{track: TrackRef, policy}` → `{candidates}` (liste finale) ; partiels via notification `resolver/candidates` `{requestID, candidates}` |
 | `downloader/download` | app → plug-in | `{candidate, destinationDir}` → `{path}` |
 | `share/setIndex` | app → plug-in | `{part, lastPart, entries:[{virtualPath, realPath, size, bitrateKbps?, durationMs?}], uploadSlots}` → `{}` |

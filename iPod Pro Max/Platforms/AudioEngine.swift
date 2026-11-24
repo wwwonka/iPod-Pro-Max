@@ -8,28 +8,37 @@ import AppKit
     var onProgress: ((Double, Double) -> Void)?
     var onEnd: (() -> Void)?
     var onError: ((String) -> Void)?
+    var onPlaybackState: ((Bool) -> Void)?
+    private var playbackRate: Float = 1
+    var currentPosition: Double? { player.currentTime().seconds }
+    private var rateObserver: NSKeyValueObservation?
     private let player = AVPlayer()
+    var routePlayer: AVPlayer { player }
     private var timeObserver: Any?
     private var statusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
     private var visible = true
     private var active = false
     private var generation = 0
-    private var windowObservers: [NSObjectProtocol] = []
+    /// The LCD owns visibility. Auxiliary windows must never reactivate this clock.
+    var isProgressObserverInstalled: Bool { timeObserver != nil }
     init() {
-        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification] {
-            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.setVisible(NSApp.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) })
-                }
-            })
+        rateObserver = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem != nil else { return }
+                let rate = self.player.rate
+                if rate == 0, self.active, self.player.timeControlStatus == .paused {
+                    self.active = false; self.updateObserver(); self.onPlaybackState?(false)
+                } else if rate > 0, !self.active { self.active = true; self.updateObserver(); self.onPlaybackState?(true) }
+            }
         }
+
     }
     deinit {
         if let token = timeObserver { player.removeTimeObserver(token) }
         if let token = endObserver { NotificationCenter.default.removeObserver(token) }
-        for token in windowObservers { NotificationCenter.default.removeObserver(token) }
-        player.pause()
+        let player = player
+        Task { @MainActor in player.pause() }
     }
     func load(_ url: URL) {
         stop()
@@ -55,11 +64,18 @@ import AppKit
         }
         player.replaceCurrentItem(with: item)
     }
-    func play() { active = true; player.play(); updateObserver() }
+    func play() { active = true; player.playImmediately(atRate: playbackRate); updateObserver() }
+    func setRate(_ rate: Double) { playbackRate = Float(rate); player.currentItem?.audioTimePitchAlgorithm = .timeDomain; if active { player.rate = playbackRate } }
     func pause() { active = false; player.pause(); updateObserver() }
-    func seek(_ seconds: Double) { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
+    func seek(_ seconds: Double) { seek(seconds, completion: {}) }
+    func seek(_ seconds: Double, completion: @escaping () -> Void) {
+        let revision = generation
+        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            Task { @MainActor in guard finished, self?.generation == revision else { return }; completion() }
+        }
+    }
     func setVolume(_ volume: Double) { player.volume = Float(volume) }
-    func setVisible(_ visible: Bool) { self.visible = visible; updateObserver() }
+    func setVisible(_ visible: Bool) { guard self.visible != visible else { return }; self.visible = visible; updateObserver() }
     private func updateObserver() {
         if (!visible || !active), let token = timeObserver { player.removeTimeObserver(token); timeObserver = nil }
         guard visible, active, timeObserver == nil else { return }

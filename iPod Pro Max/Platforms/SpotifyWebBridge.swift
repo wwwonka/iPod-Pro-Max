@@ -265,7 +265,7 @@ final class SpotifyWebBridge: NSObject {
         return webView
     }
 
-    fileprivate static func readSpDCCookie() async -> String? {
+    static func readSpDCCookie() async -> String? {
         let store = WKWebsiteDataStore.default().httpCookieStore
         let cookies = await withCheckedContinuation { cont in
             store.getAllCookies { cont.resume(returning: $0) }

@@ -122,17 +122,15 @@ Qu'une playlist d'abonnement se range et se manipule comme une playlist ordinair
 
 ### Règles d'interaction
 
-- **Modèle** : une `LibraryPlaylist` avec un nouveau champ `subscriptionID: UUID?` (facultatif à la lecture, pour que les anciens fichiers restent lisibles).
-- **Nom** : celui de la source. Il est mis à jour à chaque synchro si la source a changé de nom. **Le renommage manuel est désactivé** (`"Rename"` est grisé, avec l'info-bulle `"Renamed automatically from Spotify"`). À confirmer.
-- **Ordre des morceaux** : celui de la source. Glisser pour réordonner à l'intérieur est désactivé. Ajouter ou retirer des morceaux à la main est aussi désactivé : dans le menu contextuel, `"Remove from Playlist"` est grisé.
-- **Glisser des morceaux sur la playlist d'abonnement** : refusé (curseur « interdit »).
-- **Icône (SUB-4)** :
-  - elle est construite à partir d'un nouveau symbole personnalisé `playlist-lines` : les lignes de `music.note.list`, sans la note, dessinées dans `Resources/Symbols/playlist-lines.svg` selon [[Symboles personnalisés SVG]] ;
-  - le tracé du badge du plug-in (`badge` du manifeste) est mis à l'échelle pour tenir dans la boîte qu'occupait la note, et posé à cet endroit ;
-  - le tout forme une seule image modèle (template), qui prend la teinte, le survol, la pression et la sélection de la sidebar sur les 3 OS, comme les autres symboles. **Monochrome**, sans couleur de marque ;
-  - le composite est calculé une fois par service et par taille, puis mis en cache. Aucun calcul au rendu.
-- **Repli** : si le badge est absent ou illisible, on utilise `music.note.list` avec un petit symbole `icloud` en bas à droite.
-- **Indicateur d'activité** : visible du début à la fin d'une synchro de cette playlist. Il ne reflète pas les téléchargements d'autres playlists.
+- **Modèle** : une `LibraryPlaylist` avec un champ `subscriptionID: UUID?` (facultatif à la lecture, pour que les anciens fichiers restent lisibles).
+- **Création d'une playlist distante** : l'entrée `"New Spotify Playlist…"` (menu File, `AppMenuMac.swift`, et menu `+` des playlists dans `SidebarMac.swift`) ouvre `NewSpotifyPlaylistSheet` qui crée la playlist sur Spotify (`source/createPlaylist`) et l'abonne immédiatement dans l'application.
+- **Renommage** : le renommage en ligne dans la sidebar ou par menu contextuel est actif sur les playlists abonnées ; pour une source conforme à `PlaylistEditable` (Spotify avec session Web), `SubscriptionController.renamePlaylist` pousse le nouveau nom sur la source (`source/rename`), applique un maintien optimiste de 10 s contre le lag de réplication GraphQL, puis rafraîchit la playlist.
+- **Édition et réordonnancement des morceaux** : le glisser-déposer de morceaux locaux sur une playlist Spotify dans `SidebarMac` recherche et ajoute ces titres à distance (`source/addTracks`), le réordonnancement interne appelle `source/reorder`, et `"Remove from Playlist"` dans `TrackTable` retire l'occurrence exacte (`subscriptionKey`) en local et à distance (`source/removeTracks`). Toute mutation réussie déclenche `refreshAfterMutation` pour mettre à jour l'état et afficher la date `"Updated just now"`.
+- **Icône (SUB-4 et adaptation Spotify)** :
+  - pour Spotify, une icône dédiée dessinée dans `Symbols.swift` (`compositeSubscriptionSymbol`) affiche un anneau de contour vide reprenant exactement la circonférence et l'épaisseur du symbole `"clock"` (« Recently Added »), avec les trois vagues Spotify centrées sans remplissage ;
+  - pour les autres services (`music.note.list` décliné par service), l'icône composite associe `playlist-lines` et le badge du manifeste en image modèle monochrome mise en cache ;
+  - **repli** : si le badge est absent ou illisible, `music.note.list` + petit symbole `icloud`.
+- **Indicateur d'activité** : ref-compté (`beginActivity` / `endActivity` dans `SubscriptionController`) afin de couvrir proprement mutations et synchronisations simultanées sur la même playlist sans disparition prématurée.
 
 ### États visuels
 
@@ -171,11 +169,12 @@ En ouvrant la playlist, voir où en est l'abonnement (mise à jour, morceaux dis
 
 ### Règles d'interaction
 
-- **En-tête** :
-  - badge du service ;
-  - `"<Service> · Updated <date relative> · <n> of <total> songs available"` ;
-  - `"Refresh"` lance une synchro de cette playlist (section 4) ;
-  - pendant une synchro, `"Stop"` annule les recherches et téléchargements de cette playlist. Les fichiers déjà terminés sont gardés.
+- **En-tête (`SubscriptionHeaderView`)** :
+  - pochette cliquable (avec survol `"Click to change cover (1:1 JPEG, min 300×300 px)"`) ouvrant le sélecteur d'image (`NSOpenPanel`) pour téléverser une nouvelle pochette carrée via `source/setArtwork` (sans bouton texte séparé) ;
+  - cache mémoire `verifiedArtworkKeys` dans `SubscriptionController.artworkURL(for:)` évitant les vérifications `fileExists` répétées à chaque rendu ;
+  - badge du service + `"<Service> · Updated <date relative> · <n> of <total> songs available"` ;
+  - bouton icône SF Symbol `arrow.clockwise` (info-bulle `"Refresh Playlist"`) lançant une synchro de cette playlist (section 4) ;
+  - pendant une synchro ou mutation, indicateur d'activité + bouton `"Stop"` annulant les recherches et téléchargements de cette playlist (les fichiers déjà terminés sont gardés).
 - **Colonne d'état** : étroite, sans titre, toujours visible dans une playlist d'abonnement et absente ailleurs. États :
 
 | État | Icône | Info-bulle | Ligne |
@@ -529,8 +528,8 @@ Prouver que tout fonctionne sur une vraie playlist, et mesurer le taux de réuss
 
 ## Questions ouvertes
 
-1. Faut-il interdire le renommage manuel d'une playlist d'abonnement (le nom suit la source), ou garder le nom choisi et cesser de suivre celui de la source ?
+1. ~~Faut-il interdire le renommage manuel d'une playlist d'abonnement ?~~ **Tranché (2026-11-20)** : le renommage est actif et synchronisé sur Spotify pour les playlists possédées (`source/rename`), avec maintien optimiste de 10 s côté UI.
 2. Si l'utilisateur retire le dossier de téléchargement de ses dossiers Musique, faut-il le rajouter automatiquement plus tard ?
 3. Sur un autre hôte où les fichiers téléchargés sont absents, faut-il retélécharger les morceaux, ou se contenter de ceux qui sont sur l'iPod ?
 4. Le délai de 15 minutes avant une mise à jour à l'ouverture de la playlist vous convient-il ?
-5. Faut-il pouvoir réordonner ou compléter à la main une playlist d'abonnement ? (Proposition : non.)
+5. ~~Faut-il pouvoir réordonner ou compléter à la main une playlist d'abonnement ?~~ **Tranché (2026-11-20)** : réordonnancement (`source/reorder`), ajout par glisser-déposer (`source/addTracks`), retrait (`source/removeTracks`), changement de pochette par clic sur la pochette (`source/setArtwork`) et création distante (`source/createPlaylist`) sont activés pour les sources `PlaylistEditable`.

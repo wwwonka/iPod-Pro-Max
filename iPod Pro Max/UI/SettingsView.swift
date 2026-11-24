@@ -66,7 +66,12 @@ struct SettingsView: View {
                     case .playback: empty("Playback settings will appear here.")
                     case .devices: empty("Settings for each connected iPod will appear here.")
                     case .plugins: PluginsSettingsTabView()
-                    case .advanced: empty("No advanced settings yet.")
+                    case .advanced:
+                        #if canImport(AppKitBackend)
+                        temporaryFiles
+                        #else
+                        empty("No advanced settings yet.")
+                        #endif
                     }
                 }
                 .padding(.horizontal, 20)
@@ -95,6 +100,8 @@ struct SettingsView: View {
         .task {
             SettingsController.shared.onChange = { revision += 1 }
             PluginController.shared.observe("settings-sheet") { revision += 1 }
+            TemporaryCacheController.shared.onChange = { revision += 1 }
+            if ProcessInfo.processInfo.environment["IPPM_SETTINGS_SNAPSHOT"] != nil { tab = .advanced; await TemporaryCacheController.shared.refresh() }
         }
     }
 
@@ -124,7 +131,7 @@ struct SettingsView: View {
                 .onHover { inside in
                     if inside { hoveredTab = item } else if hoveredTab == item { hoveredTab = nil }
                 }
-                .onTapGesture { tab = item }
+                .onTapGesture { tab = item; if item == .advanced { Task { await TemporaryCacheController.shared.refresh() } } }
             }
         }
         .padding(.top, 30)  // under the traffic lights and the title
@@ -239,6 +246,39 @@ struct SettingsView: View {
                 Divider()
                 note("Artwork is converted to the iPod's native thumbnail sizes during each sync.")
             }
+        }
+    }
+
+    private var temporaryFiles: some View {
+        let controller = TemporaryCacheController.shared
+        let total = controller.clearableBytes
+        return group("Temporary files") {
+            VStack(alignment: .leading, spacing: 12) {
+                cacheRow("Spectrum", bytes: controller.sizes["Spectrum"] ?? 0, clear: controller.clearSpectrum) { controller.change(spectrum: $0) }
+                Divider()
+                cacheRow("Waveforms", bytes: controller.sizes["Waveforms"] ?? 0, clear: controller.clearWaveforms) { controller.change(waveforms: $0) }
+                Divider()
+                HStack {
+                    Text(controller.loading ? "Calculating…" : total == 0 ? "No files" : ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
+                    Spacer()
+                    Text("Limit")
+                    Picker(of: ["50 MB", "100 MB", "200 MB", "500 MB", "1000 MB"], selection: Binding(get: { "\(controller.limitMB) MB" }, set: { controller.change(limitMB: Int(($0 ?? "200 MB").split(separator: " ")[0]) ?? 200) }))
+                }
+                HStack {
+                    Button("Clear Cache") { controller.clear() }.frame(width: 110).disabled(total == 0 || controller.loading)
+                    Button("Show in Finder") { controller.reveal() }
+                }
+            }.padding(12)
+        }
+    }
+    private func cacheRow(_ title: String, bytes: Int64, clear: Bool, changed: @escaping (Bool) -> Void) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Caption(TemporaryCacheController.shared.loading ? "Calculating…" : bytes == 0 ? "No files" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))
+            }
+            Spacer()
+            Picker(of: ["Keep between sessions", "Clear on exit"], selection: Binding(get: { clear ? "Clear on exit" : "Keep between sessions" }, set: { changed($0 == "Clear on exit") }))
         }
     }
 

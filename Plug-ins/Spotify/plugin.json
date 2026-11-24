@@ -50,6 +50,9 @@
       },
       "moveItemsInPlaylist": {
         "sha256": "b907ad6b088d5bf7680fa81198996d58398c2d55dfcdf59fcc959e0be98a418a"
+      },
+      "searchDesktop": {
+        "sha256": "db61238974d27839a136c9dc02bfdbe3fab7635f21cf85976ebff9a1ee281345"
       }
     }
   }

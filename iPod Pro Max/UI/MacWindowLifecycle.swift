@@ -32,7 +32,10 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         window.delegate = proxy
     }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? { DockPlaybackMenu.shared.makeMenu() }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        log("[lifecycle] reopen, visible=\(flag)")
         guard !flag else {
             return originalApplicationDelegate?.applicationShouldHandleReopen?(sender, hasVisibleWindows: flag) ?? true
         }
@@ -43,6 +46,7 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        log("[lifecycle] quit requested, pid=\(ProcessInfo.processInfo.processIdentifier)")
         guard let beforeTerminate else { return originalApplicationDelegate?.applicationShouldTerminate?(sender) ?? .terminateNow }
         guard terminationTask == nil else { return .terminateLater }
         terminationTask = Task {
@@ -81,7 +85,44 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
             inner?.windowWillClose?(notification)
             if let window = notification.object as? NSWindow { onClose(window) }
         }
+        func windowWillEnterFullScreen(_ notification: Notification) {
+            inner?.windowWillEnterFullScreen?(notification)
+            // A titled full-screen window gets an auxiliary sliding titlebar even with
+            // toolbar == nil. The content header owns this space for the whole session.
+            if let window = notification.object as? NSWindow {
+                window.styleMask.remove(.titled); window.isOpaque = false; window.backgroundColor = .clear
+            }
+            log("[lifecycle] entering fullscreen without titlebar")
+        }
+        func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+            window.styleMask.insert(.titled)
+            inner?.windowDidFailToEnterFullScreen?(window)
+            MacChrome.shared.reconcilePlayerPresentation(in: window, fullScreen: false)
+        }
+        func windowWillExitFullScreen(_ notification: Notification) {
+            if let window = notification.object as? NSWindow {
+                window.styleMask.insert(.titled); window.isOpaque = false; window.backgroundColor = .clear
+            }
+            inner?.windowWillExitFullScreen?(notification)
+        }
+        func windowDidExitFullScreen(_ notification: Notification) {
+            inner?.windowDidExitFullScreen?(notification)
+            guard let window = notification.object as? NSWindow else { return }
+            func restore() {
+                guard !window.styleMask.contains(.fullScreen) else { return }
+                window.styleMask.insert(.titled); window.isOpaque = false; window.backgroundColor = .clear
+            }
+            restore()
+            // AppKit can apply its saved pre-transition style after the delegate callback.
+            DispatchQueue.main.async { restore() }
+        }
+        func windowDidFailToExitFullScreen(_ window: NSWindow) {
+            window.styleMask.remove(.titled)
+            inner?.windowDidFailToExitFullScreen?(window)
+            MacChrome.shared.reconcilePlayerPresentation(in: window, fullScreen: true)
+        }
         func windowShouldClose(_ sender: NSWindow) -> Bool {
+            log("[lifecycle] close requested; hide window")
             guard inner?.windowShouldClose?(sender) != false else { return false }
             sender.orderOut(nil)
             onHide(sender)

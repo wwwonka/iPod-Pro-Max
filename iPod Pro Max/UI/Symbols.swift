@@ -207,21 +207,62 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
 
     @MainActor
     func subscriptionSidebarSymbol(pluginID: String?, parsedBadge: ParsedSVGBadge?, description: String?, pointSize: Double = 14) -> NSImage {
-        let key = "\(pluginID ?? "generic"):\(parsedBadge?.steps.count ?? 0):\(Int(pointSize))"
+        let key = "v5:\(pluginID ?? "generic"):\(parsedBadge?.steps.count ?? 0):\(Int(pointSize))"
         if let cached = compositeSubscriptionSymbolCache[key] {
             return cached
         }
-        let side = CGFloat(pointSize * 1.4)
+
+        if pluginID == "spotify" {
+            let s = CGFloat(pointSize / 14.0)
+            let side = 16.0 * s
+            let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+                // Hollow outer ring matching SF Symbol "clock" ("Recently Added") circumference and stroke weight.
+                let r = 6.15 * s
+                let center = 8.0 * s
+                let circle = NSBezierPath(ovalIn: NSRect(x: center - r, y: center - r, width: r * 2, height: r * 2))
+                circle.lineWidth = 1.15 * s
+                NSColor.black.setStroke()
+                circle.stroke()
+
+                // Three hollow curved Spotify waves centered cleanly inside the ring.
+                let waves = NSBezierPath()
+                waves.lineWidth = 1.05 * s
+                waves.lineCapStyle = .round
+
+                waves.move(to: NSPoint(x: 4.5 * s, y: 5.9 * s))
+                waves.curve(to: NSPoint(x: 11.7 * s, y: 6.8 * s), controlPoint1: NSPoint(x: 6.9 * s, y: 5.1 * s), controlPoint2: NSPoint(x: 9.7 * s, y: 5.5 * s))
+
+                waves.move(to: NSPoint(x: 5.0 * s, y: 8.1 * s))
+                waves.curve(to: NSPoint(x: 11.0 * s, y: 8.85 * s), controlPoint1: NSPoint(x: 7.0 * s, y: 7.45 * s), controlPoint2: NSPoint(x: 9.3 * s, y: 7.75 * s))
+
+                waves.move(to: NSPoint(x: 5.55 * s, y: 10.2 * s))
+                waves.curve(to: NSPoint(x: 10.25 * s, y: 10.75 * s), controlPoint1: NSPoint(x: 7.15 * s, y: 9.65 * s), controlPoint2: NSPoint(x: 8.9 * s, y: 9.85 * s))
+
+                NSColor.black.setStroke()
+                waves.stroke()
+                return true
+            }
+            image.isTemplate = true
+            image.accessibilityDescription = description
+            compositeSubscriptionSymbolCache[key] = image
+            return image
+        }
+
+        let width = CGFloat(pointSize * 1.50)
+        let height = CGFloat(pointSize * 1.15)
         let lines = customSymbols["playlist-lines"]
         let badgeSymbol = parsedBadge.map { CustomSymbol(parsedBadge: $0) }
-        let fallbackBadge = badgeSymbol == nil ? systemSymbol("icloud", pointSize: 7.5) : nil
+        let badgeSize = CGFloat(pointSize * 0.86)
+        let fallbackBadge = badgeSymbol == nil ? systemSymbol("icloud", pointSize: pointSize * 0.72) : nil
 
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             if let lines {
                 let b = lines.bounds
                 let w = CGFloat(b.maxX - b.minX)
                 let h = CGFloat(b.maxY - b.minY)
-                let scale = CGFloat(pointSize * 1.1) / max(w, h, 1)
+                let targetWidth = CGFloat(pointSize * 0.50)
+                let targetHeight = CGFloat(pointSize * 0.45)
+                let scale = min(targetWidth / max(w, 1), targetHeight / max(h, 1))
                 let path = NSBezierPath()
                 for step in lines.steps {
                     switch step {
@@ -232,20 +273,26 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
                     case .close: path.close()
                     }
                 }
-                var t = AffineTransform(translationByX: side / 2, byY: side / 2)
+                let linesLeft = CGFloat(0.8)
+                let linesTop = CGFloat(pointSize * 0.22)
+                var t = AffineTransform(translationByX: linesLeft, byY: linesTop)
                 t.scale(scale)
-                t.translate(x: -(CGFloat(b.minX) + w / 2), y: -(CGFloat(b.minY) + h / 2))
+                t.translate(x: -CGFloat(b.minX), y: -CGFloat(b.minY))
                 path.transform(using: t)
                 NSColor.black.setFill()
                 path.fill()
             }
 
-            let badgeSize: CGFloat = 7.5
-            let badgeRect = NSRect(x: side - badgeSize - 0.5, y: side - badgeSize - 0.5, width: badgeSize, height: badgeSize)
+            let badgeRect = NSRect(
+                x: width - badgeSize - 0.3,
+                y: (height - badgeSize) / 2 + 0.3,
+                width: badgeSize,
+                height: badgeSize
+            )
             if let ctx = NSGraphicsContext.current?.cgContext {
                 ctx.saveGState()
                 ctx.setBlendMode(.clear)
-                ctx.fillEllipse(in: badgeRect.insetBy(dx: -1.3, dy: -1.3))
+                ctx.fillEllipse(in: badgeRect.insetBy(dx: -1.0, dy: -1.0))
                 ctx.restoreGState()
             }
 

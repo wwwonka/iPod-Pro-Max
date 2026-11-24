@@ -136,7 +136,7 @@ public enum FFmpegTranscoder {
     /// A JPEG poster frame about a second and a half in.
     public static func posterFrame(for url: URL, durationMs: Int) async -> Data? {
         guard let ffmpeg = FFmpeg.binaryPath() else { return nil }
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent("poster-\(UUID().uuidString).jpg")
+        let out = TemporaryMediaCache.shared.scratchURL(extension: "jpg")
         defer { try? FileManager.default.removeItem(at: out) }
         let at = durationMs > 3000 ? "1.5" : "0"
         do {

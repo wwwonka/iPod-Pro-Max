@@ -423,6 +423,42 @@ private actor PluginServer {
                 try Task.checkCancellation()
                 writer.sendResponse(id: id, result: try JsonRpcCodec.encodeValue(added))
 
+            case "source/rename":
+                guard let playlistEditable else {
+                    throw PluginError(code: .unsupported, message: "Plug-in does not support renaming playlists.")
+                }
+                let req = try JsonRpcCodec.decodeValue(PlaylistRenameRequest.self, from: params)
+                try await playlistEditable.renamePlaylist(request: req)
+                try Task.checkCancellation()
+                writer.sendResponse(id: id, result: .object([:]))
+
+            case "source/removeTracks":
+                guard let playlistEditable else {
+                    throw PluginError(code: .unsupported, message: "Plug-in does not support removing tracks from playlists.")
+                }
+                let req = try JsonRpcCodec.decodeValue(PlaylistRemoveTracksRequest.self, from: params)
+                try await playlistEditable.removeTracks(request: req)
+                try Task.checkCancellation()
+                writer.sendResponse(id: id, result: .object([:]))
+
+            case "source/createPlaylist":
+                guard let playlistEditable else {
+                    throw PluginError(code: .unsupported, message: "Plug-in does not support creating remote playlists.")
+                }
+                let req = try JsonRpcCodec.decodeValue(PlaylistCreateRequest.self, from: params)
+                let created = try await playlistEditable.createPlaylist(request: req)
+                try Task.checkCancellation()
+                writer.sendResponse(id: id, result: try JsonRpcCodec.encodeValue(created))
+
+            case "source/setArtwork":
+                guard let playlistEditable else {
+                    throw PluginError(code: .unsupported, message: "Plug-in does not support updating playlist covers.")
+                }
+                let req = try JsonRpcCodec.decodeValue(PlaylistArtworkRequest.self, from: params)
+                try await playlistEditable.setPlaylistArtwork(request: req)
+                try Task.checkCancellation()
+                writer.sendResponse(id: id, result: .object([:]))
+
             case "resolver/search":
                 guard let resolver else {
                     throw PluginError(code: .unsupported, message: "Plug-in does not implement resolver.")

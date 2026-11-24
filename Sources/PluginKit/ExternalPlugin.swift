@@ -166,6 +166,35 @@ public final class ExternalPlugin: @unchecked Sendable, PlaylistSource, Resolver
         }
     }
 
+    public func renamePlaylist(request: PlaylistRenameRequest) async throws {
+        try await session.withLease {
+            let params = try JsonRpcCodec.encodeValue(request)
+            _ = try await session.call(method: "source/rename", params: params)
+        }
+    }
+
+    public func removeTracksFromPlaylist(request: PlaylistRemoveTracksRequest) async throws {
+        try await session.withLease {
+            let params = try JsonRpcCodec.encodeValue(request)
+            _ = try await session.call(method: "source/removeTracks", params: params)
+        }
+    }
+
+    public func createPlaylist(request: PlaylistCreateRequest) async throws -> PlaylistCreateResult {
+        try await session.withLease {
+            let params = try JsonRpcCodec.encodeValue(request)
+            let result = try await session.call(method: "source/createPlaylist", params: params)
+            return try JsonRpcCodec.decodeValue(PlaylistCreateResult.self, from: result)
+        }
+    }
+
+    public func setPlaylistArtwork(request: PlaylistArtworkRequest) async throws {
+        try await session.withLease {
+            let params = try JsonRpcCodec.encodeValue(request)
+            _ = try await session.call(method: "source/setArtwork", params: params)
+        }
+    }
+
     public func search(
         track: TrackRef,
         policy: QualityPolicy,

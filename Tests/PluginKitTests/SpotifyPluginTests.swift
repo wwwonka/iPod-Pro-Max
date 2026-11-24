@@ -165,15 +165,15 @@ final class SpotifyPluginTests: XCTestCase {
             nextOffset: nil
         )
 
-        var pathfinderCalls = 0
+        let pathfinderCalls = SendableCounter()
         let transport = MockHTTPTransport { request in
             let url = request.url?.absoluteString ?? ""
             if url.contains("open.spotify.com/embed/") {
-                let html = pathfinderCalls == 0 ? embedHTML : embedHTMLRefreshed
+                let html = pathfinderCalls.value == 0 ? embedHTML : embedHTMLRefreshed
                 return HTTPResponseData(statusCode: 200, body: Data(html.utf8))
             }
-            pathfinderCalls += 1
-            if pathfinderCalls == 1 {
+            let callIndex = pathfinderCalls.increment()
+            if callIndex == 1 {
                 // Simulate initial 401 forcing single re-bootstrap
                 return HTTPResponseData(statusCode: 401, body: Data())
             }
@@ -452,6 +452,248 @@ final class SpotifyPluginTests: XCTestCase {
         }
     }
 
+    func testSpotifyRenamePlaylistOwnedUnauthorizedAndNotOwned() async throws {
+        let state = SendableRenameState()
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(
+                    statusCode: 200,
+                    body: Data(#"{"id":"user1","display_name":"wwwonka"}"#.utf8)
+                )
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plOwned/changes") {
+                if let body = req.httpBody,
+                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    state.setSpClientBody(json)
+                }
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"revision":"rev-2"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plUnauthorized/changes") {
+                return HTTPResponseData(statusCode: 401, body: Data())
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plNotOwned/changes") {
+                return HTTPResponseData(statusCode: 403, body: Data())
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plRateLimited/changes") {
+                return HTTPResponseData(statusCode: 429, headers: ["Retry-After": "12"], body: Data())
+            }
+            if req.httpMethod == "PUT" && url.contains("api.spotify.com/v1/playlists/plFallbackWebAPI") {
+                if let body = req.httpBody,
+                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    state.setFallbackBody(json)
+                }
+                return HTTPResponseData(statusCode: 200, body: Data())
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spotify-rename-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "0.1", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+
+        try await source.renamePlaylist(request: PlaylistRenameRequest(playlistID: "plOwned", name: "  New Playlist Name  "))
+        let capturedSpClientBody = state.spClientBody()
+        XCTAssertEqual(capturedSpClientBody?["wantSyncResult"] as? Bool, true)
+        let deltas = capturedSpClientBody?["deltas"] as? [[String: Any]]
+        let ops = deltas?.first?["ops"] as? [[String: Any]]
+        XCTAssertEqual(ops?.first?["kind"] as? String, "UPDATE_LIST_ATTRIBUTES")
+        let updateAttrs = ops?.first?["updateListAttributes"] as? [String: Any]
+        let newAttrs = updateAttrs?["newAttributes"] as? [String: Any]
+        let values = newAttrs?["values"] as? [String: Any]
+        XCTAssertEqual(values?["name"] as? String, "New Playlist Name")
+
+        try await source.renamePlaylist(request: PlaylistRenameRequest(playlistID: "plFallbackWebAPI", name: "Fallback Name"))
+        XCTAssertEqual(state.fallbackBody()?["name"] as? String, "Fallback Name")
+
+        do {
+            try await source.renamePlaylist(request: PlaylistRenameRequest(playlistID: "plNotOwned", name: "Other"))
+            XCTFail("Expected .unsupported on HTTP 403")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unsupported)
+            XCTAssertTrue(err.message.localizedCaseInsensitiveContains("own"))
+        }
+
+        do {
+            try await source.renamePlaylist(request: PlaylistRenameRequest(playlistID: "plRateLimited", name: "Other"))
+            XCTFail("Expected .rateLimited on HTTP 429")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .rateLimited)
+            XCTAssertEqual(err.retryAfterSeconds, 12)
+        }
+
+        do {
+            try await source.renamePlaylist(request: PlaylistRenameRequest(playlistID: "plUnauthorized", name: "Other"))
+            XCTFail("Expected .unauthorized on HTTP 401")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unauthorized)
+        }
+    }
+
+    func testSpotifySearchDesktopAddRemoveCreateAndCover() async throws {
+        let opsState = SendableOpsState()
+
+        let searchDesktopJSON = """
+        {
+          "data": {
+            "searchV2": {
+              "tracksV2": {
+                "items": [
+                  {
+                    "item": {
+                      "data": {
+                        "__typename": "Track",
+                        "uri": "spotify:track:1234567890123456789012",
+                        "name": "One More Time",
+                        "duration": {"totalMilliseconds": 320000},
+                        "contentRating": {"label": "NONE"},
+                        "artists": {"items": [{"profile": {"name": "Daft Punk"}}]},
+                        "albumOfTrack": {
+                          "name": "Discovery",
+                          "coverArt": {"sources": [{"url": "https://i.scdn.co/image/disc640", "width": 640, "height": 640}]}
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"usercanon123","display_name":"wwwonka"}"#.utf8))
+            }
+            if url.contains("pathfinder/v2/query"),
+               let body = req.httpBody,
+               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               (json["operationName"] as? String) == "searchDesktop" {
+                if opsState.simulateSearchRateLimit {
+                    return HTTPResponseData(statusCode: 429, headers: ["Retry-After": "9"], body: Data())
+                }
+                return HTTPResponseData(statusCode: 200, body: Data(searchDesktopJSON.utf8))
+            }
+            if url.contains("/v1/search") && opsState.simulateSearchRateLimit {
+                return HTTPResponseData(statusCode: 429, headers: ["Retry-After": "9"], body: Data())
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plOwned/changes"),
+               let body = req.httpBody,
+               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let deltas = json["deltas"] as? [[String: Any]],
+               let ops = deltas.first?["ops"] as? [[String: Any]],
+               let kind = ops.first?["kind"] as? String {
+                if kind == "ADD" { opsState.markAdd() }
+                if kind == "REM" { opsState.markRemove() }
+                if kind == "UPDATE_LIST_ATTRIBUTES",
+                   let update = ops.first?["updateListAttributes"] as? [String: Any],
+                   let newAttrs = update["newAttributes"] as? [String: Any],
+                   let values = newAttrs["values"] as? [String: Any],
+                   let pic = values["picture"] as? String {
+                    opsState.setPicture(pic)
+                }
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"revision":"rev-ok"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plNotOwned/changes") {
+                return HTTPResponseData(statusCode: 403, body: Data())
+            }
+            if req.httpMethod == "POST" && url.hasSuffix("/playlist/v2/playlist") {
+                opsState.incrementCreatePlaylist()
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"uri":"spotify:playlist:1234567890abcdefghijkl"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("/playlist/v2/user/usercanon123/rootlist/changes") {
+                opsState.markRootlist()
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"revision":"root-1"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("image-upload.spotify.com/v4/playlist") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"uploadToken":"tok-img-1"}"#.utf8))
+            }
+            if req.httpMethod == "POST" && url.contains("/playlist/v2/playlist/plOwned/register-image") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"picture":"spotify:image:abcd1234"}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spotify-ops-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "0.1", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+
+        let addRes = try await source.addTracks(request: PlaylistAddTracksRequest(
+            playlistID: "plOwned",
+            tracks: [PlaylistAddTrackInput(title: "One More Time", artist: "Daft Punk", durationMs: 320000)]
+        ))
+        XCTAssertTrue(opsState.didAdd)
+        XCTAssertEqual(addRes.added.first?.matchedTrack.sourceID, "1234567890123456789012")
+
+        try await source.removeTracks(request: PlaylistRemoveTracksRequest(
+            playlistID: "plOwned",
+            trackIDs: ["1234567890123456789012"]
+        ))
+        XCTAssertTrue(opsState.didRemove)
+
+        let created = try await source.createPlaylist(request: PlaylistCreateRequest(name: "Created Mix"))
+        XCTAssertEqual(opsState.createPlaylistCalls, 1)
+        XCTAssertTrue(opsState.didRootlist)
+        XCTAssertEqual(created.playlist.sourceID, "1234567890abcdefghijkl")
+        XCTAssertEqual(created.url.absoluteString, "https://open.spotify.com/playlist/1234567890abcdefghijkl")
+
+        try await source.setPlaylistArtwork(request: PlaylistArtworkRequest(
+            playlistID: "plOwned",
+            jpegData: Data([0xFF, 0xD8, 0xFF, 0xE0])
+        ))
+        XCTAssertEqual(opsState.picture, "spotify:image:abcd1234")
+
+        opsState.setSearchRateLimit(true)
+        do {
+            _ = try await source.addTracks(request: PlaylistAddTracksRequest(
+                playlistID: "plOwned",
+                tracks: [PlaylistAddTrackInput(title: "One More Time", artist: "Daft Punk")]
+            ))
+            XCTFail("Expected .rateLimited when search returns HTTP 429")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .rateLimited)
+            XCTAssertEqual(err.retryAfterSeconds, 9)
+        }
+
+        do {
+            try await source.removeTracks(request: PlaylistRemoveTracksRequest(
+                playlistID: "plNotOwned",
+                trackIDs: ["1234567890123456789012"]
+            ))
+            XCTFail("Expected .unsupported on HTTP 403")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unsupported)
+        }
+    }
+
     private static func makeEmbedHTML(token: String, expiresAtMs: Int64) -> String {
         """
         <html><body>
@@ -619,4 +861,77 @@ private actor RequestRecorder {
     func lastMutationRequest() -> URLRequest? {
         requests.last(where: { $0.httpMethod == "POST" })
     }
+}
+
+private final class SendableCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    @discardableResult
+    func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
+    }
+}
+
+private final class SendableRenameState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _spClientBody: [String: Any]?
+    private var _fallbackBody: [String: Any]?
+
+    func setSpClientBody(_ value: [String: Any]) {
+        lock.lock()
+        _spClientBody = value
+        lock.unlock()
+    }
+
+    func spClientBody() -> [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _spClientBody
+    }
+
+    func setFallbackBody(_ value: [String: Any]) {
+        lock.lock()
+        _fallbackBody = value
+        lock.unlock()
+    }
+
+    func fallbackBody() -> [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _fallbackBody
+    }
+}
+
+private final class SendableOpsState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _didAdd = false
+    private var _didRemove = false
+    private var _didRootlist = false
+    private var _createPlaylistCalls = 0
+    private var _picture: String?
+    private var _simulateSearchRateLimit = false
+
+    var didAdd: Bool { lock.lock(); defer { lock.unlock() }; return _didAdd }
+    var didRemove: Bool { lock.lock(); defer { lock.unlock() }; return _didRemove }
+    var didRootlist: Bool { lock.lock(); defer { lock.unlock() }; return _didRootlist }
+    var createPlaylistCalls: Int { lock.lock(); defer { lock.unlock() }; return _createPlaylistCalls }
+    var picture: String? { lock.lock(); defer { lock.unlock() }; return _picture }
+    var simulateSearchRateLimit: Bool { lock.lock(); defer { lock.unlock() }; return _simulateSearchRateLimit }
+
+    func markAdd() { lock.lock(); _didAdd = true; lock.unlock() }
+    func markRemove() { lock.lock(); _didRemove = true; lock.unlock() }
+    func markRootlist() { lock.lock(); _didRootlist = true; lock.unlock() }
+    func incrementCreatePlaylist() { lock.lock(); _createPlaylistCalls += 1; lock.unlock() }
+    func setPicture(_ value: String) { lock.lock(); _picture = value; lock.unlock() }
+    func setSearchRateLimit(_ value: Bool) { lock.lock(); _simulateSearchRateLimit = value; lock.unlock() }
 }

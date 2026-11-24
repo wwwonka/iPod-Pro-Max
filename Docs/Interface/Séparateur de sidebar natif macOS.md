@@ -31,17 +31,15 @@ Le code vit dans `Tools/Build/Patches/appkit-backend.patch` (appliqué par `Tool
 
 Mesure faite par `IPPM_BENCH_SIDEBAR=1 IPPM_BENCH_LAYOUT=1`, juste avant l'affichage de chaque image : 0 image sur 560 avec une couche (conteneur, défilement, liste, ligne) hors de la largeur du panneau, côté sidebar comme côté contenu. 28 layouts, médiane 7,0 ms, p90 9,0 ms, max 12,1 ms (budget 16,7 ms à 60 Hz). Non mesuré : Songs avec la vraie bibliothèque de 5 299 pistes.
 
-## Glisser jusqu'à fermer (15 novembre 2026)
+## Glisser jusqu’à fermer — validation du 18 novembre 2026
 
-`SidebarSplitDelegateProxy` (`WindowChromeMac.swift`) se place devant le délégué de SwiftCrossUI, sans toucher au patch : le séparateur s'arrête à 128 pt, et glissé sous 64 pt (la moitié) AppKit replie le panneau (`canCollapseSubview`). Ce qu'on a mesuré avec des événements de souris simulés :
+`SidebarSplitDelegateProxy` (`WindowChromeMac.swift`) se place devant le délégué de SwiftCrossUI : le séparateur s’arrête à 128 pt et AppKit replie le panneau sous 64 pt. Le comportement natif permet de rouvrir le panneau en ramenant le pointeur vers la droite avant de relâcher.
 
-- AppKit rouvre un panneau replié dès que le pointeur repasse la moitié du minimum, et le décide avant de consulter le délégué : ni `constrainSplitPosition` (il reçoit une position déjà bornée) ni un minimum plus grand ne l'en empêchent. La seule chose qui tient : terminer le geste. Au repli, le proxy poste un `leftMouseUp` en tête de file, au bord gauche du split ; la boucle de suivi d'AppKit s'arrête là, la suite du geste physique ne déplace plus rien.
-- AppKit masque le panneau replié mais lui laisse son cadre (128 pt). `finishSidebarCollapsedByDrag` le remet dans l'état exact que laisse le bouton de la barre d'outils (`setSidebarOpenAtOnce(false)` : largeur 0, masqué, largeur de sidebar SwiftCrossUI à 0), puis rend à `applySidebarWidth` la largeur d'avant le glisser, celle que la réouverture restaure.
-- L'ordre compte dans `splitViewDidResizeSubviews` : `MacChrome` passe à « fermé » avant que le délégué de SwiftCrossUI ne lance son layout. Ce layout met à jour la vue de la sidebar (`updateNSView` → `setSidebarAvailable` → `reconcileNativeSidebar`), qui remet le split dans l'état que `MacChrome` croit vrai : encore « ouvert » à cet instant, il rouvrait en silence le panneau qu'AppKit venait de replier (espace vide, puis sidebar revenue au relâchement). Invisible sur un split nu, sans layout SwiftCrossUI : à vérifier dans la vraie app.
-- Le proxy doit relayer `shouldAdjustSizeOfSubview` : sans lui, SwiftCrossUI ne sait plus qu'AppKit redimensionne et la sidebar s'élargit avec la fenêtre.
-- SwiftCrossUI lève ses bornes pendant ses propres ouvertures et fermetures ; le proxy le détecte en demandant le minimum pour une valeur sonde (−4096), rendue telle quelle dans ce cas.
+Le patch AppKit transmet désormais systématiquement la fin du suivi du séparateur, avec une largeur de zéro si le panneau reste replié. Le proxy termine alors la fermeture et restaure la largeur mémorisée avant le geste pour la prochaine ouverture. Ce callback remplace le moniteur local de mouseUp, qui ne reçoit pas nécessairement les événements consommés par la boucle interne d’AppKit.
 
-Vérification : `IPPM_CHECK_SIDEBAR=1` lance `checkNativeSidebarPersistence` seul (glisser simple, arrêt à 128 pt, fermeture sous 64 pt, pointeur qui revient, redimensionnement de fenêtre, réouverture à la largeur d'avant).
+L’état du chrome doit être mis à jour avant de relayer le redimensionnement à SwiftCrossUI, sinon son layout peut rouvrir le panneau. Le proxy relaie aussi `shouldAdjustSizeOfSubview` et respecte les ouvertures/fermetures programmatiques du backend.
+
+`IPPM_CHECK_SIDEBAR=1` vérifie le seuil, le retour vers la droite dans le même geste, une fermeture achevée, une seule notification de fermeture et la réouverture à la largeur précédente. Ce contrôle et la suite globale `IPPM_CHECK_INTERACTIONS=1` passent dans la vraie application.
 
 ## Icônes immobiles pendant le glissement
 

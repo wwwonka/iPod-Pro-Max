@@ -22,7 +22,7 @@ index 3329b554..95b6fc51 100644
      }
  
 diff --git a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-index c297bea2..6795cd68 100644
+index c297bea2..b3def9ce 100644
 --- a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
 +++ b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
 @@ -1,5 +1,142 @@
@@ -65,10 +65,10 @@ index c297bea2..6795cd68 100644
 +        resizingDelegate?.beginDrag()
 +        super.mouseDown(with: event)
 +        resizingDelegate?.endDrag()
-+        if isSidebarOpen, let pane = subviews.first { onDragEnd?(pane.frame.width) }
++        if let pane = subviews.first { onDragEnd?(isSidebarOpen ? pane.frame.width : 0) }
 +    }
 +
-+    /// Told the sidebar's width when a drag of its edge ends.
++    /// Final sidebar width after a divider drag, or zero when collapsed.
 +    public var onDragEnd: ((CGFloat) -> Void)?
 +    /// Sets the width the sidebar has when open (now, if it is open).
 +    public func applySidebarWidth(_ width: CGFloat) {
@@ -170,10 +170,24 @@ index c297bea2..6795cd68 100644
 +    }
  }
 diff --git a/Sources/AppKitBackend/Helpers/NSCustomWindow.swift b/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
-index cd364459..129114ee 100644
+index cd364459..77995568 100644
 --- a/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
 +++ b/Sources/AppKitBackend/Helpers/NSCustomWindow.swift
-@@ -67,10 +67,34 @@ public class NSCustomWindow: NSWindow {
+@@ -4,6 +4,13 @@ import AppKit
+ public class NSCustomWindow: NSWindow {
+     public typealias Widget = AppKitBackend.Widget
+
++    /// Content-drawn chrome may remove the native titlebar in full screen.
++    /// Keep the primary window in the key/main responder chain in that style.
++    public var acceptsKeyWithoutTitle = false
++    public override var canBecomeKey: Bool { acceptsKeyWithoutTitle || super.canBecomeKey }
++    public override var canBecomeMain: Bool { acceptsKeyWithoutTitle || super.canBecomeMain }
++
++
+     var customDelegate = Delegate()
+     var persistentUndoManager = UndoManager()
+
+@@ -67,10 +74,34 @@ public class NSCustomWindow: NSWindow {
              NotificationCenter.default.removeObserver(window)
          }
  
