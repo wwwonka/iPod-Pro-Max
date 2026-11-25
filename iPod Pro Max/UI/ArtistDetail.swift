@@ -102,12 +102,27 @@ final class ArtistRowsCache: SwiftCrossUI.ObservableObject {
     private var albums: [AlbumInfo] = []
     private var cached: [TrackRow] = []
     private var query = ""
+    private var keysAlbums: [AlbumInfo] = []
+    private var flatRows: [TrackRow] = []
+    private var foldedKeys: [String] = []
     func rows(_ albums: [AlbumInfo], query: String) -> [TrackRow] {
-        guard !self.albums.sameStorage(as: albums) || self.query != query else { return cached }
+        let same = self.albums.sameStorage(as: albums)
+        guard !same || self.query != query else { return cached }
         self.albums = albums
         self.query = query
-        cached = albums.flatMap(\.rows).filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-            || $0.artist.localizedCaseInsensitiveContains(query) || $0.album.localizedCaseInsensitiveContains(query) }
+        if !albums.sameStorage(as: keysAlbums) {
+            flatRows = albums.flatMap(\.rows)
+            foldedKeys = flatRows.map(FastSearch.rowKey)
+            keysAlbums = albums
+        }
+        guard !query.isEmpty else {
+            cached = flatRows
+            return cached
+        }
+        let needle = FastSearch.fold(query)
+        cached = flatRows.indices.compactMap { i in
+            FastSearch.containsUTF8(foldedKeys[i], needle: needle) ? flatRows[i] : nil
+        }
         return cached
     }
 }

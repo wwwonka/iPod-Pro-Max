@@ -1,12 +1,6 @@
 import Foundation
 import SwiftCrossUI
 
-private func matchingAlbums(_ albums: [AlbumInfo], _ query: String) -> [AlbumInfo] {
-    let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    if query.isEmpty { return albums }
-    return albums.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.artist.localizedCaseInsensitiveContains(query) }
-}
-
 #if canImport(AppKitBackend)
 import AppKit
 import AppKitBackend
@@ -21,6 +15,10 @@ struct AlbumBrowser: NSViewRepresentable {
     var onArtworkSize: (Double) -> Void = { _ in }
     var onArtworkCommit: (Double) -> Void = { _ in }
     var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+    /// Cover height over width (games are 4:3).
+    var artworkAspect: Double = 1
+    /// When set, items don't expand: a click selects and a double-click calls this (games).
+    var onOpen: ((String) -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView { Self.makeScroll(coordinator: context.coordinator) }
     static func makeScroll(coordinator: Coordinator) -> NSScrollView {
@@ -38,12 +36,13 @@ struct AlbumBrowser: NSViewRepresentable {
         // Assigning the first layout switches NSCollectionView out of legacy mode and clears registrations.
         collection.register(AlbumTile.self, forItemWithIdentifier: .init("album"))
         collection.register(AlbumExpansion.self, forSupplementaryViewOfKind: NSCollectionView.elementKindSectionFooter, withIdentifier: .init("detail"))
-        let scroll = NSScrollView(); scroll.documentView = collection
+        let scroll = AlbumScrollView(); scroll.documentView = collection
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let c = context.coordinator
+        c.onOpen = onOpen; c.artworkAspect = artworkAspect
         c.onSelect = onSelect; c.onArtworkSize = onArtworkSize; c.onArtworkCommit = onArtworkCommit; c.onPlay = onPlay
         guard let collection = scroll.documentView as? AlbumCollectionView else { return }
         let changed = !c.source.sameStorage(as: albums) || c.query != query || c.folder != artworkFolder
@@ -53,13 +52,49 @@ struct AlbumBrowser: NSViewRepresentable {
             if let id = NativePlaybackReveal.pendingAlbumID { c.revealPlaybackTrack(id, in: collection) }
         }
         guard changed || sizeChanged else { return }
+        let sameAlbums = c.source.sameStorage(as: albums)
         c.source = albums; c.query = query; c.folder = artworkFolder
         if !c.zoomActive { c.artworkSize = artworkSize }
-        if changed { c.albums = matchingAlbums(albums, query) }
+        if changed { c.albums = c.filterAlbums(albums, query: query, sameSource: sameAlbums) }
         c.reflow(collection, reload: changed)
     }
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout, NSDraggingSource {
         var source: [AlbumInfo] = []
+        private var keysSource: [AlbumInfo] = []
+        private var foldedKeys: [String] = []
+        private var lastFoldedQuery = ""
+        private var filteredIndices: [Int] = []
+
+        func filterAlbums(_ albums: [AlbumInfo], query: String, sameSource: Bool) -> [AlbumInfo] {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                lastFoldedQuery = ""
+                filteredIndices = []
+                return albums
+            }
+            if !albums.sameStorage(as: keysSource) {
+                foldedKeys = albums.map(FastSearch.albumKey)
+                keysSource = albums
+            }
+            let needle = FastSearch.fold(trimmed)
+            let narrowing = sameSource && !lastFoldedQuery.isEmpty && needle.hasPrefix(lastFoldedQuery)
+            var nextIndices: [Int] = []
+            var nextAlbums: [AlbumInfo] = []
+            if narrowing {
+                for i in filteredIndices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                    nextIndices.append(i)
+                    nextAlbums.append(albums[i])
+                }
+            } else {
+                for i in albums.indices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                    nextIndices.append(i)
+                    nextAlbums.append(albums[i])
+                }
+            }
+            lastFoldedQuery = needle
+            filteredIndices = nextIndices
+            return nextAlbums
+        }
         var albums: [AlbumInfo] = [] {
             didSet {
                 selectedIndex = selectedID.flatMap { id in albums.firstIndex { $0.id == id } }
@@ -71,6 +106,8 @@ struct AlbumBrowser: NSViewRepresentable {
         var query = ""
         var folder: URL?
         var onSelect: (String) -> Void = { _ in }
+        var onOpen: ((String) -> Void)?
+        var artworkAspect = 1.0
         var onArtworkSize: (Double) -> Void = { _ in }
         var onArtworkCommit: (Double) -> Void = { _ in }
         var zoomActive = false
@@ -145,7 +182,7 @@ struct AlbumBrowser: NSViewRepresentable {
                 split = min(albums.count, ((index / n) + 1) * n)
             } else { split = albums.count }
             if let layout = collection.collectionViewLayout as? NSCollectionViewFlowLayout {
-                layout.itemSize = NSSize(width: artworkSize, height: artworkSize + 50)
+                layout.itemSize = NSSize(width: artworkSize, height: (artworkSize * artworkAspect).rounded() + 50)
                 layout.invalidateLayout()
             }
             if reload || previousSplit != split || hadSelection != (selectedID != nil) {
@@ -309,7 +346,8 @@ struct AlbumBrowser: NSViewRepresentable {
                 ? albums.filter { selectedIDs.contains($0.id) }
                 : [clicked]
             let trackIDs = draggedAlbums.flatMap { $0.rows.map(\.id) }
-            guard let payload = TrackDrag.begin(trackIDs) else { return }
+            // Games have no tracks: their ids are the archives' paths.
+            guard let payload = onOpen != nil ? TrackDrag.beginGames(draggedAlbums.map(\.id)) : TrackDrag.begin(trackIDs) else { return }
             dragPayload = payload
             dragStarted = true
             interactionBlocked = true
@@ -419,6 +457,20 @@ private final class SelectionMarqueeView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
+/// Pinches that land on the scroll view itself (margins, scroller, an overlay without its own
+/// handling) still zoom the grid instead of being dropped by NSScrollView.
+private final class AlbumScrollView: NSScrollView {
+    override func magnify(with event: NSEvent) {
+        if let grid = documentView as? AlbumCollectionView { grid.magnify(with: event) } else { super.magnify(with: event) }
+    }
+    override func beginGesture(with event: NSEvent) {
+        if let grid = documentView as? AlbumCollectionView { grid.beginGesture(with: event) } else { super.beginGesture(with: event) }
+    }
+    override func endGesture(with event: NSEvent) {
+        if let grid = documentView as? AlbumCollectionView { grid.endGesture(with: event) } else { super.endGesture(with: event) }
+    }
+}
+
 private final class AlbumCollectionView: NSCollectionView {
     weak var coordinator: AlbumBrowser.Coordinator?
     private lazy var marqueeView: SelectionMarqueeView = {
@@ -437,6 +489,7 @@ private final class AlbumCollectionView: NSCollectionView {
     }
     override func magnify(with event: NSEvent) {
         guard let coordinator else { return }
+
         let size = coordinator.artworkSize * (1 + event.magnification * 2.4)
         // Stage only: no observed UI state is changed during the gesture. This also covers
         // an exit/eject before AppKit sends the final gesture event.
@@ -448,8 +501,26 @@ private final class AlbumCollectionView: NSCollectionView {
         super.endGesture(with: event)
     }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow == nil { finishZoom() }
+        if newWindow == nil {
+            finishZoom()
+            if let pinchMonitor { NSEvent.removeMonitor(pinchMonitor); self.pinchMonitor = nil }
+        }
         super.viewWillMove(toWindow: newWindow)
+    }
+    /// Pinches don't always reach the grid through the responder chain (the SwiftCrossUI
+    /// hierarchy above it can take them), so the grid also catches the ones over its visible
+    /// area. The monitor only runs when a gesture event arrives.
+    private var pinchMonitor: Any?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, pinchMonitor == nil else { return }
+        pinchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.magnify]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window, !self.isHiddenOrHasHiddenAncestor,
+                  let scroll = self.enclosingScrollView,
+                  scroll.bounds.contains(scroll.convert(event.locationInWindow, from: nil)) else { return event }
+            self.magnify(with: event)
+            return nil
+        }
     }
     private func finishZoom() {
         coordinator?.finishZoom()
@@ -493,6 +564,9 @@ private final class AlbumCollectionView: NSCollectionView {
                     if indexPathForItem(at: point) == path {
                         if cmdHeld {
                             coordinator.toggleSelection(path, in: self)
+                        } else if let open = coordinator.onOpen, let id = coordinator.albumID(at: path) {
+                            coordinator.setSelectedIDs([id], in: self)
+                            if next.clickCount >= 2 { open(id) }
                         } else if next.clickCount >= 2 {
                             coordinator.playAlbum(at: path)
                         } else {
@@ -909,7 +983,7 @@ private final class AlbumTile: NSCollectionViewItem {
     override func viewDidLayout() {
         super.viewDidLayout()
         let width = view.bounds.width
-        selectionRing.frame = NSRect(x: 0, y: 50, width: width, height: width)
+        selectionRing.frame = NSRect(x: 0, y: 50, width: width, height: max(0, view.bounds.height - 50))
         shadow.frame = selectionRing.frame.insetBy(dx: 3, dy: 3)
         cover.frame = shadow.bounds
         shadow.layer?.shadowPath = CGPath(roundedRect: shadow.bounds, cornerWidth: 3, cornerHeight: 3, transform: nil)
@@ -1139,7 +1213,7 @@ private final class AlbumTile: NSCollectionViewItem {
     coordinator.reflow(collection, reload: true)
     precondition(coordinator.selectedID == "check" && coordinator.selectedIndex == 1,
                  "An open album must keep its identity when the list is reordered")
-    coordinator.albums = matchingAlbums(coordinator.albums, "Album")
+    coordinator.albums = coordinator.filterAlbums(coordinator.albums, query: "Album", sameSource: false)
     coordinator.reflow(collection, reload: true)
     precondition(coordinator.selectedID == "check" && coordinator.selectedIndex == 0,
                  "Filtering must relocate the selected album without dropping it")

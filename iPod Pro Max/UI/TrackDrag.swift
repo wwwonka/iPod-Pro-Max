@@ -17,8 +17,19 @@ enum TrackDrag {
         payload = "ipodpromax-tracks:" + UUID().uuidString
         return payload
     }
-    static func end() { payload = nil; ids = []; reorderIDs = [] }
+    /// Paths of dragged game archives (`.ipg`); empty for a music drag.
+    static var gameFiles: [String] = []
+    /// Called when games are dropped on an iPod; set by the Games page.
+    static var onGamesDropped: ([String], String) -> Bool = { _, _ in false }
+    static func beginGames(_ files: [String]) -> String? {
+        guard !files.isEmpty else { return nil }
+        ids = []; reorderIDs = []; gameFiles = files
+        payload = "ipodpromax-games:" + UUID().uuidString
+        return payload
+    }
+    static func end() { payload = nil; ids = []; reorderIDs = []; gameFiles = [] }
     static func accept(_ text: String?, device: String) -> Bool {
+        if let text, text == payload, !gameFiles.isEmpty { return onGamesDropped(gameFiles, device) }
         guard let text, text == payload, !ids.isEmpty else { return false }
         return MusicTransfer.shared.onDrop(ids, device)
     }

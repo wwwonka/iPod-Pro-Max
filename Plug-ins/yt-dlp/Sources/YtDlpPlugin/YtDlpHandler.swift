@@ -105,16 +105,61 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
 
         let cleanTitle = Self.cleanSearchText(track.title)
         let combined = [artist, cleanTitle].filter { !$0.isEmpty }.joined(separator: " ")
+        let preferVideo = Self.isVideoVersionTrack(track)
 
-        // 1. Primary query: YouTube Music search (`- Topic` and album tracks).
+        let generalSearch = if !artist.isEmpty && !cleanTitle.isEmpty {
+            preferVideo ? "ytsearch5:\"\(artist) \(cleanTitle)\"" : "ytsearch5:\"\(artist) - \(cleanTitle)\""
+        } else {
+            "ytsearch5:\"\(cleanTitle.isEmpty ? track.title : cleanTitle)\""
+        }
         let encodedQuery = combined.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? combined
         let ytMusicURL = "https://music.youtube.com/search?q=\(encodedQuery)"
+
+        if preferVideo {
+            // Video-qualified tracks (`Official Video`, `Music Video`, etc.) search general YouTube first
+            // so the video audio is preferred over studio `- Topic` album uploads.
+            let videoResults = try await executeSearchQuery(
+                ytDlp: ytDlp,
+                target: generalSearch,
+                isYTMusic: false,
+                primaryArtist: artist,
+                track: track,
+                preferVideo: true
+            )
+            let plausibleVideo = videoResults.filter { Self.isPlausibleMatch($0, for: track) }
+            if !plausibleVideo.isEmpty {
+                await onPartialCandidates(videoResults)
+                return videoResults
+            }
+
+            try Task.checkCancellation()
+
+            let ytMusicResults = try await executeSearchQuery(
+                ytDlp: ytDlp,
+                target: ytMusicURL,
+                isYTMusic: true,
+                primaryArtist: artist,
+                track: track,
+                preferVideo: true
+            )
+            var combinedOut = videoResults
+            for c in ytMusicResults where !combinedOut.contains(where: { $0.token == c.token }) {
+                combinedOut.append(c)
+            }
+            if !combinedOut.isEmpty {
+                await onPartialCandidates(combinedOut)
+            }
+            return combinedOut
+        }
+
+        // 1. Primary query: YouTube Music search (`- Topic` and album tracks).
         let primaryResults = try await executeSearchQuery(
             ytDlp: ytDlp,
             target: ytMusicURL,
             isYTMusic: true,
             primaryArtist: artist,
-            track: track
+            track: track,
+            preferVideo: false
         )
         let plausiblePrimary = primaryResults.filter { Self.isPlausibleMatch($0, for: track) }
         if !plausiblePrimary.isEmpty {
@@ -125,17 +170,13 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         try Task.checkCancellation()
 
         // 2. Fallback query: general YouTube search (`ytsearch5:"<primaryArtist> - <title>"`).
-        let fallbackSearch = if !artist.isEmpty && !cleanTitle.isEmpty {
-            "ytsearch5:\"\(artist) - \(cleanTitle)\""
-        } else {
-            "ytsearch5:\"\(cleanTitle.isEmpty ? track.title : cleanTitle)\""
-        }
         let fallbackResults = try await executeSearchQuery(
             ytDlp: ytDlp,
-            target: fallbackSearch,
+            target: generalSearch,
             isYTMusic: false,
             primaryArtist: artist,
-            track: track
+            track: track,
+            preferVideo: false
         )
         var combinedOut = fallbackResults
         for c in primaryResults where !combinedOut.contains(where: { $0.token == c.token }) {
@@ -153,7 +194,8 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         isYTMusic: Bool,
         primaryArtist: String,
         track: TrackRef,
-        directVideoLookup: Bool = false
+        directVideoLookup: Bool = false,
+        preferVideo: Bool = false
     ) async throws -> [Candidate] {
         var args = [
             "--dump-json",
@@ -186,7 +228,8 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
                 json,
                 isYTMusic: isYTMusic,
                 primaryArtist: primaryArtist,
-                fallbackTrack: track
+                fallbackTrack: track,
+                preferVideo: preferVideo
             ) else {
                 continue
             }
@@ -411,7 +454,8 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         _ json: [String: Any],
         isYTMusic: Bool,
         primaryArtist: String,
-        fallbackTrack: TrackRef
+        fallbackTrack: TrackRef,
+        preferVideo: Bool = false
     ) -> Candidate? {
         let ieKey = (json["ie_key"] as? String) ?? ""
         if ieKey == "YoutubeTab" { return nil }
@@ -446,7 +490,7 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         let (bestContainer, bestBitrate) = extractBestAudioInfo(from: json)
 
         let displayName = channel.isEmpty ? rawTitle : "\(rawTitle) — \(channel)"
-        let hint = computeHint(isYTMusic: isYTMusic, channel: channel, primaryArtist: primaryArtist)
+        let hint = computeHint(isYTMusic: isYTMusic, channel: channel, primaryArtist: primaryArtist, preferVideo: preferVideo)
 
         return Candidate(
             resolver: "yt-dlp",
@@ -473,8 +517,22 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         return ("m4a", nil)
     }
 
-    private static func computeHint(isYTMusic: Bool, channel: String, primaryArtist: String) -> Double {
+    private static func computeHint(isYTMusic: Bool, channel: String, primaryArtist: String, preferVideo: Bool = false) -> Double {
         let lowerChannel = channel.lowercased()
+        if preferVideo {
+            if lowerChannel.hasSuffix("- topic") {
+                return 0.2
+            }
+            let cleanArtist = primaryArtist.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanArtist.isEmpty {
+                let normalizedChannel = lowerChannel.replacingOccurrences(of: " ", with: "")
+                let normalizedArtist = cleanArtist.replacingOccurrences(of: " ", with: "")
+                if lowerChannel == cleanArtist || normalizedChannel == "\(normalizedArtist)vevo" || lowerChannel.contains(cleanArtist) {
+                    return 0.9
+                }
+            }
+            return isYTMusic ? 0.3 : 0.6
+        }
         if isYTMusic || lowerChannel.hasSuffix("- topic") {
             return 0.9
         }
@@ -487,6 +545,33 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
             }
         }
         return 0.3
+    }
+
+    public static func isVideoVersionTrack(_ track: TrackRef) -> Bool {
+        let markers = [
+            "official music video",
+            "official lyric video",
+            "official video",
+            "music video",
+            "lyric video",
+            "video version",
+            "clip officiel",
+            "official clip",
+        ]
+        for raw in [track.title, track.album].compactMap({ $0?.lowercased() }) where !raw.isEmpty {
+            let collapsed = raw
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            let padded = " " + collapsed + " "
+            if markers.contains(where: { padded.contains(" \($0) ") }) {
+                return true
+            }
+            if raw.contains("(video)") || raw.contains("[video]") || raw.contains("(clip)") || raw.contains("[clip]") {
+                return true
+            }
+        }
+        return false
     }
 
     private static func isPlausibleMatch(_ candidate: Candidate, for track: TrackRef) -> Bool {

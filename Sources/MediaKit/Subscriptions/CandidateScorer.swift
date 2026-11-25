@@ -47,6 +47,7 @@ public enum CandidateScorer {
         )
         let refNormalizedTitle = TrackTextNormalizer.normalizeTitle(ref.title)
         let refArtists = Set(ref.artists.flatMap { TrackTextNormalizer.artistComponents($0) })
+        let refIsVideo = TrackTextNormalizer.hasVideoVersionQualifier(title: ref.title, album: ref.album)
 
         let scored: [(candidate: Candidate, tuple: ScoreTuple)] = candidates.compactMap { candidate in
             let decision = evaluate(candidate, against: ref, policy: policy)
@@ -57,6 +58,25 @@ public enum CandidateScorer {
                 ?? (policy.preferredFormats.count + 1)
             let availabilityRank = (candidate.availability?.freeSlot == true) ? 0 : 1
             let resRank = resolverRank[candidate.resolver] ?? (resolverOrder.count + 1)
+            let videoRank: Int
+            if refIsVideo {
+                let isTopicArtist = (candidate.artist ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .hasSuffix("- topic")
+                let candHasVideoMarker = TrackTextNormalizer.hasVideoVersionQualifier(
+                    title: candidate.title ?? candidate.displayName,
+                    album: candidate.album
+                )
+                if candidate.resolver == "yt-dlp" && !isTopicArtist {
+                    videoRank = candHasVideoMarker ? 0 : 1
+                } else if !isTopicArtist && candHasVideoMarker {
+                    videoRank = 1
+                } else {
+                    videoRank = 2
+                }
+            } else {
+                videoRank = 0
+            }
 
             let candTitle = TrackTextNormalizer.normalizeTitle(candidate.title ?? candidate.displayName)
             let titleExact = !refNormalizedTitle.isEmpty && candTitle == refNormalizedTitle ? 0 : 1
@@ -72,6 +92,7 @@ public enum CandidateScorer {
             }
 
             let tuple = ScoreTuple(
+                videoPreferenceRank: videoRank,
                 formatTierRank: tierRank,
                 availabilityRank: availabilityRank,
                 bitrateDescending: -(candidate.bitrateKbps ?? (isLossless(candidate) ? 1411 : 0)),
@@ -304,6 +325,7 @@ public enum CandidateScorer {
     }
 
     private struct ScoreTuple: Comparable {
+        var videoPreferenceRank: Int
         var formatTierRank: Int
         var availabilityRank: Int
         var bitrateDescending: Int
@@ -312,6 +334,7 @@ public enum CandidateScorer {
         var durationDeltaMs: Int
 
         static func < (lhs: ScoreTuple, rhs: ScoreTuple) -> Bool {
+            if lhs.videoPreferenceRank != rhs.videoPreferenceRank { return lhs.videoPreferenceRank < rhs.videoPreferenceRank }
             if lhs.formatTierRank != rhs.formatTierRank { return lhs.formatTierRank < rhs.formatTierRank }
             if lhs.availabilityRank != rhs.availabilityRank { return lhs.availabilityRank < rhs.availabilityRank }
             if lhs.bitrateDescending != rhs.bitrateDescending { return lhs.bitrateDescending < rhs.bitrateDescending }

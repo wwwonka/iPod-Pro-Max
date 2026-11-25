@@ -13,6 +13,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
     private var apiChangedReported = false
     private var discoveredHashes: [String: String] = [:]
     private var scannedBundleURLs: Set<String> = []
+    private var lastBundleDiscoveryAt: Date?
     private var inFlightHashDiscovery: Task<Void, Never>?
     private var hashesFileURL: URL?
 
@@ -474,9 +475,14 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
 
         let creds = try await tokenManager.getUserWriteCredentials()
 
-        // Use Pathfinder `removeItemsFromPlaylist` only when its hash is already cached (never block Delete scanning 24 JS bundles).
+        // Prefer Pathfinder `removeItemsFromPlaylist` with exact occurrence UIDs when a hash is configured or cached.
+        // Avoid blocking deletes on live HTML/bundle scraping when uncached; spclient `REM` completes in one request.
         if !request.itemUIDs.isEmpty && request.itemUIDs.count == uris.count,
-           let hash = await resolvePersistedHash(operationName: "removeItemsFromPlaylist", defaultHash: "", allowBundleDiscovery: false),
+           let hash = await resolvePersistedHash(
+               operationName: "removeItemsFromPlaylist",
+               defaultHash: config.removeItemsFromPlaylistHash,
+               allowBundleDiscovery: false
+           ),
            !hash.isEmpty,
            let body = Pathfinder.buildRemoveItemsBody(playlistID: request.playlistID, uids: request.itemUIDs, sha256Hash: hash),
            let v2URL = URL(string: Pathfinder.mutationEndpointV2) {
@@ -489,12 +495,13 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
             )
             let resp = try await transport.send(req)
             try await handleCommonWriteErrors(response: resp, operation: "removing tracks")
-            if (200..<300).contains(resp.statusCode),
-               !isPersistedQueryNotFound(resp.body) {
-                if let json = (try? JSONSerialization.jsonObject(with: resp.body)) as? [String: Any],
-                   let data = json["data"] as? [String: Any],
-                   let payload = data["removeItemsFromPlaylist"] as? [String: Any],
-                   (payload["__typename"] as? String) == "RemoveItemsFromPlaylistPayload" {
+            if (200..<300).contains(resp.statusCode) {
+                if isPersistedQueryNotFound(resp.body) {
+                    invalidateDiscoveredHash("removeItemsFromPlaylist")
+                } else if let json = (try? JSONSerialization.jsonObject(with: resp.body)) as? [String: Any],
+                          let data = json["data"] as? [String: Any],
+                          let payload = data["removeItemsFromPlaylist"] as? [String: Any],
+                          (payload["__typename"] as? String) == "RemoveItemsFromPlaylistPayload" {
                     return
                 }
             }
@@ -1445,11 +1452,21 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
     }
 
     private func persistDiscoveredHashes() {
-        guard let url = hashesFileURL, !discoveredHashes.isEmpty else { return }
+        guard let url = hashesFileURL else { return }
+        if discoveredHashes.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         let dir = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(discoveredHashes) {
             try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    private func invalidateDiscoveredHash(_ operationName: String) {
+        if discoveredHashes.removeValue(forKey: operationName) != nil {
+            persistDiscoveredHashes()
         }
     }
 
@@ -1461,6 +1478,11 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
     }
 
     private func fetchBundleHashes(stoppingOnceFound targetOp: String, rescanAll: Bool) async {
+        if !rescanAll,
+           let lastScan = lastBundleDiscoveryAt,
+           Date().timeIntervalSince(lastScan) < 600 {
+            return
+        }
         guard let homeURL = URL(string: "https://open.spotify.com/") else { return }
         var homeReq = URLRequest(url: homeURL, timeoutInterval: 15)
         homeReq.setValue(config.userAgent, forHTTPHeaderField: "User-Agent")
@@ -1468,6 +1490,7 @@ public actor SpotifySource: PlaylistReorderable, PlaylistEditable, PlaylistBrows
               homeResp.statusCode == 200,
               let html = String(data: homeResp.body, encoding: .utf8) else { return }
 
+        lastBundleDiscoveryAt = Date()
         let jsURLs = Array(
             Pathfinder.extractJSBundleURLs(fromHTML: html)
                 .filter { rescanAll || !scannedBundleURLs.contains($0) }

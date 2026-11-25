@@ -19,6 +19,7 @@ public enum Pathfinder {
         public var fetchPlaylistHash: String
         public var getAlbumHash: String
         public var moveItemsInPlaylistHash: String
+        public var removeItemsFromPlaylistHash: String
         public var searchDesktopHash: String
         public var userAgent: String
 
@@ -26,12 +27,14 @@ public enum Pathfinder {
             fetchPlaylistHash: String = "a65e12194ed5fc443a1cdebed5fabe33ca5b07b987185d63c72483867ad13cb4",
             getAlbumHash: String = "b9bfabef66ed756e5e13f68a942deb60bd4125ec1f1be8cc42769dc0259b4b10",
             moveItemsInPlaylistHash: String = "b907ad6b088d5bf7680fa81198996d58398c2d55dfcdf59fcc959e0be98a418a",
+            removeItemsFromPlaylistHash: String = "",
             searchDesktopHash: String = "db61238974d27839a136c9dc02bfdbe3fab7635f21cf85976ebff9a1ee281345",
             userAgent: String = TokenManager.defaultUserAgent
         ) {
             self.fetchPlaylistHash = fetchPlaylistHash
             self.getAlbumHash = getAlbumHash
             self.moveItemsInPlaylistHash = moveItemsInPlaylistHash
+            self.removeItemsFromPlaylistHash = removeItemsFromPlaylistHash
             self.searchDesktopHash = searchDesktopHash
             self.userAgent = userAgent
         }
@@ -50,6 +53,9 @@ public enum Pathfinder {
                 }
                 if let mvHash = pf["moveItemsInPlaylist"]?.objectValue?["sha256"]?.stringValue, !mvHash.isEmpty {
                     cfg.moveItemsInPlaylistHash = mvHash
+                }
+                if let rmHash = pf["removeItemsFromPlaylist"]?.objectValue?["sha256"]?.stringValue, !rmHash.isEmpty {
+                    cfg.removeItemsFromPlaylistHash = rmHash
                 }
                 if let sdHash = pf["searchDesktop"]?.objectValue?["sha256"]?.stringValue, !sdHash.isEmpty {
                     cfg.searchDesktopHash = sdHash

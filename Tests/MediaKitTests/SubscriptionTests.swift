@@ -230,6 +230,84 @@ final class SubscriptionTests: XCTestCase {
         XCTAssertEqual(rankedNoYT.map(\.token), ["mp3-ok"])
     }
 
+    func testVideoVersionPreservedOverAlbumVersions() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sub-video-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let albumFile = root.appendingPathComponent("album.flac")
+        try AudioFixtures.threeSecondMP3.write(to: albumFile)
+
+        let localAlbum = LibraryTrack(
+            path: albumFile.path,
+            title: "Midnight City",
+            artist: "M83",
+            album: "Hurry Up, We're Dreaming",
+            durationMs: 243_000,
+            bitrate: 1000,
+            fileExtension: "flac",
+            isLossless: true
+        )
+        let matcher = LibraryTrackMatcher(tracks: [localAlbum])
+        let videoRef = TrackRef(
+            source: "youtube",
+            sourceID: "vid-1",
+            title: "Midnight City (Official Video)",
+            artists: ["M83"],
+            durationMs: 245_000
+        )
+        XCTAssertTrue(TrackTextNormalizer.hasVideoVersionQualifier(title: videoRef.title, album: videoRef.album))
+        // Local studio album track must not satisfy an explicit video-version track reference.
+        XCTAssertNil(matcher.match(for: videoRef))
+
+        let policy = QualityPolicy()
+        let availability = Availability(freeSlot: true, queueLength: 0, speedBytesPerSec: 0)
+        let slskAlbum = Candidate(
+            resolver: "soulseek",
+            token: "slsk-flac",
+            displayName: "01 - Midnight City.flac",
+            title: "Midnight City",
+            artist: "M83",
+            durationMs: 243_000,
+            container: "flac",
+            codec: "flac",
+            bitrateKbps: 1000,
+            availability: availability
+        )
+        let ytTopic = Candidate(
+            resolver: "yt-dlp",
+            token: "yt-topic",
+            displayName: "Midnight City — M83 - Topic",
+            title: "Midnight City",
+            artist: "M83 - Topic",
+            durationMs: 243_000,
+            container: "m4a",
+            codec: "aac",
+            bitrateKbps: 128,
+            availability: availability,
+            hint: 0.2
+        )
+        let ytVideo = Candidate(
+            resolver: "yt-dlp",
+            token: "yt-video",
+            displayName: "M83 'Midnight City' Official video — M83",
+            title: "M83 'Midnight City' Official video",
+            artist: "M83",
+            durationMs: 245_000,
+            container: "m4a",
+            codec: "aac",
+            bitrateKbps: 128,
+            availability: availability,
+            hint: 0.9
+        )
+        let ranked = CandidateScorer.rank(
+            candidates: [slskAlbum, ytTopic, ytVideo],
+            for: videoRef,
+            policy: policy,
+            resolverOrder: ["soulseek", "yt-dlp"]
+        )
+        XCTAssertEqual(ranked.map(\.token), ["yt-video", "slsk-flac", "yt-topic"])
+    }
+
     // MARK: - SUB-14: Path Sanitization & Collision Suffix
 
     func testDownloadPlacementPathsAndCollisions() throws {

@@ -38,7 +38,26 @@ import MediaKit
     let ready = await waitUntil { playback.duration > 0 && display.spectrum != nil }
     guard require(ready && playback.playing && playback.error.isEmpty, "real playback and spectrum readiness") else { return false }
     guard require(window.toolbar == nil, "player uses no native toolbar"), let originalLCD = findLCD(root), let originalHeader = originalLCD.superview else { return false }
+    // A real replacement exercises AVPlayer's asynchronous rate KVO, which the
+    // in-memory engine cannot reproduce. Loading must not flash Play in between.
+    if let oldTrack = playback.track {
+        let replacement = TrackRow(id: "replacement-check", title: "A quiet place to listen — a long song title that continues beyond the player and loops back to its beginning", artist: oldTrack.artist, album: "A long album title to read while the music continues playing, with a gentle pause between each loop", number: oldTrack.number, year: oldTrack.year, duration: oldTrack.duration, path: oldTrack.path)
+        var sawPause = false
+        let observation = playback.didChange.observe { if !playback.playing { sawPause = true } }
+        playback.start(replacement, in: [oldTrack, replacement])
+        await playback.waitForAnalysis()
+        _ = await waitUntil { playback.position > 0.25 && playback.duration > 0 }
+        withExtendedLifetime(observation) {}
+        guard require(!sawPause && playback.playing, "real track replacement never publishes a transient paused state") else { return false }
+        log("PASS: real AVPlayer track replacement keeps Pause stable throughout loading")
+    }
     (originalLCD as? PlayerLCD)?.checkComposition()
+    let probe = NSWindow(contentRect: NSRect(x: 20, y: 20, width: 80, height: 50), styleMask: [.titled], backing: .buffered, defer: false)
+    probe.isReleasedWhenClosed = false; NSApp.activate(ignoringOtherApps: true); probe.makeKeyAndOrderFront(nil)
+    guard require(await waitUntil { !window.isKeyWindow }, "inactive-window probe takes key status") else { return false }
+    (originalLCD as? PlayerLCD)?.checkInactiveAppearance()
+    probe.orderOut(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    _ = await waitUntil { window.isKeyWindow }
     let center = MPNowPlayingInfoCenter.default()
     guard require(center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == playback.track?.title, "live system Now Playing metadata") else { return false }
 
@@ -80,12 +99,18 @@ import MediaKit
     window.makeKeyAndOrderFront(nil)
     var finishedEntering = window.styleMask.contains(.fullScreen)
     var finishedExiting = false
+    var lightsHiddenWhenEntering = false
     let enteredObserver = NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in finishedEntering = true }
     let exitedObserver = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in finishedExiting = true }
-    defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver) }
+    let willEnterObserver = NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+        MainActor.assumeIsolated { lightsHiddenWhenEntering = MacChrome.shared.hidesFullScreenTrafficLights }
+    }
+    defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver); NotificationCenter.default.removeObserver(willEnterObserver) }
     if !window.styleMask.contains(.fullScreen) { window.standardWindowButton(.zoomButton)?.performClick(nil) }
     let entered = await waitUntil { finishedEntering && MacChrome.shared.playerUsesFullScreenSpacing }
     guard require(entered, "entered full screen") else { return false }
+    guard require(!lightsHiddenWhenEntering && MacChrome.shared.hidesFullScreenTrafficLights, "traffic lights stay in starting snapshot and fade during native zoom in") else { return false }
+    log("PASS: traffic lights and spacing crossfade during native full-screen zoom in")
     guard require(MacChrome.shared.playerUsesFullScreenSpacing, "fullscreen removes the traffic-light clearance from playback controls") else { return false }
     let visible = await waitUntil {
         originalLCD.window === window && originalLCD.superview === originalHeader && originalHeader.isDescendant(of: window.contentView!) &&
@@ -140,13 +165,13 @@ import MediaKit
     guard require(window.styleMask.contains(.titled) && window.standardWindowButton(.closeButton)?.window === window, "native window buttons remain after final AppKit style restoration") else { return false }
     log("PASS: enter/exit full screen keeps the content player stable without auxiliary toolbar, audio playing")
 
-    window.standardWindowButton(.miniaturizeButton)?.performClick(nil)
+    MacChrome.shared.windowControl(.miniaturizeButton)?.performClick(nil)
     let minimized = await waitUntil { window.isMiniaturized }
     guard require(minimized && playback.playing, "hosted native minimize button preserves playback") else { return false }
     window.deminiaturize(nil)
     let restored = await waitUntil { !window.isMiniaturized && window.isVisible }
     guard require(restored, "native window returns from the Dock") else { return false }
-    window.standardWindowButton(.closeButton)?.performClick(nil)
+    MacChrome.shared.windowControl(.closeButton)?.performClick(nil)
     guard require(!window.isVisible && playback.playing && center.nowPlayingInfo != nil, "closing hides the window and preserves playback/system session") else { return false }
     let auxiliary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 140, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
     auxiliary.isReleasedWhenClosed = false; auxiliary.orderFront(nil)

@@ -39,7 +39,10 @@ final class AppMenuMac: NSObject, NSMenuItemValidation {
         }
         root.submenu = controls; menu.addItem(root)
     }
-    @objc private func playPause() { if PlaybackController.shared.track == nil { MacChrome.shared.startSelectionPlayback() } else { PlaybackController.shared.toggle() } }
+    @objc private func playPause() {
+        if PlaybackController.shared.track == nil { MacChrome.shared.startSelectionPlayback() }
+        else { PlaybackController.shared.requestTransportAnimation(); PlaybackController.shared.toggle() }
+    }
     @objc private func previousTrack() { PlaybackController.shared.previous() }
     @objc private func nextTrack() { PlaybackController.shared.next() }
     @objc private func stopPlayback() { PlaybackController.shared.close() }

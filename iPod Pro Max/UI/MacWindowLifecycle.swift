@@ -6,6 +6,7 @@ import AppKit
 @MainActor
 final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
     static let shared = MacWindowLifecycle()
+    static let visualActivationDidChange = Notification.Name("IPPMWindowVisualActivationDidChange")
     var beforeTerminate: (() async throws -> Void)?
     var afterHide: (() -> Void)?
     var onTerminationError: (Error) -> Void = { _ in }
@@ -13,6 +14,18 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
     private var originalApplicationDelegate: (any NSApplicationDelegate)?
     private var windows: [ObjectIdentifier: CloseDelegate] = [:]
     private weak var lastHiddenWindow: NSWindow?
+    private var dockTransitionWindows: Set<ObjectIdentifier> = []
+
+    func isWindowVisuallyActive(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window.isKeyWindow || window.isMiniaturized || dockTransitionWindows.contains(ObjectIdentifier(window))
+    }
+
+    fileprivate func setDockTransition(_ active: Bool, for window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        if active { dockTransitionWindows.insert(id) } else { dockTransitionWindows.remove(id) }
+        NotificationCenter.default.post(name: Self.visualActivationDidChange, object: window)
+    }
 
     func install(on window: NSWindow) {
         if NSApplication.shared.delegate !== self {
@@ -85,6 +98,33 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
             inner?.windowWillClose?(notification)
             if let window = notification.object as? NSWindow { onClose(window) }
         }
+        func windowWillMiniaturize(_ notification: Notification) {
+            inner?.windowWillMiniaturize?(notification)
+            if let window = notification.object as? NSWindow {
+                MacWindowLifecycle.shared.setDockTransition(true, for: window)
+            }
+        }
+        func windowDidMiniaturize(_ notification: Notification) {
+            inner?.windowDidMiniaturize?(notification)
+            if let window = notification.object as? NSWindow {
+                MacWindowLifecycle.shared.setDockTransition(true, for: window)
+            }
+        }
+        func windowDidDeminiaturize(_ notification: Notification) {
+            inner?.windowDidDeminiaturize?(notification)
+            if let window = notification.object as? NSWindow {
+                MacWindowLifecycle.shared.setDockTransition(true, for: window)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    MainActor.assumeIsolated { MacWindowLifecycle.shared.setDockTransition(false, for: window) }
+                }
+            }
+        }
+        func windowDidBecomeKey(_ notification: Notification) {
+            inner?.windowDidBecomeKey?(notification)
+            if let window = notification.object as? NSWindow {
+                MacWindowLifecycle.shared.setDockTransition(false, for: window)
+            }
+        }
         func windowWillEnterFullScreen(_ notification: Notification) {
             inner?.windowWillEnterFullScreen?(notification)
             // A titled full-screen window gets an auxiliary sliding titlebar even with
@@ -101,7 +141,8 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
         }
         func windowWillExitFullScreen(_ notification: Notification) {
             if let window = notification.object as? NSWindow {
-                window.styleMask.insert(.titled); window.isOpaque = false; window.backgroundColor = .clear
+                window.styleMask.insert(.titled); window.isOpaque = true; window.backgroundColor = .windowBackgroundColor
+                MacChrome.shared.beginOpaqueFullScreenExit(on: window)
             }
             inner?.windowWillExitFullScreen?(notification)
         }
@@ -113,11 +154,14 @@ final class MacWindowLifecycle: NSObject, NSApplicationDelegate {
                 window.styleMask.insert(.titled); window.isOpaque = false; window.backgroundColor = .clear
             }
             restore()
+            MacChrome.shared.fadeInWindowTransparencyAfterFullScreenExit(on: window)
             // AppKit can apply its saved pre-transition style after the delegate callback.
             DispatchQueue.main.async { restore() }
         }
         func windowDidFailToExitFullScreen(_ window: NSWindow) {
             window.styleMask.remove(.titled)
+            window.isOpaque = false; window.backgroundColor = .clear
+            MacChrome.shared.cancelOpaqueExitTransition()
             inner?.windowDidFailToExitFullScreen?(window)
             MacChrome.shared.reconcilePlayerPresentation(in: window, fullScreen: true)
         }

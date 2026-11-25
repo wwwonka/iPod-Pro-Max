@@ -138,9 +138,10 @@ private final class PackageDropOverlayView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         if let type = NSApp.currentEvent?.type {
             switch type {
-            case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-                 .otherMouseDown, .otherMouseUp, .mouseMoved, .scrollWheel,
-                 .mouseEntered, .mouseExited, .cursorUpdate:
+            case .leftMouseDown, .leftMouseDragged, .leftMouseUp,
+                 .rightMouseDown, .rightMouseDragged, .rightMouseUp,
+                 .otherMouseDown, .otherMouseDragged, .otherMouseUp,
+                 .mouseMoved, .scrollWheel, .mouseEntered, .mouseExited, .cursorUpdate:
                 return nil
             default:
                 break
@@ -209,7 +210,11 @@ private final class PackageDropProbeView: NSView {
         installedWindow = window
         let dropView = PackageDropOverlayView(frame: content.bounds)
         dropView.autoresizingMask = [.width, .height]
-        content.addSubview(dropView, positioned: .above, relativeTo: nil)
+        if let header = content.subviews.first(where: { $0.identifier?.rawValue == "playerHeader" }) {
+            content.addSubview(dropView, positioned: .below, relativeTo: header)
+        } else {
+            content.addSubview(dropView, positioned: .above, relativeTo: nil)
+        }
         overlay = dropView
     }
 }

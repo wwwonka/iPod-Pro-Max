@@ -97,7 +97,8 @@ Transport : **une ligne JSON UTF-8 terminée par `\n` par message**, sur `stdin`
 | `$/log` | notification plug-in → app | `{level: "debug"/"info"/"warning"/"error", message}` |
 | `$/status` | notification plug-in → app | `{state: "connecting"/"ready"/"error", message?}` |
 
-`share/setIndex` est découpé en morceaux d'au plus **5 000 entrées** (`part` numéroté à partir de 0, `lastPart: true` sur le dernier).
+- `share/setIndex` est découpé en morceaux d'au plus **5 000 entrées** (`part` numéroté à partir de 0, `lastPart: true` sur le dernier).
+- Suppression rapide côté Spotify (`SpotifySource.removeTracks`) : évite le scraping à chaud des bundles JS lorsque le hash Pathfinder `removeItemsFromPlaylist` n'est pas encore en cache (`pathfinder-hashes.json`), en basculant directement sur une unique requête `spclient` (`REM`) ; côté hôte (`SubscriptionController`), le rafraîchissement complet distant après suppression est ignoré s'il ne reste aucun doublon du même identifiant dans la playlist.
 
 Codes d'erreur (`error.data.code`) :
 `cancelled`, `notFound`, `unauthorized`, `rateLimited` (avec `retryAfterSeconds`), `network`, `apiChanged`, `unsupported`, `wrongResolver`, `internal`.

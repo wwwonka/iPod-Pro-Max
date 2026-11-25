@@ -14,10 +14,24 @@ import AppKit
     private var pressed = false
     private var currentSymbol = ""
     private lazy var transportSymbol = TransportSymbolView()
+    var matchesDisabledTint = false { didSet { if oldValue != matchesDisabledTint { updateInteraction() } } }
+    var textOnlyHover = false
+    var glyphOnlyHover = false { didSet { if oldValue != glyphOnlyHover { updateInteraction(animated: false) } } }
+    var customTrackingRect: NSRect? {
+        didSet {
+            if oldValue != customTrackingRect {
+                updateTrackingAreas()
+            }
+        }
+    }
+    func refreshTextTint() { updateInteraction() }
     var usesElevation = false { didSet { if usesElevation { (cell as? NSButtonCell)?.highlightsBy = [] } } }
-    var usesAccentTint = false
+    var usesAccentTint = false { didSet { updateInteraction() } }
     var usesLightGlyph = false
     var animatesPress = false
+    var symbolTransition: TransportSymbolView.Transition = .system { didSet { transportSymbol.transition = symbolTransition } }
+    private(set) var animatedSymbolChanges = 0
+    var symbolName: String { currentSymbol }
     var drawsSymbolTransition = false {
         didSet {
             guard drawsSymbolTransition else { return }
@@ -26,21 +40,33 @@ import AppKit
             image = nil
         }
     }
-    func setSymbol(_ name: String, size: Double) {
+    func setSymbol(_ name: String, size: Double, animated: Bool = true) {
         guard name != currentSymbol else { return }
         let replacing = !currentSymbol.isEmpty
+        if replacing && animated { animatedSymbolChanges += 1 }
         currentSymbol = name
         title = ""; imagePosition = .imageOnly
         let symbolImage = systemSymbol(name, pointSize: size)
         if drawsSymbolTransition {
-            transportSymbol.setSymbol(name, image: symbolImage, animated: replacing)
+            transportSymbol.setSymbol(name, image: symbolImage, animated: replacing && animated)
             image = nil
         } else { image = symbolImage }
-        if replacing, !drawsSymbolTransition, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if animated, replacing, !drawsSymbolTransition, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             let fade = CATransition(); fade.type = .fade; fade.duration = 0.18
             fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             layer?.add(fade, forKey: "symbolReplace")
         }
+    }
+    func setSpeakerSymbols(from oldLevel: Int, to newLevel: Int, size: Double, animated: Bool) {
+        let finalName = newLevel == 0 ? "speaker.slash.fill" : "speaker.wave.\(newLevel).fill"
+        guard oldLevel >= 0, oldLevel != newLevel else {
+            setSymbol(finalName, size: size, animated: animated)
+            return
+        }
+        currentSymbol = finalName
+        title = ""; imagePosition = .imageOnly
+        image = nil
+        transportSymbol.setSpeakerCascade(from: oldLevel, to: newLevel, pointSize: size, animated: animated)
     }
     override func layout() {
         super.layout()
@@ -51,29 +77,82 @@ import AppKit
         hoverLayer.backgroundColor = RailButton.overlay(1).cgColor
         CATransaction.commit()
     }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let customTrackingRect {
+            let local = convert(point, from: superview)
+            return customTrackingRect.contains(local) ? self : nil
+        }
+        return super.hitTest(point)
+    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area: NSTrackingArea
+        if let customTrackingRect {
+            area = NSTrackingArea(rect: customTrackingRect, options: [.mouseEnteredAndExited, .activeInKeyWindow, .enabledDuringMouseDrag], owner: self)
+        } else {
+            area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect, .enabledDuringMouseDrag], owner: self)
+        }
         addTrackingArea(area); hoverArea = area
     }
     override func mouseEntered(with event: NSEvent) {
         guard isEnabled, playerControlWindow(for: self)?.isKeyWindow == true else { return }
-        pointerInside = true; hoverWork?.cancel()
+        hoverWork?.cancel()
+        pointerInside = true
+        if glyphOnlyHover {
+            hovered = true
+            updateInteraction(animated: true)
+            return
+        }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.pointerInside, self.isEnabled, playerControlWindow(for: self)?.isKeyWindow == true else { return }
-            self.hovered = true; self.updateInteraction()
+            self.hovered = true; self.updateInteraction(animated: true)
         }
         hoverWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + RailButton.hoverDelay, execute: work)
     }
     override func mouseExited(with event: NSEvent) {
-        hoverWork?.cancel(); pointerInside = false; hovered = false; updateInteraction()
+        hoverWork?.cancel(); pointerInside = false; hovered = false; updateInteraction(animated: true)
     }
     override func mouseDown(with event: NSEvent) {
-        guard isEnabled else { return }
-        pressed = true; updateInteraction()
-        defer { pressed = false; updateInteraction() }
+        guard isEnabled else {
+            superview?.mouseDown(with: event)
+            return
+        }
+        if glyphOnlyHover, let window {
+            hoverWork?.cancel()
+            pointerInside = true
+            hovered = true
+            pressed = true
+            updateInteraction(animated: false)
+            var didReleaseInside = false
+            window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { [weak self] ev, stop in
+                guard let self, let ev else { stop.pointee = true; return }
+                let local = self.convert(ev.locationInWindow, from: nil)
+                let inside = (self.customTrackingRect ?? self.bounds).contains(local)
+                if ev.type == .leftMouseDragged {
+                    if self.hovered != inside || self.pressed != inside {
+                        self.pointerInside = inside
+                        self.hovered = inside
+                        self.pressed = inside
+                        self.updateInteraction(animated: true)
+                    }
+                } else {
+                    didReleaseInside = inside
+                    self.pointerInside = inside
+                    self.hovered = inside
+                    self.pressed = false
+                    self.updateInteraction(animated: true)
+                    stop.pointee = true
+                }
+            }
+            if didReleaseInside {
+                sendAction(action, to: target)
+            }
+            return
+        }
+        pressed = true; updateInteraction(animated: false)
+        defer { pressed = false; updateInteraction(animated: false) }
         super.mouseDown(with: event)
     }
     static func checkHoverFeedback() async -> Bool {
@@ -151,26 +230,57 @@ import AppKit
         log("PASS: transport uses delayed elevation without a hover plate, flattens on press, and settles on the latest symbol")
         let route = ToolbarRoutePicker(frame: NSRect(x: 55, y: 20, width: 24, height: 24))
         window.contentView?.addSubview(route)
+
+        let glyphMute = FeedbackProbe(frame: NSRect(x: 5, y: 20, width: 28, height: 32))
+        glyphMute.isBordered = false; glyphMute.symbolTransition = .crossfade; glyphMute.drawsSymbolTransition = true
+        glyphMute.glyphOnlyHover = true; glyphMute.setSymbol("speaker.wave.2.fill", size: 10, animated: false)
+        window.contentView?.addSubview(glyphMute)
+        glyphMute.layoutSubtreeIfNeeded()
+        glyphMute.mouseEntered(with: event)
+        guard hasStableFocus() else { return false }
+        let expectedHoverTint: NSColor = glyphMute.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .white : .black
+        precondition(glyphMute.hoverLayer.opacity == 0 && glyphMute.hovered && glyphMute.contentTintColor == expectedHoverTint, "Glyph-only hover highlights immediately without a plate")
+        glyphMute.mouseExited(with: event)
+        precondition(!glyphMute.hovered && glyphMute.hoverLayer.opacity == 0 && glyphMute.contentTintColor == .secondaryLabelColor, "Glyph-only hover restores secondary gray on exit")
+
         window.resignKey(); precondition(button.hoverLayer.opacity == 0)
         precondition(abs(route.alphaValue - 0.3) < 0.001, "AirPlay must dim with the inactive window")
         log("PASS: native AirPlay picker dims to the same inactive gray")
         log("PASS: toolbar hover waits 400 ms, uses 6.5% neutral plate, cancels on leave and dims when inactive")
         return true
     }
-    private func updateInteraction() {
-        let active = isEnabled && playerControlWindow(for: self)?.isKeyWindow == true
+    private func updateInteraction(animated: Bool = true) {
+        let active = isEnabled && MacWindowLifecycle.shared.isWindowVisuallyActive(playerControlWindow(for: self))
         let lit = active && (hovered || pressed || isLatched)
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : lit ? RailButton.hoverFadeIn : RailButton.hoverFadeOut
         let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         CATransaction.begin(); CATransaction.setAnimationDuration(duration)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         hoverLayer.backgroundColor = (dark ? NSColor.white : NSColor.black).cgColor
-        hoverLayer.opacity = usesElevation ? 0 : lit ? (pressed ? 0.13 : 0.065) : 0
+        hoverLayer.opacity = usesElevation || textOnlyHover || glyphOnlyHover ? 0 : lit ? (pressed ? 0.13 : 0.065) : 0
         CATransaction.commit()
-        contentTintColor = !isEnabled ? .disabledControlTextColor : !active ? NSColor.labelColor.withAlphaComponent(0.3) : (pressed || isLatched) && !usesElevation ? .white : .secondaryLabelColor
+        let baseTint: NSColor
+        if !isEnabled || matchesDisabledTint {
+            baseTint = .disabledControlTextColor
+        } else if !active {
+            baseTint = NSColor.labelColor.withAlphaComponent(0.3)
+        } else if glyphOnlyHover {
+            baseTint = (hovered || pressed) ? (dark ? .white : .black) : .secondaryLabelColor
+        } else {
+            baseTint = (pressed || isLatched) && !usesElevation ? .white : .secondaryLabelColor
+        }
+        contentTintColor = baseTint
+        if textOnlyHover {
+            let color: NSColor = !active ? NSColor.labelColor.withAlphaComponent(0.3) : hovered ? .controlAccentColor : .secondaryLabelColor
+            let text = NSAttributedString(string: title, attributes: [.font: font ?? NSFont.systemFont(ofSize: 9), .foregroundColor: color])
+            if !attributedTitle.isEqual(to: text) { attributedTitle = text }
+        }
         if usesAccentTint && active { contentTintColor = .controlAccentColor }
         if usesLightGlyph && active { contentTintColor = .white }
-        if drawsSymbolTransition { transportSymbol.tint = contentTintColor }
+        if drawsSymbolTransition {
+            let glyphFade: TimeInterval = (glyphOnlyHover && animated) ? duration : 0
+            transportSymbol.setTint(contentTintColor, fadeDuration: glyphFade)
+        }
         if usesElevation, let layer {
             // Shadow follows the symbol alpha, never a rounded hover plate.
             layer.masksToBounds = false
@@ -219,7 +329,7 @@ import AppKit
         activationObservers.forEach(NotificationCenter.default.removeObserver)
         activationObservers.removeAll()
         if window != nil {
-            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, MacWindowLifecycle.visualActivationDidChange] {
                 activationObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.updateTint() }
                 })
@@ -232,7 +342,7 @@ import AppKit
         if !isEnabled || playerControlWindow(for: self)?.isKeyWindow != true {
             hoverWork?.cancel(); pointerInside = false; hovered = false; pressed = false
         }
-        updateInteraction()
+        updateInteraction(animated: false)
     }
     deinit { hoverWork?.cancel(); activationObservers.forEach(NotificationCenter.default.removeObserver) }
 }

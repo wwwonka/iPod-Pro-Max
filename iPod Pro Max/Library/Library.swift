@@ -93,6 +93,62 @@ struct AlbumInfo: Identifiable {
     var artist: String = ""
 }
 
+/// Fast UTF-8 folded substring matching shared by track, album, and artist search caches.
+enum FastSearch {
+    static func fold(_ text: String) -> String {
+        if text.utf8.allSatisfy({ $0 < 0x80 }) {
+            var bytes = ContiguousArray(text.utf8)
+            var changed = false
+            for i in bytes.indices where bytes[i] >= 65 && bytes[i] <= 90 {
+                bytes[i] &+= 32
+                changed = true
+            }
+            return changed ? String(decoding: bytes, as: UTF8.self) : text
+        }
+        return text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
+
+    static func rowKey(_ row: TrackRow) -> String {
+        fold(row.title) + "\0" + fold(row.artist) + "\0" + fold(row.album)
+    }
+
+    static func albumKey(_ album: AlbumInfo) -> String {
+        fold(album.title) + "\0" + fold(album.artist)
+    }
+
+    static func containsUTF8(_ haystack: String, needle: String) -> Bool {
+        guard !needle.isEmpty else { return true }
+        var result: Bool?
+        haystack.utf8.withContiguousStorageIfAvailable { h in
+            needle.utf8.withContiguousStorageIfAvailable { n in
+                result = containsBytes(h, needle: n)
+            }
+        }
+        return result ?? haystack.contains(needle)
+    }
+
+    private static func containsBytes(_ h: UnsafeBufferPointer<UInt8>, needle n: UnsafeBufferPointer<UInt8>) -> Bool {
+        let nCount = n.count
+        let hCount = h.count
+        guard nCount > 0 else { return true }
+        guard hCount >= nCount else { return false }
+        let first = n[0]
+        let limit = hCount - nCount
+        var i = 0
+        while i <= limit {
+            if h[i] == first {
+                var j = 1
+                while j < nCount && h[i + j] == n[j] {
+                    j += 1
+                }
+                if j == nCount { return true }
+            }
+            i += 1
+        }
+        return false
+    }
+}
+
 /// Everything the views need, computed once off the main thread so a render never regroups.
 struct Library {
     var source: String

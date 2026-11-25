@@ -39,6 +39,7 @@ extension AudioEngine {
     @SwiftCrossUI.Published private(set) var samples: [Float] = []
     @SwiftCrossUI.Published private(set) var rate = 1.0
     @SwiftCrossUI.Published private(set) var queueRevision = 0
+    private(set) var transportAnimationNonce = 0
     private(set) var queueRows: [TrackRow] = []
     var onQueueReset: (() -> Void)?
     var onEnqueue: (([TrackRow]) -> Void)?
@@ -55,6 +56,7 @@ extension AudioEngine {
         return SimulatedMediaSession()
     }
     private var spokenRates: [PlaybackContentKind: Double] = [:]
+    private var replacingTrack = false
     private var pendingSeek: Double?
     private var anchorTime = ProcessInfo.processInfo.systemUptime
     private var visible = true
@@ -76,14 +78,15 @@ extension AudioEngine {
         self.session = session; sessionFactory = { SimulatedMediaSession() }
         configure(engine); configureSessionCommands()
     }
+    func requestTransportAnimation() { transportAnimationNonce += 1 }
     private func configureSessionCommands() {
         session?.onCommand = { [weak self] command in
             guard let self, self.track != nil else { return }
             if ProcessInfo.processInfo.environment["IPPM_PLAYER_QA"] != nil { log("[media QA] command: \(command)") }
             switch command {
-            case .play: self.setPlaying(true)
-            case .pause: self.setPlaying(false)
-            case .toggle: self.toggle()
+            case .play: self.requestTransportAnimation(); self.setPlaying(true)
+            case .pause: self.requestTransportAnimation(); self.setPlaying(false)
+            case .toggle: self.requestTransportAnimation(); self.toggle()
             case .next: self.next()
             case .previous: self.previous()
             case .seek(let value): self.seek(value)
@@ -144,7 +147,7 @@ extension AudioEngine {
             if oldDuration == 0, self.duration > 0 { self.publishSession() }
         }
         engine.onPlaybackState = { [weak self] playing in
-            guard let self, self.track != nil, self.playing != playing else { return }
+            guard let self, !self.replacingTrack, self.track != nil, self.playing != playing else { return }
             self.position = self.exactPosition; self.anchorTime = ProcessInfo.processInfo.systemUptime
             self.playing = playing; self.publishSession()
         }
@@ -164,6 +167,8 @@ extension AudioEngine {
     }
     private func load(_ row: TrackRow) {
         guard let path = row.path else { return }
+        replacingTrack = true
+        defer { replacingTrack = false }
         generation += 1
         let revision = generation
         analysis?.cancel()

@@ -62,7 +62,8 @@ struct ContentView: View {
     @State var playerVisible = false
     /// macOS: the sidebar card is open, so the content leaves it room.
     @State var sidebarOpen = true
-    @State var albumArtworkSize = 172.0
+    /// Cover width of each grid page, by `GridSection.key`.
+    @State var gridArtworkSizes: [String: Double] = [:]
     @State var sidebarPoints = Int(sidebarWidth)
     @State var sectionTabs: [String: String] = [:]
     @State var sidebarOrder: [String: [String]] = [:]
@@ -100,11 +101,12 @@ struct ContentView: View {
     var body: some View {
         let _ = appearanceRevision
         let _ = subscriptionRevision
+        let currentTableRows = library.flatMap { tableRows($0) }
         #if canImport(AppKitBackend)
         // Before the layout of this pass, so the sidebar and the page change in the same frame.
         let _: Void = MacChrome.shared.setSidebarAvailable(!isDevicePage)
         let _: Void = PlayerDisplayController.shared.setIdleDevices(ipods, selectedID: { if case .device(let id) = selection { return id }; return nil }())
-        let _: Void = MacChrome.shared.setPlaybackSelection(rows: library.flatMap { tableRows($0) } ?? [], selectedIDs: selectedSongIDs, onStart: { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } })
+        let _: Void = MacChrome.shared.setPlaybackSelection(rows: currentTableRows ?? [], selectedIDs: selectedSongIDs, onStart: { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } })
         #endif
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .bottom) {
@@ -118,12 +120,12 @@ struct ContentView: View {
                             sidebarColumn
                         } detail: {
                             // Always fills its pane (SwiftCrossUI centres a smaller one), and bounds the sidebar's width.
-                            detail.frame(minWidth: 760, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            detailView(tableRows: currentTableRows).frame(minWidth: 760, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
                     } else {
                         // The main view keeps its place; the sidebar floats over its left side.
                         ZStack(alignment: .topLeading) {
-                            detail
+                            detailView(tableRows: currentTableRows)
                             sidebarColumn.frame(width: sidebarPoints)
                         }
                     }
@@ -131,7 +133,7 @@ struct ContentView: View {
                     NavigationSplitView {
                         sidebarColumn
                     } detail: {
-                        detail
+                        detailView(tableRows: currentTableRows)
                     }
                     #endif
                 }.padding(.bottom, floatingPlayerBottomPadding)
@@ -1319,6 +1321,7 @@ struct ContentView: View {
         case .music, .audiobooks:
             try await loadPortableLocked(refresh: true, removedKind: removedPath == nil ? nil : kind, removedSourcePath: removedPath)
         case .photos: _ = await PhotoInventory.shared.load(store, refresh: true)
+        case .games: _ = await GameCatalog.shared.load(store, refresh: true)
         default: break
         }
         SettingsController.shared.attach(store)
@@ -1347,15 +1350,7 @@ struct ContentView: View {
             if configuredFolder == nil, let i = CommandLine.arguments.firstIndex(of: "--music-folder"), i + 1 < CommandLine.arguments.count {
                 configuredFolder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             }
-            let gate = LCDImportProgressGate()
-            let scan = Task { try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind, removedSourcePath: removedSourcePath, progress: { done, total in
-                guard gate.publish() else { return }
-                Task { @MainActor in PlayerActivityController.shared.progress("library-import", detail: "\(done) of \(total) files", fraction: total > 0 ? Double(done) / Double(total) : nil) }
-            }) }
-            PlayerActivityController.shared.begin("library-import", kind: .importing, title: "Importing library", cancel: { scan.cancel() })
-            let loaded: LoadedPortableLibrary
-            do { loaded = try await scan.value; PlayerActivityController.shared.finish("library-import") }
-            catch { PlayerActivityController.shared.finish("library-import", error: error is CancellationError ? nil : error.localizedDescription, cancelled: error is CancellationError); throw error }
+            let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind, removedSourcePath: removedSourcePath)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
             portableLibrary = loaded; library = indexed
             SettingsController.shared.attach(loaded.store)
@@ -1399,7 +1394,7 @@ struct ContentView: View {
             )
             if !settingsLoaded {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
-                albumArtworkSize = min(max(settings?.albumArtworkSize ?? 172, 110), 280)
+                gridArtworkSizes = settings?.gridArtworkSizes ?? [:]
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
                 sectionTabs = settings?.sectionTabs ?? [:]
                 sidebarOrder = settings?.sidebarOrder ?? [:]
@@ -1508,13 +1503,19 @@ struct ContentView: View {
     /// an NSTableView from the window is what made each sidebar click cost ~60 ms. Sections
     /// without a table draw over it instead.
     @ViewBuilder
-    private var detail: some View {
+    private func detailView(tableRows cachedTableRows: [TrackRow]?) -> some View {
         if let library {
             // Opaque: on Windows the window itself is translucent, for the sidebar.
             VStack(spacing: 0) {
                 // The iPod scroll view reaches behind the unified toolbar. Its native content inset
                 // keeps the resting content below it, while rubber-band overscroll can fill it.
-                if !isDevicePage { header(library) }
+                if !isDevicePage {
+                    header(library)
+                } else {
+                    #if canImport(AppKitBackend)
+                    SearchAnchor(prompt: "Search", text: $search).frame(width: 1, height: 0)
+                    #endif
+                }
                 // On macOS the content is a panel floating over the window's glass.
                 VStack(spacing: 0) {
                 #if canImport(AppKitBackend)
@@ -1562,7 +1563,7 @@ struct ContentView: View {
                     // The cover only hides the table: over the artist list, it would swallow the
                     // clicks that pick an artist.
                     ZStack {
-                        TrackTable(rows: tableRows(library), isActive: trackTableActive(library),
+                        TrackTable(rows: cachedTableRows, isActive: trackTableActive(library),
                                    onPlay: { row, displayed in startPlayback(row, displayed: displayed, library: library) },
                                    artworkFolder: library.artworkFolder,
                                    playlists: selection.media == .videos ? library.videoPlaylists : library.playlists,
@@ -1583,14 +1584,11 @@ struct ContentView: View {
                                        SubscriptionController.shared.retryTrack(playlistID: playlistID, trackKey: trackKey)
                                    })
                         if selection == .albums && selectedAlbumID == nil {
-                            AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
-                                         onSelect: { selectedAlbumID = $0 }, artworkSize: albumArtworkSize,
-                                         onArtworkSize: { size in
-                                             #if !canImport(AppKitBackend)
-                                             albumArtworkSize = size
-                                             #endif
-                                             if let store = portableLibrary?.store { PortablePreferences.shared.stageAlbumArtworkSize(size, store: store) }
-                                         }, onArtworkCommit: { size in albumArtworkSize = size }, onPlay: { row, rows in startPlayback(row, displayed: rows, library: library) })
+                            GridPage(section: .albums, items: library.albums, artworkFolder: library.artworkFolder, query: search,
+                                     artworkSizes: gridArtworkSizes, store: portableLibrary?.store,
+                                     action: .expand(onSelect: { selectedAlbumID = $0 },
+                                                     onPlay: { row, rows in startPlayback(row, displayed: rows, library: library) }),
+                                     onArtworkSizesChange: { gridArtworkSizes = $0 })
                                 .background(WindowBackground())
                         }
                         ForEach(ipods, id: \.id) { device in
@@ -1635,6 +1633,13 @@ struct ContentView: View {
                                     MusicTransfer.shared.enqueuePhotos(device: device, loaded: loaded, selection: PhotoChoices.shared.selection)
                                 },
                                 onAddFolder: { await addSource(kind: SourceKind.photos.rawValue, folder: $0) },
+                                onRemoveFolder: { await removeSource(id: $0) })
+                                .background(WindowBackground())
+                        }
+                        if selection == .games {
+                            GamesView(store: portableLibrary?.store, query: search, artworkSizes: gridArtworkSizes,
+                                onArtworkSizesChange: { gridArtworkSizes = $0 },
+                                onAddFolder: { await addSource(kind: SourceKind.games.rawValue, folder: $0) },
                                 onRemoveFolder: { await removeSource(id: $0) })
                                 .background(WindowBackground())
                         }
@@ -1685,7 +1690,7 @@ struct ContentView: View {
             .background(WindowBackground())
             #endif
         } else {
-            Text("Loading…").foregroundColor(.gray)
+            WindowBackground()
         }
     }
 
@@ -1751,31 +1756,24 @@ struct ContentView: View {
                 if selection == .albums && selectedAlbumID != nil {
                     Button("All Albums") { selectedAlbumID = nil }.titleBarControl()
                 }
-                SearchField(prompt: "Search", text: $search)
             } else if selection.media == .podcasts {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await PodcastController.shared.refreshAll() } }
-                SearchField(prompt: "Search episodes", text: $search)
-            } else if case .playlist = selection {
-                SearchField(prompt: "Search playlist", text: $search)
             } else if case .videoPlaylist(let id) = selection {
                 #if canImport(AppKitBackend)
                 Button("Rename…") { renameVideoPlaylist(id) }.titleBarControl()
                 Button("Delete…") { deleteVideoPlaylist(id) }.titleBarControl()
                 #endif
-                SearchField(prompt: "Search video playlist", text: $search)
-            } else if selection.media == .videos {
-                SearchField(prompt: "Search videos", text: $search)
             } else if selection == .audiobooks {
                 ToolbarButton(icon: "plus") { Task { await configureAudiobooks() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
-                SearchField(prompt: "Search audiobooks", text: $search)
             } else if case .device(let id) = selection, let device = ipod(named: id) {
                 ToolbarButton(icon: "arrow.clockwise") {
                     DevicePageCache.shared.invalidate(device)
                     contentRevision += 1
                 }
             }
+            SearchField(prompt: "Search", text: $search)
         }
     }
 
@@ -1895,7 +1893,7 @@ struct ContentView: View {
                               message: "Music you add to your library will appear here.")
         case .recentMusic, .albums, .favorites:
             return nil
-        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
+        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .games, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).
@@ -1916,23 +1914,86 @@ struct ContentView: View {
 /// Plain substring search over title, artist and album, recomputed only when the rows or the
 /// query change: the same array comes back otherwise, so the table doesn't reload on unrelated
 /// redraws (sidebar slide, color scheme).
+@MainActor
 final class SearchCache: SwiftCrossUI.ObservableObject {
     private var source: [TrackRow] = []
     private var query = ""
+    private var foldedQuery = ""
     private var result: [TrackRow] = []
+    private var resultIndices: [Int] = []
+    private var keysSource: [TrackRow] = []
+    private var foldedKeys: [String] = []
+    private var prewarmTask: Task<Void, Never>?
+    private var prewarmToken = 0
 
     func filter(_ rows: [TrackRow], query: String) -> [TrackRow] {
-        guard !query.isEmpty else { return rows }
-        let sameRows = rows.withUnsafeBufferPointer { a in source.withUnsafeBufferPointer { a.baseAddress == $0.baseAddress } }
-        if sameRows && rows.count == source.count && query == self.query { return result }
-        source = rows
-        self.query = query
-        result = rows.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
-                || $0.artist.localizedCaseInsensitiveContains(query)
-                || $0.album.localizedCaseInsensitiveContains(query)
+        let sameRows = rows.sameStorage(as: source)
+        if !sameRows {
+            source = rows
+            self.query = ""
+            self.foldedQuery = ""
+            self.result = []
+            self.resultIndices = []
+            if !rows.sameStorage(as: keysSource) {
+                foldedKeys = []
+                keysSource = []
+                schedulePrewarm(for: rows)
+            }
         }
-        return result
+        guard !query.isEmpty else {
+            self.query = ""
+            self.foldedQuery = ""
+            self.result = []
+            self.resultIndices = []
+            return rows
+        }
+        if sameRows && query == self.query { return result }
+
+        let needle = FastSearch.fold(query)
+        if !rows.sameStorage(as: keysSource) {
+            foldedKeys = rows.map(FastSearch.rowKey)
+            keysSource = rows
+        }
+
+        let narrowing = sameRows && !self.foldedQuery.isEmpty && needle.hasPrefix(self.foldedQuery)
+        var nextIndices: [Int] = []
+        var nextRows: [TrackRow] = []
+        if narrowing {
+            nextIndices.reserveCapacity(resultIndices.count)
+            nextRows.reserveCapacity(resultIndices.count)
+            for i in resultIndices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                nextIndices.append(i)
+                nextRows.append(rows[i])
+            }
+        } else {
+            for i in rows.indices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                nextIndices.append(i)
+                nextRows.append(rows[i])
+            }
+        }
+        self.query = query
+        self.foldedQuery = needle
+        self.resultIndices = nextIndices
+        self.result = nextRows
+        return nextRows
+    }
+
+    private func schedulePrewarm(for rows: [TrackRow]) {
+        guard rows.count >= 256 else { return }
+        prewarmToken &+= 1
+        let token = prewarmToken
+        prewarmTask?.cancel()
+        prewarmTask = Task.detached(priority: .utility) { [weak self] in
+            let keys = rows.map(FastSearch.rowKey)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled, self.prewarmToken == token else { return }
+                if self.source.sameStorage(as: rows) && self.foldedKeys.isEmpty {
+                    self.foldedKeys = keys
+                    self.keysSource = rows
+                }
+            }
+        }
     }
 }
 
@@ -2243,15 +2304,5 @@ struct IPodProMaxApp: App {
             PluginLogWindowView()
         }
         .defaultSize(width: 680, height: 420)
-    }
-}
-
-private final class LCDImportProgressGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var last = Date.distantPast
-    func publish() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard Date().timeIntervalSince(last) >= 0.5 else { return false }
-        last = Date(); return true
     }
 }

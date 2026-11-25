@@ -96,6 +96,8 @@
         @objc private func showPlayerQueue() { PlayerQueuePopover.shared.toggle(from: queueButton) }
         func checkPlayerToolbarLayout() {
             guard let window else { preconditionFailure("Player layout check requires a window") }
+            TransportSymbolView.checkTransportAlignment()
+            player.checkVolumeSlider()
             precondition(window.level == .normal, "Main window must remain a standard Mission Control window")
             let original = window.frame
             var measurements: [Double] = []
@@ -109,10 +111,10 @@
                 window.contentView?.superview?.layoutSubtreeIfNeeded()
                 relayoutTitleArea?()
                 layoutPlayerHeader()
-                if let root = window.contentView?.superview, let close = window.standardWindowButton(.closeButton) {
+                if let root = window.contentView?.superview, let close = windowControl(.closeButton) {
                     let y = close.convert(NSPoint(x: close.bounds.midX, y: close.bounds.midY), to: root).y
                     for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
-                        guard let button = window.standardWindowButton(type) else { preconditionFailure("Native window control missing") }
+                        guard let button = windowControl(type) else { preconditionFailure("Native window control missing") }
                         let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
                         precondition(abs(center.x - (20 + CGFloat(index) * 18)) <= 0.5 && abs(root.bounds.height - center.y - 22) <= 0.5, "Traffic lights retain the reference offsets")
                     }
@@ -126,9 +128,9 @@
                     let leftGap = player.nextToVolumeGap(in: root)
                     let reference = player.trafficToBackGap(in: root)
                     log(String(format: "Toolbar spacing %.0f pt: next/volume %.2f, traffic lights/back %.2f", width, leftGap, reference))
-                    precondition(abs(leftGap - reference) <= 1, "Next/volume margin must match traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
+                    precondition(abs(leftGap - reference - 3) <= 1, "Next/volume margin adds 3 pt to traffic lights/back: volume=\(player.volumeView.frame), children=\(player.volumeView.subviews.map { $0.frame }), LCD=\(player.lcd.frame)")
                 }
-                precondition((player.volumeSliderWidth == 0 || (52...132).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
+                precondition((player.volumeSliderWidth == 0 || (44...ToolbarPlayerMac.maximumVolumeSliderWidth).contains(player.volumeSliderWidth)), "Volume shrinks within its usable range")
                 precondition(player.volumeView.frame.maxX + 12 <= player.route.frame.minX + 0.5, "Adaptive volume clears AirPlay")
                 precondition(player.lcd.frame.maxX + 47 <= (playerHeader?.bounds.width ?? 0) - player.trailingControlsWidth + 0.5, "Adaptive LCD clears search and queue")
                 log(String(format: "Adaptive volume %.0f pt: slider %.2f pt", width, player.volumeSliderWidth))
@@ -149,11 +151,24 @@
                 precondition(abs(player.lcd.frame.minY - 3) < 0.5, "LCD must retain its bottom clearance")
             }
             window.setFrame(original, display: false); player.updateWidth(); layoutPlayerHeader()
-            player.checkVolumeSlider()
+            if let zoom = windowControl(.zoomButton) {
+                let expected = zoom.frame
+                zoom.setFrameOrigin(NSPoint(x: expected.minX, y: expected.minY - 4))
+                playerHeader?.layoutSubtreeIfNeeded()
+                precondition(abs(zoom.frame.midY - expected.midY) < 0.1, "Native zoom-button drift is reconciled on frame notifications")
+            }
+            if let nativeZoom = window.standardWindowButton(.zoomButton), let zoom = windowControl(.zoomButton) {
+                precondition(nativeZoom !== zoom && nativeZoom.isHidden, "Header controls must be independent of the titlebar-owned instances")
+                let expected = zoom.frame, original = nativeZoom.frame
+                nativeZoom.setFrameOrigin(NSPoint(x: original.minX, y: original.minY - 5))
+                precondition(zoom.frame == expected, "Native titlebar updates cannot move the visible green button")
+                nativeZoom.frame = original
+            }
             player.setFullScreenLayout(true)
             precondition(playerUsesFullScreenSpacing, "Full screen removes the window-button clearance")
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 precondition(player.transport.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Spacing uses a bounded native animation")
+                precondition(player.volumeView.layer?.animation(forKey: "fullScreenSpacing")?.duration == 0.25, "Volume follows the same bounded transition")
             }
             player.setFullScreenLayout(false)
             precondition(player.transport.frame.minX == 74 && !player.fullScreenLayout, "Leaving full screen restores window-button clearance")
@@ -279,6 +294,7 @@
             installPlayerHeader(in: window)
             installFindMenuItem()
             installFindShortcut(window)
+            installFocusRingPrimer(on: window)
             observeWindowWidthForSearch(window)
             shapeAreaWhenReady()
             keepTrafficLightsCentered(in: window)
@@ -332,6 +348,8 @@
         /// The first of the two glass panels: the whole window, under everything. The sidebar's own
         /// panel sits over it and the (opaque) main view over both.
         private let windowGlass = NSVisualEffectView()
+        private var opaqueExitBackdrop: OpaqueExitBackdropView?
+        private var opaqueExitGeneration = 0
         private func installWindowGlass(on window: NSWindow) {
             windowGlass.material = .underWindowBackground
             windowGlass.blendingMode = .behindWindow
@@ -348,6 +366,49 @@
                 content.addSubview(windowGlass, positioned: .below, relativeTo: nil)
             }
         }
+        func beginOpaqueFullScreenExit(on window: NSWindow) {
+            guard self.window === window, let content = window.contentView else { return }
+            opaqueExitGeneration += 1
+            attachWindowGlass()
+            let backdrop = opaqueExitBackdrop ?? OpaqueExitBackdropView()
+            opaqueExitBackdrop = backdrop
+            backdrop.frame = content.bounds
+            backdrop.autoresizingMask = [.width, .height]
+            backdrop.alphaValue = 1
+            if backdrop.superview !== content {
+                content.addSubview(backdrop, positioned: .above, relativeTo: windowGlass)
+            }
+            windowGlass.isHidden = true
+        }
+        func fadeInWindowTransparencyAfterFullScreenExit(on window: NSWindow) {
+            guard self.window === window else { return }
+            windowGlass.isHidden = false
+            guard let backdrop = opaqueExitBackdrop else { return }
+            opaqueExitGeneration += 1
+            let generation = opaqueExitGeneration
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                backdrop.removeFromSuperview()
+                opaqueExitBackdrop = nil
+                return
+            }
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.25
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                backdrop.animator().alphaValue = 0
+            }, completionHandler: { [weak self, weak backdrop] in
+                MainActor.assumeIsolated {
+                    guard let self, self.opaqueExitGeneration == generation else { return }
+                    backdrop?.removeFromSuperview()
+                    if self.opaqueExitBackdrop === backdrop { self.opaqueExitBackdrop = nil }
+                }
+            })
+        }
+        func cancelOpaqueExitTransition() {
+            opaqueExitGeneration += 1
+            opaqueExitBackdrop?.removeFromSuperview()
+            opaqueExitBackdrop = nil
+            windowGlass.isHidden = false
+        }
 
         // MARK: Traffic lights
 
@@ -355,6 +416,61 @@
         private var nativeButtonFrameObservers: [NSObjectProtocol] = []
         private var observedNativeButtonViews: [NSView] = []
         private var hostedTrafficLights: [NSButton] = []
+        private var trafficLightOverlays: [TrafficLightDelayOverlay] = []
+
+        @MainActor
+        private final class TrafficLightDelayOverlay: NSView {
+            weak var targetButton: NSButton?
+            override var acceptsFirstResponder: Bool { false }
+            override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+            override func shouldDelayWindowOrdering(for event: NSEvent) -> Bool { true }
+            override func hitTest(_ point: NSPoint) -> NSView? {
+                guard bounds.contains(point),
+                      let button = targetButton, button.isEnabled, !button.isHidden,
+                      let window, (!NSApp.isActive || !window.isKeyWindow),
+                      NSApp.currentEvent?.type == .leftMouseDown else { return nil }
+                return self
+            }
+            override func mouseDown(with event: NSEvent) {
+                guard let button = targetButton else { return }
+                NSApp.preventWindowOrdering()
+                func updatePress(for current: NSEvent) {
+                    let point = convert(current.locationInWindow, from: nil)
+                    button.highlight(bounds.contains(point))
+                }
+                updatePress(for: event)
+                while let next = NSApp.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+                    if next.type == .leftMouseDragged {
+                        updatePress(for: next)
+                    } else {
+                        let inside = bounds.contains(convert(next.locationInWindow, from: nil))
+                        button.highlight(false)
+                        if inside { _ = button.sendAction(button.action, to: button.target) }
+                        break
+                    }
+                }
+            }
+        }
+        func windowControl(_ type: NSWindow.ButtonType) -> NSButton? {
+            let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+            guard let index = types.firstIndex(of: type), hostedTrafficLights.indices.contains(index) else { return nil }
+            return hostedTrafficLights[index]
+        }
+        @objc private func closePrimaryWindow() { window?.performClose(nil) }
+        @objc private func minimizePrimaryWindow() { window?.performMiniaturize(nil) }
+        private var fullScreenEntryPending = false
+        @objc private func zoomPrimaryWindow() {
+            guard let window, !fullScreenEntryPending else { return }
+            if NSEvent.modifierFlags.contains(.option) { window.performZoom(nil) }
+            else if window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+            else if window.isVisible {
+                // Keep the lights visible up to willEnterFullScreen, then fade and slide during zoom-in.
+                fullScreenEntryPending = true
+                window.toggleFullScreen(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.fullScreenEntryPending = false }
+            }
+        }
+        private var trafficLightHideWork: DispatchWorkItem?
         private var hidingTrafficLights = false
         private var nativeTitlebarRevealed = false
         private var holdingTrafficLightReveal = false
@@ -368,7 +484,13 @@
             settleFullScreenPresentation?(fullScreen)
         }
         var revealedFullScreenZoomButton: NSButton? { hostedTrafficLights.count == 3 ? hostedTrafficLights[2] : nil }
-        var fullScreenTrafficLightsVisible: Bool { player.fullScreenLayout && !hidingTrafficLights && hostedTrafficLights.count == 3 && hostedTrafficLights.allSatisfy { !$0.isHidden } }
+        /// True once the controls have been asked to fade out; the fade only starts
+        /// after full-screen entry completes.
+        var hidesFullScreenTrafficLights: Bool { hidingTrafficLights }
+        var fullScreenTrafficLightsVisible: Bool {
+            guard player.fullScreenLayout, !hidingTrafficLights, hostedTrafficLights.count == 3, let header = playerHeader else { return false }
+            return hostedTrafficLights.allSatisfy { !$0.isHidden && abs($0.frame.midY - (header.bounds.height - 22)) < 0.5 }
+        }
         private func updateFullScreenTrafficLights() {
             guard player.fullScreenLayout else { return }
             let visible = nativeTitlebarRevealed || holdingTrafficLightReveal
@@ -385,16 +507,19 @@
         @objc func mouseExited(with event: NSEvent) { holdingTrafficLightReveal = false; updateFullScreenTrafficLights() }
         private(set) var exitButtonLayoutSamples = 0
         private(set) var exitButtonClippedSamples = 0
-        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == (player.trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 12) }
+        var playerUsesFullScreenSpacing: Bool { player.fullScreenLayout && player.transportLeadingSpace == 0 && player.transport.frame.minX == (player.trafficLightsRevealed ? 82 : CGFloat(mediaRailWidth) + 8) }
         private func observeNativeButtonFrames(_ views: [NSView], onChange: @escaping () -> Void) {
             guard views.map(ObjectIdentifier.init) != observedNativeButtonViews.map(ObjectIdentifier.init) else { return }
             nativeButtonFrameObservers.forEach(NotificationCenter.default.removeObserver)
             nativeButtonFrameObservers.removeAll(); observedNativeButtonViews = views
             for view in views {
                 view.postsFrameChangedNotifications = true
-                nativeButtonFrameObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { _ in
-                    MainActor.assumeIsolated { onChange() }
-                })
+                view.postsBoundsChangedNotifications = true
+                for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+                    nativeButtonFrameObservers.append(NotificationCenter.default.addObserver(forName: name, object: view, queue: .main) { _ in
+                        MainActor.assumeIsolated { onChange() }
+                    })
+                }
             }
         }
         private var titlebarSuppressionObservations: [NSKeyValueObservation] = []
@@ -449,8 +574,15 @@
         }
         /// Relayout after search visibility changes and native title-area events.
         private var relayoutTitleArea: (() -> Void)?
+        private var titleAreaRelayoutPending = false
         private func scheduleTitleAreaRelayout() {
-            DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.relayoutTitleArea?() } }
+            guard !titleAreaRelayoutPending else { return }
+            titleAreaRelayoutPending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.titleAreaRelayoutPending = false
+                self.relayoutTitleArea?()
+            }
         }
 
         /// Keep actual AppKit window buttons in the same stable row as playback.
@@ -459,44 +591,114 @@
         private func keepTrafficLightsCentered(in window: NSWindow) {
             let originalContainer = window.standardWindowButton(.closeButton)?.superview?.superview
             var centering = false
+            var enteringFullScreen = false
+            var snapEnteringAfter = false
             var exitingFullScreen = false
+            var lastHidden = false
             func center() {
-                guard !centering else { return }; centering = true; defer { centering = false }
+                guard !centering else { self.scheduleTitleAreaRelayout(); return }; centering = true; defer { centering = false }
                 guard let header = self.playerHeader else { return }
-                let native = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }
-                if !native.isEmpty && native.map(ObjectIdentifier.init) != self.hostedTrafficLights.map(ObjectIdentifier.init) {
-                    self.hostedTrafficLights.forEach { if $0.superview === header { $0.removeFromSuperview() } }
-                    self.hostedTrafficLights = native
+                let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+                // Separate standard AppKit controls from the titlebar-owned
+                // instances: AppKit animates the latter during menu-bar reveal.
+                if self.hostedTrafficLights.isEmpty {
+                    let actions = [#selector(self.closePrimaryWindow), #selector(self.minimizePrimaryWindow), #selector(self.zoomPrimaryWindow)]
+                    for (index, type) in types.enumerated() {
+                        guard let button = NSWindow.standardWindowButton(type, for: window.styleMask) else { continue }
+                        button.target = self; button.action = actions[index]
+                        button.wantsLayer = true
+                        self.hostedTrafficLights.append(button)
+                        if index < 2 {
+                            let overlay = TrafficLightDelayOverlay(frame: button.frame)
+                            overlay.targetButton = button
+                            self.trafficLightOverlays.append(overlay)
+                        }
+                    }
                 }
+                for type in types { window.standardWindowButton(type)?.isHidden = true }
                 self.observeNativeButtonFrames(self.hostedTrafficLights, onChange: center)
+                header.trafficLights = self.hostedTrafficLights
+                let visibilityChanged = lastHidden != self.hidingTrafficLights
                 for (index, button) in self.hostedTrafficLights.enumerated() {
                     if button.superview !== header { button.removeFromSuperview(); header.addSubview(button) }
                     button.autoresizingMask = []
-                    button.isHidden = self.hidingTrafficLights
-                    button.setFrameOrigin(NSPoint(x: 20 + CGFloat(index) * 18 - button.bounds.width / 2,
-                                                  y: header.bounds.height - 22 - button.bounds.height / 2))
+                    let opacity: CGFloat = self.hidingTrafficLights ? 0 : 1
+                    if visibilityChanged {
+                        if snapEnteringAfter || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                            button.alphaValue = opacity
+                            if self.hidingTrafficLights { button.isHidden = true }
+                        } else {
+                            NSAnimationContext.runAnimationGroup { context in
+                                context.duration = 0.16
+                                button.animator().alphaValue = opacity
+                            }
+                        }
+                    }
+                    if !self.hidingTrafficLights { button.isHidden = false }
+                    button.isEnabled = index != 1 || !self.player.fullScreenLayout
+                    // AppKit may change the zoom button's frame/bounds during
+                    // reveal. Center its actual frame, then reconcile after any
+                    // nested notification rather than losing that update.
+                    let origin = NSPoint(x: 20 + CGFloat(index) * 18 - button.frame.width / 2,
+                                         y: header.bounds.height - 22 - button.frame.height / 2)
+                    if button.frame.origin != origin { button.setFrameOrigin(origin) }
+                    if index < self.trafficLightOverlays.count {
+                        let overlay = self.trafficLightOverlays[index]
+                        if overlay.superview !== header {
+                            overlay.removeFromSuperview()
+                            header.addSubview(overlay, positioned: .above, relativeTo: button)
+                        }
+                        if overlay.frame != button.frame { overlay.frame = button.frame }
+                        overlay.isHidden = button.isHidden || self.hidingTrafficLights
+                    }
                     if exitingFullScreen && !button.isHiddenOrHasHiddenAncestor {
                         self.exitButtonLayoutSamples += 1
                         if button.visibleRect.height < button.bounds.height - 0.5 { self.exitButtonClippedSamples += 1 }
                     }
                 }
+                if !self.hidingTrafficLights, let first = self.hostedTrafficLights.first, let last = self.hostedTrafficLights.last {
+                    header.trafficLightsGroupRect = first.frame.union(last.frame)
+                } else {
+                    header.trafficLightsGroupRect = .zero
+                }
+                if lastHidden != self.hidingTrafficLights {
+                    lastHidden = self.hidingTrafficLights
+                    self.trafficLightHideWork?.cancel()
+                    if lastHidden && !snapEnteringAfter {
+                        let work = DispatchWorkItem { [weak self] in
+                            guard let self, self.hidingTrafficLights else { return }
+                            self.hostedTrafficLights.forEach { $0.isHidden = true }
+                        }
+                        self.trafficLightHideWork = work
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20, execute: work)
+                    }
+                }
                 self.layoutPlayerHeader()
             }
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
-                MainActor.assumeIsolated { self.hidingTrafficLights = true; self.nativeTitlebarRevealed = false; self.holdingTrafficLightReveal = false; center() }
+                MainActor.assumeIsolated {
+                    self.cancelOpaqueExitTransition()
+                    enteringFullScreen = true
+                    self.nativeTitlebarRevealed = false
+                    self.holdingTrafficLightReveal = false
+                    self.hidingTrafficLights = false
+                    center()
+                }
             })
             trafficLightObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
                 MainActor.assumeIsolated {
+                    enteringFullScreen = false
                     exitingFullScreen = true; self.hidingTrafficLights = false; self.holdingTrafficLightReveal = false
                     self.exitButtonLayoutSamples = 0; self.exitButtonClippedSamples = 0
-                    self.player.setFullScreenLayout(false)
+                    self.player.setFullScreenLayout(false, animated: false)
                     center()
                 }
             })
             func settle(fullScreen: Bool) {
+                enteringFullScreen = false
                 exitingFullScreen = false
                 self.holdingTrafficLightReveal = false
-                self.player.setFullScreenLayout(fullScreen)
+                self.player.setFullScreenLayout(fullScreen, animated: fullScreen)
                 if fullScreen {
                     self.suppressFullScreenTitlebar(originalContainer, in: window)
                     self.updateFullScreenTrafficLights()
@@ -515,6 +717,17 @@
                         else if name == NSWindow.didExitFullScreenNotification {
                             settle(fullScreen: false)
                             DispatchQueue.main.async { center() }
+                        } else if name == NSWindow.didResizeNotification && enteringFullScreen,
+                                  let screen = window.screen, window.frame.width >= screen.frame.width - 2 {
+                            // AppKit has just resized the window to full-screen size to capture
+                            // the destination snapshot: apply the final fullscreen state now so
+                            // macOS's native Space zoom crossfades lights & spacing cleanly.
+                            enteringFullScreen = false
+                            snapEnteringAfter = true
+                            self.hidingTrafficLights = true
+                            self.player.setFullScreenLayout(true, animated: false)
+                            center()
+                            snapEnteringAfter = false
                         } else { center() }
                     }
                 })
@@ -532,22 +745,98 @@
         private let searchButton = ToolbarPlaybackButton()
         private var searchOwner: AnyObject?
         private var onSearchChange: (String) -> Void = { _ in }
+        private var lastDeliveredSearchText: String?
+        private var searchDismissObservers: [NSObjectProtocol] = []
+        private var focusRingPrimeObserver: NSObjectProtocol?
+        private var hasPrimedFocusRing = false
+
+        /// AppKit lazily creates the window's focus-ring surface on first focus, which skips the
+        /// initial zoom-in animation; priming once behind an invisible 1x1 view wakes it before ⌘F.
+        private func installFocusRingPrimer(on window: NSWindow) {
+            guard !hasPrimedFocusRing, focusRingPrimeObserver == nil,
+                  ProcessInfo.processInfo.environment["IPPM_CHECK_PLAYER"] == nil,
+                  ProcessInfo.processInfo.environment["IPPM_PLAYER_PREVIEW"] == nil else { return }
+            if window.isKeyWindow {
+                primeFocusRing(in: window)
+                return
+            }
+            focusRingPrimeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+            ) { [weak self, weak window] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let window else { return }
+                    self.primeFocusRing(in: window)
+                }
+            }
+        }
+
+        private func primeFocusRing(in window: NSWindow) {
+            guard !hasPrimedFocusRing, window.isKeyWindow else { return }
+            hasPrimedFocusRing = true
+            if let observer = focusRingPrimeObserver {
+                NotificationCenter.default.removeObserver(observer)
+                focusRingPrimeObserver = nil
+            }
+            guard window.firstResponder === window || window.firstResponder == nil,
+                  let content = window.contentView else { return }
+            let primer = FocusRingPrimerView(frame: NSRect(x: 10, y: 10, width: 1, height: 1))
+            primer.alphaValue = 0.001
+            content.addSubview(primer)
+            _ = window.makeFirstResponder(primer)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { [weak window, weak primer] in
+                MainActor.assumeIsolated {
+                    guard let primer else { return }
+                    if let window, window.firstResponder === primer {
+                        window.makeFirstResponder(nil)
+                    }
+                    primer.removeFromSuperview()
+                }
+            }
+        }
+
+        func isCurrentSearchOwner(_ owner: AnyObject) -> Bool {
+            searchOwner === owner
+        }
+
+        func updateSearchCallback(owner: AnyObject, onChange: @escaping (String) -> Void) {
+            guard searchOwner === owner else { return }
+            onSearchChange = onChange
+        }
+
+        private func deliverSearchChange(_ value: String) {
+            lastDeliveredSearchText = value
+            onSearchChange(value)
+        }
 
         /// A page's marker asks for the search, or gives it up.
         func setSearch(owner: AnyObject, visible: Bool, prompt: String, text: String, onChange: @escaping (String) -> Void) {
             installFindMenuItem()
             // Pages own the query and whether the native field is shown.
             if visible {
+                let ownerChanged = searchOwner !== owner
                 searchOwner = owner
                 onSearchChange = onChange
                 let field = searchField
-                if field.placeholderString != prompt { field.placeholderString = prompt }
-                if field.stringValue != text { field.stringValue = text }
-                updateSearchVisibility()
+                let promptChanged = field.placeholderString != prompt
+                if promptChanged { field.setPrompt(prompt) }
+                if field.currentEditor() == nil {
+                    if field.stringValue != text { field.stringValue = text }
+                    lastDeliveredSearchText = text
+                } else if ownerChanged || (text != lastDeliveredSearchText && text.isEmpty) {
+                    if field.stringValue != text { field.stringValue = text }
+                    lastDeliveredSearchText = text
+                }
+                if ownerChanged || promptChanged || field.isHidden == hasSearchHiddenState {
+                    updateSearchVisibility()
+                }
             } else if searchOwner === owner {
                 searchOwner = nil
                 updateSearchVisibility()
             }
+        }
+
+        private var hasSearchHiddenState: Bool {
+            searchOwner != nil && !searchCollapsed
         }
 
         // Like the Finder's: in a narrow window the search field gives way to a magnifier button, and
@@ -562,12 +851,19 @@
         }
 
         /// Shows the field, the magnifier, or neither, for the page and the window's width.
-        private func updateSearchVisibility() {
+        private func updateSearchVisibility(relayoutSynchronously: Bool = false) {
             let hasSearch = searchOwner != nil
             if let window, window.frame.width >= Self.searchCollapseWidth { searchExpanded = false }
-            searchField.isHidden = !hasSearch || searchCollapsed
-            searchButton.isHidden = !(hasSearch && searchCollapsed)
-            scheduleTitleAreaRelayout()
+            let nextFieldHidden = !hasSearch || searchCollapsed
+            let nextButtonHidden = !(hasSearch && searchCollapsed)
+            guard nextFieldHidden != searchField.isHidden || nextButtonHidden != searchButton.isHidden else { return }
+            searchField.isHidden = nextFieldHidden
+            searchButton.isHidden = nextButtonHidden
+            if relayoutSynchronously {
+                layoutPlayerHeader()
+            } else {
+                scheduleTitleAreaRelayout()
+            }
         }
 
         private func observeWindowWidthForSearch(_ window: NSWindow) {
@@ -579,11 +875,18 @@
 
         @objc func expandSearch(_ sender: Any?) {
             searchExpanded = true
-            updateSearchVisibility()
+            updateSearchVisibility(relayoutSynchronously: true)
             // The field has to be on screen before it can take the focus.
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
-                    guard let self else { return }; self.window?.makeFirstResponder(self.searchField); self.searchField.selectText(nil); self.searchField.setEditing(true)
+                    guard let self else { return }
+                    if let editor = self.searchField.currentEditor(),
+                       self.window?.firstResponder === editor || self.window?.firstResponder === self.searchField {
+                        editor.selectAll(nil)
+                    } else {
+                        self.window?.makeFirstResponder(self.searchField)
+                    }
+                    self.searchField.revealCaret()
                 }
             }
         }
@@ -591,21 +894,27 @@
         func controlTextDidBeginEditing(_ notification: Notification) { searchField.setEditing(true) }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard control === searchField, commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-            window?.makeFirstResponder(nil); searchField.setEditing(false)
+            endSearchEditing(flushDisplay: true)
             return true
         }
         func controlTextDidEndEditing(_ notification: Notification) {
             searchField.setEditing(false)
-            guard searchExpanded, let field = notification.object as? NSSearchField, field.stringValue.isEmpty else { return }
+            guard !preserveSearchFocusAcrossDeactivation,
+                  searchExpanded, let field = notification.object as? NSSearchField, field.stringValue.isEmpty else { return }
             searchExpanded = false
-            updateSearchVisibility()
+            updateSearchVisibility(relayoutSynchronously: true)
         }
 
         /// ⌘F: puts the cursor in the search field (shown only on the pages that search).
         @available(macOS 11.0, *)
         @objc func findInPage(_ sender: Any?) {
             if searchCollapsed { expandSearch(nil); return }
-            window?.makeFirstResponder(searchField); searchField.selectText(nil); searchField.setEditing(true)
+            if let editor = searchField.currentEditor(),
+               window?.firstResponder === editor || window?.firstResponder === searchField {
+                editor.selectAll(nil)
+                return
+            }
+            window?.makeFirstResponder(searchField)
         }
 
         @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -643,19 +952,142 @@
             edit.addItem(find)
         }
 
+        private var searchFilterWork: DispatchWorkItem?
+        private var preserveSearchFocusAcrossDeactivation = false
+        private var savedSearchSelection: NSRange?
+        private var lastWindowActivationAt: TimeInterval = 0
+        private var reactivatedSearchFromToolbarAt: TimeInterval = 0
+
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
-            onSearchChange(field.stringValue)
+            searchFilterWork?.cancel()
+            let value = field.stringValue
+            if !value.isEmpty && NSApp.currentEvent?.type == .keyDown {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.deliverSearchChange(value)
+                }
+                searchFilterWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+            } else {
+                deliverSearchChange(value)
+            }
+        }
+
+        @objc private func searchFieldAction(_ sender: Any?) {
+            if let event = NSApp.currentEvent,
+               event.type == .keyDown,
+               event.keyCode != 36, event.keyCode != 76,
+               !searchField.stringValue.isEmpty {
+                searchField.revealCaret()
+                return
+            }
+            searchFilterWork?.cancel()
+            deliverSearchChange(searchField.stringValue)
             searchField.revealCaret()
-            DispatchQueue.main.async { [weak self] in self?.searchField.revealCaret() }
         }
 
         // MARK: Integrated player header
 
+        private func isPointInToolbar(_ locationInWindow: NSPoint) -> Bool {
+            guard let header = playerHeader else { return false }
+            let local = header.convert(locationInWindow, from: nil)
+            return header.bounds.contains(local)
+        }
+
+        private func suspendSearchEditingForDeactivation() {
+            let editor = searchField.currentEditor() as? NSTextView
+            let isFocused = searchField.editing || editor != nil || window?.firstResponder === searchField || (editor != nil && window?.firstResponder === editor)
+            if isFocused {
+                preserveSearchFocusAcrossDeactivation = true
+                if let editor {
+                    savedSearchSelection = editor.selectedRange()
+                }
+                endSearchEditing(flushDisplay: true, collapsingExpanded: false, preserveForReactivation: true)
+            }
+        }
+
+        private func restoreSearchFocusOnActivationIfNeeded() {
+            lastWindowActivationAt = ProcessInfo.processInfo.systemUptime
+            guard preserveSearchFocusAcrossDeactivation,
+                  let window,
+                  MacWindowLifecycle.shared.isWindowVisuallyActive(window),
+                  searchOwner != nil else { return }
+
+            if let ev = NSApp.currentEvent,
+               ev.type == .leftMouseDown,
+               ev.window === window,
+               !isPointInToolbar(ev.locationInWindow) {
+                preserveSearchFocusAcrossDeactivation = false
+                savedSearchSelection = nil
+                return
+            }
+
+            preserveSearchFocusAcrossDeactivation = false
+            let range = savedSearchSelection
+            savedSearchSelection = nil
+            reactivatedSearchFromToolbarAt = ProcessInfo.processInfo.systemUptime
+
+            if searchCollapsed {
+                expandSearch(nil)
+                return
+            }
+            searchField.prepareForReactivationFocus()
+            window.makeFirstResponder(searchField)
+            if let range, let editor = searchField.currentEditor() as? NSTextView {
+                let len = (editor.string as NSString).length
+                let clampedLoc = min(max(0, range.location), len)
+                let clampedLen = min(max(0, range.length), len - clampedLoc)
+                editor.setSelectedRange(NSRange(location: clampedLoc, length: clampedLen))
+            }
+            searchField.revealCaret()
+        }
+
+        private func endSearchEditing(flushDisplay: Bool, collapsingExpanded: Bool = true, preserveForReactivation: Bool = false) {
+            if !preserveForReactivation {
+                preserveSearchFocusAcrossDeactivation = false
+                savedSearchSelection = nil
+            }
+            let editor = searchField.currentEditor()
+            let active = searchField.editing || editor != nil || window?.firstResponder === searchField || (editor != nil && window?.firstResponder === editor)
+            guard active else { return }
+            if editor != nil {
+                window?.endEditing(for: nil)
+            }
+            if let window, window.firstResponder === searchField || (editor != nil && window.firstResponder === editor) {
+                window.makeFirstResponder(nil)
+            }
+            searchField.setEditing(false)
+            if collapsingExpanded && searchExpanded && searchField.stringValue.isEmpty {
+                searchExpanded = false
+                updateSearchVisibility(relayoutSynchronously: true)
+            }
+            if flushDisplay {
+                searchField.displayIfNeeded()
+                playerHeader?.displayIfNeeded()
+                CATransaction.flush()
+            }
+        }
+
         private func handleSearchPointerDown(_ event: NSEvent) -> NSEvent {
-            guard event.window === window, searchField.editing, searchField.currentEditor() != nil else { return event }
-            let fieldRect = searchField.convert(searchField.bounds, to: nil).insetBy(dx: -4, dy: -2)
-            if !fieldRect.contains(event.locationInWindow) { window?.makeFirstResponder(nil); searchField.setEditing(false) }
+            if event.window === window && isPointInToolbar(event.locationInWindow),
+               (ProcessInfo.processInfo.systemUptime - reactivatedSearchFromToolbarAt) < 0.15 {
+                // Consume the single waking click that brought the app forward via the toolbar.
+                reactivatedSearchFromToolbarAt = 0
+                return event
+            }
+            reactivatedSearchFromToolbarAt = 0
+            preserveSearchFocusAcrossDeactivation = false
+            savedSearchSelection = nil
+            let editor = searchField.currentEditor()
+            let active = searchField.editing || editor != nil || window?.firstResponder === searchField || (editor != nil && window?.firstResponder === editor)
+            guard active else { return event }
+            if event.window === window, !searchField.isHidden {
+                let fieldRect = searchField.convert(searchField.bounds, to: nil)
+                if fieldRect.contains(event.locationInWindow) {
+                    return event
+                }
+            }
+            endSearchEditing(flushDisplay: true)
             return event
         }
 
@@ -664,7 +1096,15 @@
             let header = PlayerHeaderMac(frame: NSRect(x: 0, y: content.bounds.height - CGFloat(titleBarHeight), width: content.bounds.width, height: CGFloat(titleBarHeight)))
             header.identifier = NSUserInterfaceItemIdentifier("playerHeader")
             header.autoresizingMask = [.width, .minYMargin]
-            header.onLayout = { [weak self] in self?.layoutPlayerHeader() }
+            header.wantsLayer = true
+            header.layer?.masksToBounds = false
+            if #available(macOS 14.0, *) { header.clipsToBounds = false }
+            header.onPointerPresence = { [weak self] in self?.player.setHeaderHovered($0) }
+            header.onLayout = { [weak self] in
+                guard let self else { return }
+                if let relayout = self.relayoutTitleArea { relayout() }
+                else { self.layoutPlayerHeader() }
+            }
             playerHeader = header
             let trafficArea = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self)
             header.addTrackingArea(trafficArea); trafficLightArea = trafficArea
@@ -674,12 +1114,48 @@
             queueButton.isEnabled = PlaybackController.shared.track != nil
             queueToken = PlaybackController.shared.didChange.observe { [weak self] in self?.queueButton.isEnabled = PlaybackController.shared.track != nil }
             searchField.delegate = self; searchField.sendsSearchStringImmediately = true
-            if #available(macOS 11, *) { searchField.controlSize = .large }
+            searchField.target = self; searchField.action = #selector(searchFieldAction(_:))
+            searchField.controlSize = .regular
+            searchField.setPrompt("Search")
             searchField.setAccessibilityLabel("Search")
+            searchField.willDeactivateWindow = { [weak self] in
+                self?.suspendSearchEditingForDeactivation()
+            }
             if outsideSearchMonitor == nil {
-                outsideSearchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                outsideSearchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
                     MainActor.assumeIsolated { _ = self?.handleSearchPointerDown(event) }
                     return event
+                }
+            }
+            if searchDismissObservers.isEmpty {
+                for (name, object) in [
+                    (NSPopover.willShowNotification, nil),
+                    (NSMenu.didBeginTrackingNotification, nil)
+                ] as [(Notification.Name, Any?)] {
+                    searchDismissObservers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.endSearchEditing(flushDisplay: true) }
+                    })
+                }
+                for (name, object) in [
+                    (NSApplication.didResignActiveNotification, nil),
+                    (NSWindow.didResignKeyNotification, window)
+                ] as [(Notification.Name, Any?)] {
+                    searchDismissObservers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.suspendSearchEditingForDeactivation() }
+                    })
+                }
+                for (name, object) in [
+                    (NSApplication.didBecomeActiveNotification, nil),
+                    (NSWindow.didBecomeKeyNotification, window),
+                    (MacWindowLifecycle.visualActivationDidChange, nil)
+                ] as [(Notification.Name, Any?)] {
+                    searchDismissObservers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            if let self, MacWindowLifecycle.shared.isWindowVisuallyActive(self.window) {
+                                self.restoreSearchFocusOnActivationIfNeeded()
+                            }
+                        }
+                    })
                 }
             }
             searchButton.setSymbol("magnifyingglass", size: 15)
@@ -712,8 +1188,8 @@
             player.trailingControlsWidth = !searchField.isHidden ? 194 : !searchButton.isHidden ? 63 : 12
             player.layout(in: header)
             queueButton.frame = NSRect(x: player.lcd.frame.maxX + 8, y: 9, width: 39, height: 26)
-            searchField.frame = NSRect(x: header.bounds.width - 182, y: 8, width: 170, height: 28)
-            searchButton.frame = NSRect(x: header.bounds.width - 51, y: 9, width: 39, height: 26)
+            searchField.frame = NSRect(x: floor(header.bounds.width - 182), y: 10, width: 170, height: 24)
+            searchButton.frame = NSRect(x: floor(header.bounds.width - 51), y: 9, width: 39, height: 26)
         }
 
         // MARK: Sidebar
@@ -1596,6 +2072,37 @@ private final class SidebarSplitDelegateProxy: NSObject, NSSplitViewDelegate {
         }
 
         target?.splitViewDidResizeSubviews?(notification)
+    }
+}
+
+@MainActor
+private final class OpaqueExitBackdropView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isOpaque: Bool { alphaValue >= 0.999 }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        dirtyRect.fill()
+    }
+}
+
+@MainActor
+private final class FocusRingPrimerView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+    override var focusRingType: NSFocusRingType { get { .exterior } set {} }
+    override var focusRingMaskBounds: NSRect { bounds }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func drawFocusRingMask() {
+        NSColor.black.withAlphaComponent(0.01).setFill()
+        bounds.fill()
     }
 }
 

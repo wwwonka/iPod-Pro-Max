@@ -49,3 +49,13 @@ Testé sur deux flux réels récupérés sur YouTube (`https://www.youtube.com/w
 3. **`yt-dlp -f bestaudio[ext=webm] -x --audio-format m4a --audio-quality 256K --ffmpeg-location <ffmpeg>`** : **`[ExtractAudio]` produit directement `.m4a` (`rc=0`)**.
 
 **Conclusion** : `Tools/FFmpeg/build.sh` n'a besoin d'aucun composant supplémentaire. Note macOS : veiller à utiliser `/usr/bin/clang` plutôt qu'un `clang` Homebrew sur `PATH` lors de la compilation de FFmpeg.
+
+---
+
+## 3. Détection et priorité des versions vidéo
+
+Pour éviter qu'une piste issue d'un vidéoclip (par exemple `(Official Video)`, `(Music Video)`, `(Official Music Video)`, `(Lyric Video)`, `(Clip Officiel)`) ne soit remplacée silencieusement par la version album studio :
+
+- **Détection (`YtDlpHandler.isVideoVersionTrack`, `TrackTextNormalizer.hasVideoVersionQualifier`)** : inspecte le titre et l'album pour repérer les qualificateurs vidéo explicites sans dépendre de `MediaKit` depuis l'exécutable `YtDlpPlugin`.
+- **Résolution et score (`YtDlpHandler.resolve`, `CandidateScorer`, `SubscriptionEngine`)** : lorsque le morceau est identifié comme version vidéo, la recherche YouTube générale (`ytsearch5:"<artiste> <titre>"`) passe avant YouTube Music, les résultats non-`- Topic` avec marqueur vidéo sont classés devant les audio album (Soulseek ou `- Topic`), et le moteur d'abonnements place `yt-dlp` en tête tout en bloquant les mises à niveau vers d'autres résolveurs.
+- **Correspondance locale (`LibraryTrackMatcher`)** : une piste locale dépourvue de marqueur vidéo (album studio) ne satisfait pas un `TrackRef` qualifié vidéo (ni par ISRC ni par titre/artiste).

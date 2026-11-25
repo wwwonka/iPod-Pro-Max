@@ -22,6 +22,49 @@ public enum TrackTextNormalizer {
         "official visualizer",
     ]
 
+    /// Qualifiers that explicitly designate a video version rather than studio/album audio.
+    private static let explicitVideoPhrases: [String] = [
+        "official music video",
+        "official lyric video",
+        "official video",
+        "music video",
+        "lyric video",
+        "video version",
+        "clip officiel",
+        "official clip",
+    ]
+
+    /// True when a track title/album explicitly asks for a music/lyric/official video version
+    /// rather than a studio album track.
+    public static func hasVideoVersionQualifier(title: String, album: String? = nil) -> Bool {
+        let texts = [title, album].compactMap { $0 }.map(foldAndLowercase)
+        for raw in texts where !raw.isEmpty {
+            let collapsed = collapseWhitespaceAndPunctuation(raw)
+            let padded = " " + collapsed + " "
+            if explicitVideoPhrases.contains(where: { padded.contains(" \($0) ") }) {
+                return true
+            }
+            // Match standalone `(video)` / `[video]` or trailing `- video` markers cleanly.
+            var i = raw.startIndex
+            while i < raw.endIndex {
+                let ch = raw[i]
+                if ch == "(" || ch == "[" {
+                    let close: Character = ch == "(" ? ")" : "]"
+                    if let end = raw[raw.index(after: i)...].firstIndex(of: close) {
+                        let inner = collapseWhitespaceAndPunctuation(String(raw[raw.index(after: i)..<end]))
+                        if inner == "video" || inner == "clip" || inner.contains("music video") || inner.contains("lyric video") {
+                            return true
+                        }
+                        i = raw.index(after: end)
+                        continue
+                    }
+                }
+                i = raw.index(after: i)
+            }
+        }
+        return false
+    }
+
     /// Normalizes a track title for matching, stripping upload noise (`(Official Video)`,
     /// `[Explicit]`, `(Remastered 2021)`, etc.) while keeping remix / live / acoustic qualifiers.
     public static func normalizeTitle(_ raw: String) -> String {
@@ -157,6 +200,7 @@ public struct LibraryTrackMatcher: Sendable {
         var normalizedAlbum: String
         var artists: [String]
         var inDownloadFolder: Bool
+        var isVideoVersion: Bool
     }
 
     private let bySourceKey: [String: [IndexedTrack]]
@@ -185,7 +229,8 @@ public struct LibraryTrackMatcher: Sendable {
                 normalizedTitle: normTitle,
                 normalizedAlbum: normAlbum,
                 artists: artists,
-                inDownloadFolder: inDownload
+                inDownloadFolder: inDownload,
+                isVideoVersion: TrackTextNormalizer.hasVideoVersionQualifier(title: track.title, album: track.album)
             )
             idMap[track.id] = entry
 
@@ -228,11 +273,14 @@ public struct LibraryTrackMatcher: Sendable {
         }
 
         // 2. ISRC match
+        let refIsVideo = TrackTextNormalizer.hasVideoVersionQualifier(title: ref.title, album: ref.album)
         if let rawISRC = ref.isrc?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
            !rawISRC.isEmpty,
-           let isrcMatches = byISRC[rawISRC],
-           let best = pickBest(from: isrcMatches) {
-            return best
+           let isrcMatches = byISRC[rawISRC] {
+            let compatible = refIsVideo ? isrcMatches.filter(\.isVideoVersion) : isrcMatches
+            if let best = pickBest(from: compatible) {
+                return best
+            }
         }
 
         // 3. Normalized artist + title with duration ±3s OR matching album
@@ -247,6 +295,7 @@ public struct LibraryTrackMatcher: Sendable {
         for artist in refArtists {
             for item in byArtistTitleKey["\(artist)\u{1}\(targetTitle)", default: []] {
                 guard seenIDs.insert(item.track.id).inserted else { continue }
+                if refIsVideo && !item.isVideoVersion { continue }
                 let durationMatch = (ref.durationMs ?? 0) > 0 && item.track.durationMs > 0
                     && abs((ref.durationMs ?? 0) - item.track.durationMs) <= 5000
                 let albumMatch = !targetAlbum.isEmpty && !item.normalizedAlbum.isEmpty && targetAlbum == item.normalizedAlbum

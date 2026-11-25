@@ -16,6 +16,8 @@ struct AlbumBrowser: GtkWidgetRepresentable {
     var onArtworkSize: (Double) -> Void = { _ in }
     var onArtworkCommit: (Double) -> Void = { _ in }
     var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+    var artworkAspect: Double = 1
+    var onOpen: ((String) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeGtkWidget(context: Context) -> Gtk.Widget {
@@ -52,7 +54,7 @@ struct AlbumBrowser: GtkWidgetRepresentable {
     }
     func updateGtkWidget(_ widget: Gtk.Widget, context: Context) {
         let c = context.coordinator
-        c.onArtworkSize = onArtworkSize; c.onPlay = onPlay
+        c.onArtworkSize = onArtworkSize; c.onPlay = onPlay; c.onOpen = onOpen
         let changed = !c.source.sameStorage(as: albums) || c.query != query || c.folder != artworkFolder
         let sizeChanged = abs(c.artworkSize - artworkSize) > 0.5
         guard changed || sizeChanged else { return }
@@ -82,6 +84,7 @@ struct AlbumBrowser: GtkWidgetRepresentable {
         var preservedScroll = 0.0
         var onArtworkSize: (Double) -> Void = { _ in }
         var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var onOpen: ((String) -> Void)?
         var selectedRow: Int? { selectedID.flatMap { id in albums.firstIndex { $0.id == id } }.map { $0 / columns } }
         var count: Int { (albums.count + columns - 1) / columns + (selectedRow == nil ? 0 : 1) }
         func albumRow(_ position: Int) -> Int? {
@@ -246,6 +249,7 @@ private let albumClicked: @convention(c) (OpaquePointer?, gpointer?) -> Void = {
     MainActor.assumeIsolated {
         let action = Unmanaged<AlbumAction>.fromOpaque(data).takeUnretainedValue()
         guard let c = action.coordinator else { return }
+        if let open = c.onOpen { open(action.id); return }
         c.selectedID = c.selectedID == action.id ? nil : action.id; c.reload()
     }
 }

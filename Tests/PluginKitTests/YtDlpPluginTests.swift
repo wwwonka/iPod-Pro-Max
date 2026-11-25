@@ -63,4 +63,28 @@ final class YtDlpPluginTests: XCTestCase {
         XCTAssertEqual(YtDlpHandler.parseProgressPercent("125%"), 100.0)
         XCTAssertNil(YtDlpHandler.parseProgressPercent("[ExtractAudio] Destination: out.m4a"))
     }
+
+    func testVideoVersionDetectionAndHintOrdering() {
+        let videoRef = TrackRef(source: "spotify", sourceID: "v1", title: "Dive (Official Video)", artists: ["Olivia Dean"])
+        let albumRef = TrackRef(source: "spotify", sourceID: "a1", title: "Dive", artists: ["Olivia Dean"])
+        XCTAssertTrue(YtDlpHandler.isVideoVersionTrack(videoRef))
+        XCTAssertFalse(YtDlpHandler.isVideoVersionTrack(albumRef))
+
+        let topicJSON: [String: Any] = [
+            "id": "t1",
+            "title": "Dive",
+            "channel": "Olivia Dean - Topic",
+            "duration": 200,
+        ]
+        let videoJSON: [String: Any] = [
+            "id": "v1",
+            "title": "Olivia Dean - Dive (Official Video)",
+            "channel": "OliviaDeanVEVO",
+            "duration": 215,
+        ]
+        let topicCand = YtDlpHandler.parseSearchEntry(topicJSON, isYTMusic: true, primaryArtist: "Olivia Dean", fallbackTrack: videoRef, preferVideo: true)
+        let videoCand = YtDlpHandler.parseSearchEntry(videoJSON, isYTMusic: false, primaryArtist: "Olivia Dean", fallbackTrack: videoRef, preferVideo: true)
+        XCTAssertEqual(topicCand?.hint, 0.2)
+        XCTAssertEqual(videoCand?.hint, 0.9)
+    }
 }

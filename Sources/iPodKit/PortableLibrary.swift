@@ -1,7 +1,7 @@
 import Foundation
 
 public enum SourceKind: String, Codable, Sendable {
-    case music, audiobooks, videos, photos
+    case music, audiobooks, videos, photos, games
     /// Folders dedicated to one kind of video (Settings → General → Videos).
     case movies, tvShows, musicVideos, webVideos
 }
@@ -243,7 +243,8 @@ public struct PortableSettings: Codable, Sendable {
     public var lastTab: String?
     public var sectionTabs: [String: String] = [:]
     public var sidebarOpen = true
-    public var albumArtworkSize: Double = 172
+    /// Cover width of each grid page (`GridSection.key`: "albums", "games"…), zoomed separately.
+    public var gridArtworkSizes: [String: Double] = [:]
     public var playerLCDMode = "title"
     public var playerShowsRemaining = true
     public var temporaryCacheLimitMB = 200
@@ -261,10 +262,11 @@ public struct PortableSettings: Codable, Sendable {
     public var acceptYouTubeFallback: Bool?
     public init() {}
     private enum CodingKeys: String, CodingKey {
-        case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, albumArtworkSize, favoriteIcon, hiddenTrackColumns, sidebarOrder
+        case version, syncArtwork, musicViewMode, sidebarWidth, lastTab, sectionTabs, sidebarOpen, gridArtworkSizes, favoriteIcon, hiddenTrackColumns, sidebarOrder
         case temporaryCacheLimitMB, clearSpectrumOnExit, clearWaveformsOnExit, playerLCDMode, playerShowsRemaining
         case preferredFormats, minimumBitrateKbps, acceptYouTubeFallback
     }
+    private enum LegacyKeys: String, CodingKey { case albumArtworkSize, gameArtworkSize }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         temporaryCacheLimitMB = try values.decodeIfPresent(Int.self, forKey: .temporaryCacheLimitMB) ?? 200
@@ -279,7 +281,12 @@ public struct PortableSettings: Codable, Sendable {
         lastTab = try values.decodeIfPresent(String.self, forKey: .lastTab)
         sectionTabs = try values.decodeIfPresent([String: String].self, forKey: .sectionTabs) ?? [:]
         sidebarOpen = try values.decodeIfPresent(Bool.self, forKey: .sidebarOpen) ?? true
-        albumArtworkSize = try values.decodeIfPresent(Double.self, forKey: .albumArtworkSize) ?? 172
+        gridArtworkSizes = try values.decodeIfPresent([String: Double].self, forKey: .gridArtworkSizes) ?? [:]
+        // Sizes saved one key per page before they were grouped.
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        for (key, section) in [(LegacyKeys.albumArtworkSize, "albums"), (.gameArtworkSize, "games")] where gridArtworkSizes[section] == nil {
+            if let size = try legacy.decodeIfPresent(Double.self, forKey: key) { gridArtworkSizes[section] = size }
+        }
         favoriteIcon = try values.decodeIfPresent(String.self, forKey: .favoriteIcon) ?? "heart"
         hiddenTrackColumns = try values.decodeIfPresent([String].self, forKey: .hiddenTrackColumns)
         sidebarOrder = try values.decodeIfPresent([String: [String]].self, forKey: .sidebarOrder) ?? [:]

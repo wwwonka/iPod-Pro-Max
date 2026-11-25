@@ -252,6 +252,7 @@ public actor SubscriptionEngine {
         let hasPendingUpgrades = attemptQualityUpgrades && hasNonYTForUpgrade && entry.tracks.contains { item in
             guard item.status == .available,
                   item.trackRef.isVideo != true,
+                  !TrackTextNormalizer.hasVideoVersionQualifier(title: item.trackRef.title, album: item.trackRef.album),
                   let tid = item.libraryTrackID,
                   let track = existingByID[tid],
                   FileManager.default.fileExists(atPath: track.path) else {
@@ -360,6 +361,7 @@ public actor SubscriptionEngine {
                 guard !targetKeySet.contains(item.key),
                       item.trackRef.isVideo != true,
                       item.status == .available,
+                      !TrackTextNormalizer.hasVideoVersionQualifier(title: item.trackRef.title, album: item.trackRef.album),
                       let tid = item.libraryTrackID,
                       let localTrack = matchedByID[tid] else {
                     return false
@@ -557,8 +559,15 @@ public actor SubscriptionEngine {
     ) async -> AttemptOutcome {
         var lastReason: String?
         var anyCandidatesFound = false
+        let preferYouTubeVideo = TrackTextNormalizer.hasVideoVersionQualifier(
+            title: item.trackRef.title,
+            album: item.trackRef.album
+        ) && resolverIDs.contains("yt-dlp")
+        let orderedForTrack = preferYouTubeVideo
+            ? ["yt-dlp"] + resolverIDs.filter { $0 != "yt-dlp" }
+            : resolverIDs
 
-        for resolverID in resolverIDs {
+        for resolverID in orderedForTrack {
             if Task.isCancelled || stateBox.isDiskFullPaused { break }
             if resolverID == "yt-dlp" && stateBox.isYTDLPRateLimited { continue }
 

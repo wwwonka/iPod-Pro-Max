@@ -16,6 +16,8 @@ struct AlbumBrowser: WinUIElementRepresentable {
     var onArtworkSize: (Double) -> Void = { _ in }
     var onArtworkCommit: (Double) -> Void = { _ in }
     var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+    var artworkAspect: Double = 1
+    var onOpen: ((String) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeWinUIElement(context: Context) -> WinUI.ListView {
@@ -59,7 +61,7 @@ struct AlbumBrowser: WinUIElementRepresentable {
     }
     func updateWinUIElement(_ list: WinUI.ListView, context: Context) {
         let c = context.coordinator
-        c.onSelect = onSelect; c.onArtworkSize = onArtworkSize; c.onPlay = onPlay
+        c.onSelect = onSelect; c.onArtworkSize = onArtworkSize; c.onPlay = onPlay; c.onOpen = onOpen; c.aspect = artworkAspect
         let changed = !c.source.sameStorage(as: albums) || c.query != query || c.folder != artworkFolder
         let sizeChanged = abs(c.artworkSize - artworkSize) > 0.5
         guard changed || sizeChanged else { return }
@@ -98,6 +100,8 @@ struct AlbumBrowser: WinUIElementRepresentable {
         var onSelect: (String) -> Void = { _ in }
         var onArtworkSize: (Double) -> Void = { _ in }
         var onPlay: (TrackRow, [TrackRow]) -> Void = { _, _ in }
+        var onOpen: ((String) -> Void)?
+        var aspect = 1.0
         private var tiles: [Tile] = []
         // Keep a small bounded cache so a rebuilt visible row doesn't flash its placeholder.
         private var bitmaps: [String: BitmapImage] = [:]
@@ -119,8 +123,8 @@ struct AlbumBrowser: WinUIElementRepresentable {
         func updateVisibleSizes() {
             for tile in tiles {
                 tile.content.width = artworkSize
-                tile.image.width = artworkSize; tile.image.height = artworkSize
-                tile.border.width = artworkSize; tile.border.height = artworkSize
+                tile.image.width = artworkSize; tile.image.height = artworkSize * aspect
+                tile.border.width = artworkSize; tile.border.height = artworkSize * aspect
             }
         }
         private func scrollViewer(_ element: DependencyObject) -> ScrollViewer? {
@@ -162,6 +166,7 @@ struct AlbumBrowser: WinUIElementRepresentable {
             tile.border.borderThickness = Thickness(left: edge, top: edge, right: edge, bottom: edge)
         }
         private func selectAlbum(_ id: String) {
+            if let onOpen { onOpen(id); return }
             guard let list, let albumIndex = albums.firstIndex(where: { $0.id == id }) else { return }
             let next = selectedID == id ? nil : id
             if let old = rows.firstIndex(where: { if case .detail = $0 { return true }; return false }) {
@@ -193,12 +198,12 @@ struct AlbumBrowser: WinUIElementRepresentable {
                 guard start + index < albums.count else { continue }
                 let album = albums[start + index]
                 let content = StackPanel(); content.spacing = 6; content.width = artworkSize
-                let image = WinUI.Image(); image.width = artworkSize; image.height = artworkSize
+                let image = WinUI.Image(); image.width = artworkSize; image.height = artworkSize * aspect
                 let hasArtwork = folder != nil && album.artworkKey != nil
                 if let folder, let key = album.artworkKey {
                     image.source = bitmap(for: folder.appendingPathComponent(key + ".jpg"))
                 }
-                let border = Border(); border.width = artworkSize; border.height = artworkSize
+                let border = Border(); border.width = artworkSize; border.height = artworkSize * aspect
                 border.cornerRadius = CornerRadius(topLeft: 3, topRight: 3, bottomRight: 3, bottomLeft: 3)
                 if hasArtwork { border.child = image }
                 else {

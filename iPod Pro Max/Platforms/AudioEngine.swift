@@ -18,18 +18,22 @@ import AppKit
     private var statusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
     private var visible = true
+    private var awaitingPlayback = false
     private var active = false
     private var generation = 0
     /// The LCD owns visibility. Auxiliary windows must never reactivate this clock.
     var isProgressObserverInstalled: Bool { timeObserver != nil }
     init() {
         rateObserver = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
+            let item = player.currentItem
             Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil else { return }
+                guard let self, item != nil, self.player.currentItem === item else { return }
                 let rate = self.player.rate
-                if rate == 0, self.active, self.player.timeControlStatus == .paused {
+                if rate == 0, self.active, !self.awaitingPlayback, self.player.timeControlStatus == .paused {
                     self.active = false; self.updateObserver(); self.onPlaybackState?(false)
-                } else if rate > 0, !self.active { self.active = true; self.updateObserver(); self.onPlaybackState?(true) }
+                } else if rate > 0 {
+                    if !self.active { self.active = true; self.updateObserver(); self.onPlaybackState?(true) }
+                }
             }
         }
 
@@ -64,9 +68,9 @@ import AppKit
         }
         player.replaceCurrentItem(with: item)
     }
-    func play() { active = true; player.playImmediately(atRate: playbackRate); updateObserver() }
+    func play() { awaitingPlayback = true; active = true; player.playImmediately(atRate: playbackRate); updateObserver() }
     func setRate(_ rate: Double) { playbackRate = Float(rate); player.currentItem?.audioTimePitchAlgorithm = .timeDomain; if active { player.rate = playbackRate } }
-    func pause() { active = false; player.pause(); updateObserver() }
+    func pause() { awaitingPlayback = false; active = false; player.pause(); updateObserver() }
     func seek(_ seconds: Double) { seek(seconds, completion: {}) }
     func seek(_ seconds: Double, completion: @escaping () -> Void) {
         let revision = generation
@@ -79,9 +83,11 @@ import AppKit
     private func updateObserver() {
         if (!visible || !active), let token = timeObserver { player.removeTimeObserver(token); timeObserver = nil }
         guard visible, active, timeObserver == nil else { return }
+        let revision = generation
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.generation == revision else { return }
+                if time.seconds > 0, self.player.timeControlStatus == .playing { self.awaitingPlayback = false }
                 self.onProgress?(time.seconds, self.player.currentItem?.duration.seconds ?? 0)
             }
         }
