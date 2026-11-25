@@ -645,7 +645,7 @@ struct PluginsSettingsTabView: View {
                             }
                         }
                         HStack {
-                            if plugin.id == "spotify" && BrowserCookieImporter.isSupportedOnPlatform {
+                            if (plugin.id == "spotify" || plugin.id == "youtube-music") && BrowserCookieImporter.isSupportedOnPlatform {
                                 Button("Import from Browser…") {
                                     controller.importAccountFromBrowser(pluginID: plugin.id, setting: setting)
                                 }
@@ -658,7 +658,7 @@ struct PluginsSettingsTabView: View {
                         }
                         if controller.browserImportPluginID == plugin.id && !controller.browserImportChoices.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Spotify session found in multiple browsers — choose one:")
+                                Text("\(plugin.name) session found in multiple browsers — choose one:")
                                     .font(.system(size: 11))
                                     .foregroundColor(MacColor.secondaryText)
                                 ForEach(controller.browserImportChoices) { candidate in

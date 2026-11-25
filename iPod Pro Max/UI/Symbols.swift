@@ -248,6 +248,41 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
             return image
         }
 
+        if pluginID == "youtube-music" {
+            let s = CGFloat(pointSize / 14.0)
+            let side = 16.0 * s
+            let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+                // Hollow outer ring matching SF Symbol "clock" ("Recently Added") circumference and stroke weight.
+                let r = 6.15 * s
+                let center = 8.0 * s
+                let outer = NSBezierPath(ovalIn: NSRect(x: center - r, y: center - r, width: r * 2, height: r * 2))
+                outer.lineWidth = 1.15 * s
+                NSColor.black.setStroke()
+                outer.stroke()
+
+                // Inner YouTube Music concentric ring + hollow play triangle.
+                let rInner = 3.75 * s
+                let inner = NSBezierPath(ovalIn: NSRect(x: center - rInner, y: center - rInner, width: rInner * 2, height: rInner * 2))
+                inner.lineWidth = 0.90 * s
+                inner.stroke()
+
+                let play = NSBezierPath()
+                play.lineWidth = 0.95 * s
+                play.lineJoinStyle = .round
+                play.lineCapStyle = .round
+                play.move(to: NSPoint(x: 6.95 * s, y: 6.15 * s))
+                play.line(to: NSPoint(x: 6.95 * s, y: 9.85 * s))
+                play.line(to: NSPoint(x: 10.05 * s, y: 8.0 * s))
+                play.close()
+                play.stroke()
+                return true
+            }
+            image.isTemplate = true
+            image.accessibilityDescription = description
+            compositeSubscriptionSymbolCache[key] = image
+            return image
+        }
+
         let width = CGFloat(pointSize * 1.50)
         let height = CGFloat(pointSize * 1.15)
         let lines = customSymbols["playlist-lines"]

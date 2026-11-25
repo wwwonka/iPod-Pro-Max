@@ -556,7 +556,10 @@ extension Array {
                 let parent = NSMenuItem(title: "Add to Playlist", action: nil, keyEquivalent: "")
                 let choices = NSMenu()
                 for playlist in targetPlaylists {
-                    let title = playlist.subscriptionID != nil ? "\(playlist.name) (Spotify)" : playlist.name
+                    let sourceSuffix = playlist.subscriptionID.flatMap { _ in
+                        SubscriptionController.shared.subscription(forPlaylistID: playlist.id)?.sourceName
+                    }
+                    let title = sourceSuffix.map { "\(playlist.name) (\($0))" } ?? playlist.name
                     let item = NSMenuItem(title: title, action: #selector(addToPlaylist(_:)), keyEquivalent: "")
                     item.representedObject = playlist.id
                     item.target = self

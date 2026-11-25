@@ -7,6 +7,7 @@ struct SpotifyWebAuthSession: Sendable {
     var clientToken: String?
     var expiresAtMs: Int64
     var displayName: String?
+    var pathfinderHashes: [String: String] = [:]
 }
 
 #if canImport(WebKit) && canImport(AppKitBackend)
@@ -114,6 +115,31 @@ final class SpotifyWebBridge: NSObject {
           }
         } catch (_) {}
       }
+      function inspectPathfinderRequest(url, bodyText) {
+        if (!url || url.indexOf('pathfinder') === -1) return;
+        try {
+          if (url.indexOf('operationName=') !== -1) {
+            var u = new URL(url, window.location.origin);
+            var op = u.searchParams.get('operationName');
+            var extRaw = u.searchParams.get('extensions');
+            if (op && extRaw) {
+              var ext = JSON.parse(extRaw);
+              var h = ext && ext.persistedQuery && ext.persistedQuery.sha256Hash;
+              if (h && typeof h === 'string') {
+                send({ kind: 'queryHash', operationName: op, sha256Hash: h });
+              }
+            }
+          }
+          if (bodyText && typeof bodyText === 'string' && bodyText.indexOf('persistedQuery') !== -1) {
+            var b = JSON.parse(bodyText);
+            var bop = b && b.operationName;
+            var bh = b && b.extensions && b.extensions.persistedQuery && b.extensions.persistedQuery.sha256Hash;
+            if (bop && bh && typeof bh === 'string') {
+              send({ kind: 'queryHash', operationName: bop, sha256Hash: bh });
+            }
+          }
+        } catch (_) {}
+      }
       function inspectTokenJSON(url, data) {
         if (!data || typeof data !== 'object') return;
         if (data.accessToken && (url.indexOf('/api/token') !== -1 || url.indexOf('get_access_token') !== -1 || data.accessTokenExpirationTimestampMs)) {
@@ -191,6 +217,7 @@ final class SpotifyWebBridge: NSObject {
               var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
               if (init && init.headers) inspectHeaders(init.headers);
               if (input && input.headers) inspectHeaders(input.headers);
+              inspectPathfinderRequest(url, init && typeof init.body === 'string' ? init.body : null);
               var p = origFetch.apply(this, arguments);
               if (url && (url.indexOf('/api/token') !== -1 || url.indexOf('get_access_token') !== -1 || url.indexOf('clienttoken.spotify.com') !== -1 || url.indexOf('pathfinder') !== -1 || url.indexOf('/v1/me') !== -1)) {
                 p.then(function(resp) {
@@ -338,6 +365,7 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
     private var capturedClientToken: String?
     private var capturedUsername: String?
     private var capturedExpiresAtMs: Int64 = 0
+    private var capturedHashes: [String: String] = [:]
     private var isAnonymousToken = true
     private var hasHeaderToken = false
     private var isFinishing = false
@@ -361,9 +389,11 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
             )
             window.title = "Sign in to Spotify"
             window.isReleasedWhenClosed = false
+            window.level = .floating
             window.center()
             window.delegate = self
             window.contentView = webView
+            window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             self.window = window
@@ -380,7 +410,9 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
 
     func windowWillClose(_ notification: Notification) {
         if !isFinishing {
-            finish(throwing: CancellationError())
+            finish(throwing: NSError(domain: "SpotifyWebBridge", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Sign in cancelled."
+            ]))
         }
     }
 
@@ -413,6 +445,11 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
         case "username":
             if let uname = body["username"] as? String, !uname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 capturedUsername = uname.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        case "queryHash":
+            if let op = body["operationName"] as? String, !op.isEmpty,
+               let hash = body["sha256Hash"] as? String, !hash.isEmpty {
+                capturedHashes[op] = hash
             }
         default:
             break
@@ -471,9 +508,11 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
         guard !isAnonymousToken, let accessToken = capturedAccessToken, !accessToken.isEmpty else {
             return
         }
-        // Give Spotify Web up to 600 ms to also emit its `client-token` and user handle if not yet received.
-        if capturedClientToken == nil || capturedUsername == nil {
-            try? await Task.sleep(nanoseconds: 600_000_000)
+        // Give Spotify Web up to ~2 s to also emit its `client-token` and user handle if not yet received.
+        for _ in 0..<4 {
+            if capturedClientToken != nil && capturedUsername != nil { break }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !isFinishing else { return }
         }
         if capturedUsername == nil {
             await probeSessionScriptIfNeeded()
@@ -484,7 +523,8 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
             accessToken: accessToken,
             clientToken: capturedClientToken,
             expiresAtMs: capturedExpiresAtMs,
-            displayName: capturedUsername
+            displayName: capturedUsername,
+            pathfinderHashes: capturedHashes
         ))
     }
 
@@ -521,6 +561,7 @@ private final class InteractiveLoginSession: NSObject, NSWindowDelegate, WKNavig
 @MainActor
 private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let preferredPlaylistID: String?
+    private var hostWindow: NSWindow?
     private var webView: WKWebView?
     private var continuation: CheckedContinuation<SpotifyWebAuthSession?, Never>?
 
@@ -528,6 +569,7 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
     private var capturedClientToken: String?
     private var capturedUsername: String?
     private var capturedExpiresAtMs: Int64 = 0
+    private var capturedHashes: [String: String] = [:]
     private var isAnonymousToken = true
     private var spDCCache: String?
     private var isFinished = false
@@ -552,6 +594,19 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
                         messageHandler: self
                     )
                     webView.navigationDelegate = self
+                    // Attach to a tiny offscreen transparent window so WebKit does not AppNap/throttle JS hydration.
+                    let offscreen = NSWindow(
+                        contentRect: NSRect(x: -4000, y: -4000, width: 1280, height: 800),
+                        styleMask: [.borderless],
+                        backing: .buffered,
+                        defer: false
+                    )
+                    offscreen.isReleasedWhenClosed = false
+                    offscreen.alphaValue = 0
+                    offscreen.ignoresMouseEvents = true
+                    offscreen.contentView = webView
+                    offscreen.orderBack(nil)
+                    self.hostWindow = offscreen
                     self.webView = webView
 
                     let path = self.preferredPlaylistID.map { "playlist/\($0)" } ?? ""
@@ -605,17 +660,23 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
             if let uname = body["username"] as? String, !uname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 capturedUsername = uname.trimmingCharacters(in: .whitespacesAndNewlines)
             }
+        case "queryHash":
+            if let op = body["operationName"] as? String, !op.isEmpty,
+               let hash = body["sha256Hash"] as? String, !hash.isEmpty {
+                capturedHashes[op] = hash
+            }
         default:
             break
         }
 
-        if !isAnonymousToken, let tok = capturedAccessToken, !tok.isEmpty, capturedClientToken != nil, capturedUsername != nil {
+        if !isAnonymousToken, let tok = capturedAccessToken, !tok.isEmpty, capturedClientToken != nil, capturedUsername != nil, capturedHashes["libraryV3"] != nil {
             complete(with: SpotifyWebAuthSession(
                 spDC: spDCCache,
                 accessToken: tok,
                 clientToken: capturedClientToken,
                 expiresAtMs: capturedExpiresAtMs,
-                displayName: capturedUsername
+                displayName: capturedUsername,
+                pathfinderHashes: capturedHashes
             ))
         }
     }
@@ -628,18 +689,22 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
             return
         }
         Task {
-            for delayNs: UInt64 in [400_000_000, 600_000_000, 800_000_000] {
-                try? await Task.sleep(nanoseconds: delayNs)
+            // Poll up to ~8 s in short steps so SPA hydration + client-token handshake both complete cleanly.
+            for step in 0..<20 {
+                if step > 0 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
                 guard !self.isFinished else { return }
-                await self.probeUsernameIfNeeded(in: webView)
+                await self.probeSessionScriptIfNeeded(in: webView)
                 if !self.isAnonymousToken, let tok = self.capturedAccessToken, !tok.isEmpty,
-                   (self.capturedUsername != nil || delayNs == 800_000_000) {
+                   ((self.capturedClientToken != nil && self.capturedUsername != nil && self.capturedHashes["libraryV3"] != nil) || step >= 10) {
                     self.complete(with: SpotifyWebAuthSession(
                         spDC: self.spDCCache,
                         accessToken: tok,
                         clientToken: self.capturedClientToken,
                         expiresAtMs: self.capturedExpiresAtMs,
-                        displayName: self.capturedUsername
+                        displayName: self.capturedUsername,
+                        pathfinderHashes: self.capturedHashes
                     ))
                     return
                 }
@@ -647,8 +712,15 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
         }
     }
 
-    private func probeUsernameIfNeeded(in webView: WKWebView) async {
+    private func probeSessionScriptIfNeeded(in webView: WKWebView) async {
         guard let probed = await SpotifyWebBridge.probeOpenPage(webView) else { return }
+        if let tok = probed.accessToken, !tok.isEmpty, !probed.isAnonymous {
+            capturedAccessToken = tok
+            isAnonymousToken = false
+            if probed.expiresAtMs > 0 {
+                capturedExpiresAtMs = probed.expiresAtMs
+            }
+        }
         if let uname = probed.username, !uname.isEmpty {
             capturedUsername = uname
         }
@@ -661,6 +733,8 @@ private final class SilentRefreshSession: NSObject, WKNavigationDelegate, WKScri
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: SpotifyWebBridge.handlerName)
         webView?.navigationDelegate = nil
         webView = nil
+        hostWindow?.close()
+        hostWindow = nil
         continuation?.resume(returning: result)
         continuation = nil
     }

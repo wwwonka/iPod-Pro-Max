@@ -222,6 +222,11 @@ public struct LibraryTrackMatcher: Sendable {
             return best
         }
 
+        // Video entries (`MUSIC_VIDEO_TYPE_OMV`/`UGC`) must never fuzzy-match a studio album track by title/artist.
+        if ref.isVideo == true {
+            return nil
+        }
+
         // 2. ISRC match
         if let rawISRC = ref.isrc?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
            !rawISRC.isEmpty,

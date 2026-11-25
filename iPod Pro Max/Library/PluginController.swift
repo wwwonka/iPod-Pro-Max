@@ -94,7 +94,7 @@ final class PluginController {
     }
 
     private var discoverTask: Task<Void, Never>?
-    private var launchSpotifyRefreshTask: Task<Void, Never>?
+    private var launchWebRefreshTask: Task<Void, Never>?
     private var debounceTasks: [String: Task<Void, Never>] = [:]
     private var accountTasks: [String: Task<Void, Never>] = [:]
     private var oauthContinuations: [String: CheckedContinuation<PluginAccountStatus, Error>] = [:]
@@ -107,8 +107,8 @@ final class PluginController {
     func attach(_ store: PortableLibraryStore?) {
         self.store = store
         discoverTask?.cancel()
-        launchSpotifyRefreshTask?.cancel()
-        launchSpotifyRefreshTask = nil
+        launchWebRefreshTask?.cancel()
+        launchWebRefreshTask = nil
 
         guard let store else {
             registry = nil
@@ -179,28 +179,84 @@ final class PluginController {
 
             self.applyDiscovery(discovered: discovered, regState: regState, snapshot: snapshot)
             self.launchEnabledSharePlugins()
-            self.scheduleLaunchSpotifySessionRefresh()
+            self.scheduleLaunchWebSessionRefreshes()
         }
     }
 
-    private func scheduleLaunchSpotifySessionRefresh() {
-        guard SpotifyWebBridge.shared.isSupportedOnPlatform,
-              enabledIDs.contains("spotify"),
-              plugins.contains(where: { $0.id == "spotify" && !$0.overriddenByUnpacked && $0.isEnabledEligible }),
-              let registry else { return }
-        let hasSecrets = registry.settingsStore(for: "spotify").hasAccountSecrets
-        let isSignedIn: Bool = {
-            if case .signedIn = accountStates["spotify"]?.phase { return true }
-            return false
-        }()
-        guard hasSecrets || isSignedIn else { return }
-
-        launchSpotifyRefreshTask?.cancel()
-        launchSpotifyRefreshTask = Task(priority: .utility) { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard !Task.isCancelled else { return }
-            _ = await self?.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil)
+    private func scheduleLaunchWebSessionRefreshes() {
+        var pluginIDsToRefresh: [String] = []
+        for pid in ["spotify", "youtube-music"] {
+            let bridgeSupported = (pid == "spotify")
+                ? SpotifyWebBridge.shared.isSupportedOnPlatform
+                : YouTubeMusicWebBridge.shared.isSupportedOnPlatform
+            guard bridgeSupported,
+                  enabledIDs.contains(pid),
+                  plugins.contains(where: { $0.id == pid && !$0.overriddenByUnpacked && $0.isEnabledEligible }),
+                  let registry else { continue }
+            let hasSecrets = registry.settingsStore(for: pid).hasAccountSecrets
+            let isSignedIn: Bool = {
+                if case .signedIn = accountStates[pid]?.phase { return true }
+                return false
+            }()
+            if hasSecrets || isSignedIn {
+                pluginIDsToRefresh.append(pid)
+            }
         }
+        guard !pluginIDsToRefresh.isEmpty else { return }
+
+        launchWebRefreshTask?.cancel()
+        launchWebRefreshTask = Task(priority: .utility) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            // Immediately push saved secrets (`cookie`/`authUser`/`delegatedSessionID` or `sp_dc`) into plug-in runtimes
+            // if a plug-in's internal Data/ session is missing, before sync tasks start.
+            for pid in pluginIDsToRefresh {
+                guard !Task.isCancelled else { return }
+                await self.restoreSavedWebSessionIfMissing(pluginID: pid)
+            }
+            for pid in pluginIDsToRefresh {
+                guard !Task.isCancelled else { return }
+                _ = await self.refreshWebSessionIfPossible(pluginID: pid, preferredPlaylistID: nil)
+            }
+        }
+    }
+
+    private func restoreSavedWebSessionIfMissing(pluginID: String) async {
+        guard let registry,
+              let runtime = registry.runtime(for: pluginID) else { return }
+        let status = try? await runtime.accountStatus()
+        if status?.status == "signedIn" {
+            return
+        }
+        let pStore = registry.settingsStore(for: pluginID)
+        let secrets = pStore.loadSecretsDict()
+        var fields: [String: String] = [:]
+        if pluginID == "youtube-music",
+           let cookie = secrets["cookie"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !cookie.isEmpty {
+            fields["cookie"] = cookie
+            for k in ["authUser", "delegatedSessionID", "displayName"] {
+                if let v = secrets[k]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
+                    fields[k] = v
+                }
+            }
+        } else if pluginID == "spotify",
+                  let spDC = secrets["sp_dc"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !spDC.isEmpty {
+            fields["sp_dc"] = spDC
+            for k in ["displayName", "username", "clientToken"] {
+                if let v = secrets[k]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
+                    fields[k] = v
+                }
+            }
+        }
+        guard !fields.isEmpty,
+              let restored = try? await runtime.login(key: "account", fields: fields),
+              restored.status == "signedIn",
+              let plugin = plugins.first(where: { $0.id == pluginID && !$0.overriddenByUnpacked }),
+              let setting = plugin.manifest?.settings?.first(where: { $0.type == .account }) else {
+            return
+        }
+        applyAccountResult(pluginID: pluginID, status: restored, setting: setting, pStore: pStore)
     }
 
     func refreshDiscovery() {
@@ -369,10 +425,8 @@ final class PluginController {
                 guard running || hasSecrets || hasCachedAccount else { return }
                 if let status = try? await runtime.accountStatus() {
                     handleAccountStatusUpdate(pluginID: plugin.id, status: status)
-                    if plugin.id == "spotify",
-                       status.status == "signedIn",
-                       Self.needsSpotifyNameResolution(status.displayName) {
-                        _ = await self.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil)
+                    if status.status == "signedIn" && Self.needsWebAccountNameResolution(status.displayName, pluginID: plugin.id) {
+                        _ = await self.refreshWebSessionIfPossible(pluginID: plugin.id, preferredPlaylistID: nil)
                     }
                 }
             }
@@ -621,6 +675,20 @@ final class PluginController {
                         let fields = Self.loginFields(from: webSession)
                         let finalStatus = try await runtime.login(key: setting.key, fields: fields)
                         guard !Task.isCancelled else { return }
+                        Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: fields, pStore: pStore)
+                        self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
+                    } else if pluginID == "youtube-music" && YouTubeMusicWebBridge.shared.isSupportedOnPlatform {
+                        var state = self.accountStates[pluginID] ?? AccountUIState()
+                        state.phase = .waitingForBrowser(url, openFailed: false)
+                        self.accountStates[pluginID] = state
+                        self.notifyObservers()
+
+                        let webSession = try await YouTubeMusicWebBridge.shared.signInInteractively()
+                        guard !Task.isCancelled else { return }
+                        let fields = Self.loginFields(from: webSession)
+                        let finalStatus = try await runtime.login(key: setting.key, fields: fields)
+                        guard !Task.isCancelled else { return }
+                        Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: fields, pStore: pStore)
                         self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
                     } else {
                         let opened = SafeStorage.openURL(url)
@@ -634,6 +702,7 @@ final class PluginController {
                         self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
                     }
                 } else {
+                    Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: submittedFields, pStore: pStore)
                     if pluginID == "spotify",
                        let spDC = submittedFields["sp_dc"]?.trimmingCharacters(in: .whitespacesAndNewlines),
                        !spDC.isEmpty,
@@ -642,6 +711,11 @@ final class PluginController {
                         if await self.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil) {
                             return
                         }
+                    } else if pluginID == "youtube-music",
+                              let cookie = submittedFields["cookie"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                              !cookie.isEmpty,
+                              YouTubeMusicWebBridge.shared.isSupportedOnPlatform {
+                        await YouTubeMusicWebBridge.shared.seedCookies(fromHeader: cookie)
                     }
                     self.applyAccountResult(pluginID: pluginID, status: res, setting: setting, pStore: pStore)
                 }
@@ -731,6 +805,8 @@ final class PluginController {
         cancelBrowserImportChoices()
         if pluginID == "spotify" {
             SpotifyWebBridge.shared.cancelInteractiveSignIn()
+        } else if pluginID == "youtube-music" {
+            YouTubeMusicWebBridge.shared.cancelInteractiveSignIn()
         }
         accountTasks[pluginID]?.cancel()
         accountTasks.removeValue(forKey: pluginID)
@@ -751,9 +827,12 @@ final class PluginController {
         Task {
             if pluginID == "spotify" {
                 await SpotifyWebBridge.shared.signOut()
+            } else if pluginID == "youtube-music" {
+                await YouTubeMusicWebBridge.shared.signOut()
             }
             _ = try? await runtime?.logout()
             try? pStore.clearAccountSecrets()
+            SubscriptionController.shared.clearCachedUserPlaylists(for: pluginID)
             var acc = accountStates[pluginID] ?? AccountUIState()
             acc.phase = .signedOut
             acc.errorMessage = nil
@@ -763,7 +842,8 @@ final class PluginController {
     }
 
     func importAccountFromBrowser(pluginID: String, setting: PluginSettingDefinition) {
-        guard pluginID == "spotify", BrowserCookieImporter.isSupportedOnPlatform else { return }
+        guard let service = Self.browserCookieService(for: pluginID),
+              BrowserCookieImporter.isSupportedOnPlatform else { return }
         accountTasks[pluginID]?.cancel()
         browserImportChoices = []
         browserImportPluginID = nil
@@ -778,7 +858,7 @@ final class PluginController {
         accountTasks[pluginID] = Task {
             let scanResult = await Task.detached(priority: .userInitiated) {
                 (
-                    candidates: BrowserCookieImporter.discoverSpotifyCookieBrowsers(),
+                    candidates: BrowserCookieImporter.discoverCookieBrowsers(for: service),
                     safariBlocked: BrowserCookieImporter.safariBlockedByPermissions()
                 )
             }.value
@@ -787,7 +867,7 @@ final class PluginController {
             if scanResult.candidates.isEmpty {
                 let err: BrowserCookieImportError = scanResult.safariBlocked
                     ? .safariPermissionDenied
-                    : .noCookiesFound
+                    : .noCookiesFound(service: service.serviceDisplayName)
                 self.failAccountSignIn(
                     pluginID: pluginID,
                     message: err.localizedDescription,
@@ -816,6 +896,7 @@ final class PluginController {
 
     func selectBrowserImportCandidate(_ candidate: BrowserCookieCandidate) {
         guard let pluginID = browserImportPluginID ?? "spotify" as String?,
+              let service = Self.browserCookieService(for: pluginID),
               let setting = browserImportSetting,
               let runtime = registry?.runtime(for: pluginID),
               let registry else { return }
@@ -834,21 +915,35 @@ final class PluginController {
         accountTasks[pluginID]?.cancel()
         accountTasks[pluginID] = Task {
             do {
-                let spDC = try await Task.detached(priority: .userInitiated) {
-                    try BrowserCookieImporter.readSpotifyCookie(from: candidate)
+                let payload = try await Task.detached(priority: .userInitiated) {
+                    try BrowserCookieImporter.readCookiePayload(from: candidate, service: service)
                 }.value
                 guard !Task.isCancelled else { return }
 
-                if SpotifyWebBridge.shared.isSupportedOnPlatform {
-                    await SpotifyWebBridge.shared.seedSpDCCookie(spDC)
-                    if await self.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil) {
-                        return
+                switch service {
+                case .spotify:
+                    let spdcFields = ["sp_dc": payload]
+                    Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: spdcFields, pStore: pStore)
+                    if SpotifyWebBridge.shared.isSupportedOnPlatform {
+                        await SpotifyWebBridge.shared.seedSpDCCookie(payload)
+                        if await self.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: nil) {
+                            return
+                        }
                     }
-                }
+                    let finalStatus = try await runtime.login(key: setting.key, fields: spdcFields)
+                    guard !Task.isCancelled else { return }
+                    self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
 
-                let finalStatus = try await runtime.login(key: setting.key, fields: ["sp_dc": spDC])
-                guard !Task.isCancelled else { return }
-                self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
+                case .youtubeMusic:
+                    let cookieFields = ["cookie": payload]
+                    Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: cookieFields, pStore: pStore)
+                    if YouTubeMusicWebBridge.shared.isSupportedOnPlatform {
+                        await YouTubeMusicWebBridge.shared.seedCookies(fromHeader: payload)
+                    }
+                    let finalStatus = try await runtime.login(key: setting.key, fields: cookieFields)
+                    guard !Task.isCancelled else { return }
+                    self.applyAccountResult(pluginID: pluginID, status: finalStatus, setting: setting, pStore: pStore)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 self.failAccountSignIn(pluginID: pluginID, message: error.localizedDescription, setting: setting)
@@ -862,6 +957,18 @@ final class PluginController {
         browserImportPluginID = nil
         browserImportSetting = nil
         notifyObservers()
+    }
+
+    /// Silently boots an off-screen OS WebView to renew an expired Web session (`spotify` or `youtube-music`).
+    func refreshWebSessionIfPossible(pluginID: String, preferredPlaylistID: String?) async -> Bool {
+        switch pluginID {
+        case "spotify":
+            return await refreshSpotifyWebSessionIfPossible(preferredPlaylistID: preferredPlaylistID)
+        case "youtube-music":
+            return await refreshYouTubeMusicWebSessionIfPossible()
+        default:
+            return false
+        }
     }
 
     /// Silently boots an off-screen OS WebView to renew an expired Spotify Web token on demand.
@@ -879,25 +986,117 @@ final class PluginController {
         guard let webSession = await SpotifyWebBridge.shared.refreshSilently(preferredPlaylistID: preferredPlaylistID) else {
             return false
         }
-        let fields = Self.loginFields(from: webSession)
+        return await commitRefreshedWebLogin(pluginID: "spotify", fields: Self.loginFields(from: webSession), runtime: runtime, registry: registry)
+    }
+
+    func refreshYouTubeMusicWebSessionIfPossible() async -> Bool {
+        guard let runtime = registry?.runtime(for: "youtube-music"),
+              let registry,
+              YouTubeMusicWebBridge.shared.isSupportedOnPlatform else {
+            return false
+        }
+        let savedCookie = registry.settingsStore(for: "youtube-music")
+            .loadSecretsDict()["cookie"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let hadLiveCookies = await YouTubeMusicWebBridge.readCookieSessionFromStore().hasAuth
+        if !hadLiveCookies, let savedCookie, !savedCookie.isEmpty {
+            await YouTubeMusicWebBridge.shared.seedCookies(fromHeader: savedCookie)
+        }
+        if let webSession = await YouTubeMusicWebBridge.shared.refreshSilently() {
+            return await commitRefreshedWebLogin(pluginID: "youtube-music", fields: Self.loginFields(from: webSession), runtime: runtime, registry: registry)
+        }
+        // If existing WebKit cookies were stale and we hadn't tried `savedCookie`, seed `savedCookie` and retry once.
+        if hadLiveCookies, let savedCookie, !savedCookie.isEmpty {
+            await YouTubeMusicWebBridge.shared.seedCookies(fromHeader: savedCookie)
+            if let webSession = await YouTubeMusicWebBridge.shared.refreshSilently() {
+                return await commitRefreshedWebLogin(pluginID: "youtube-music", fields: Self.loginFields(from: webSession), runtime: runtime, registry: registry)
+            }
+        }
+        return false
+    }
+
+    private func commitRefreshedWebLogin(
+        pluginID: String,
+        fields: [String: String],
+        runtime: ExternalPlugin,
+        registry: PluginRegistry
+    ) async -> Bool {
+        let pStore = registry.settingsStore(for: pluginID)
+        Self.persistWebSecretsIfPresent(pluginID: pluginID, fields: fields, pStore: pStore)
         guard let status = try? await runtime.login(key: "account", fields: fields) else {
             return false
         }
-        if let plugin = plugins.first(where: { $0.id == "spotify" && !$0.overriddenByUnpacked }),
+        if let plugin = plugins.first(where: { $0.id == pluginID && !$0.overriddenByUnpacked }),
            let setting = plugin.manifest?.settings?.first(where: { $0.type == .account }) {
-            let pStore = registry.settingsStore(for: "spotify")
-            applyAccountResult(pluginID: "spotify", status: status, setting: setting, pStore: pStore)
+            applyAccountResult(pluginID: pluginID, status: status, setting: setting, pStore: pStore)
         }
         return status.status == "signedIn"
     }
 
-    private static func needsSpotifyNameResolution(_ raw: String?) -> Bool {
+    private nonisolated static func persistWebSecretsIfPresent(
+        pluginID: String,
+        fields: [String: String],
+        pStore: PluginSettingsStore
+    ) {
+        let keys: [String]
+        switch pluginID {
+        case "spotify": keys = ["sp_dc", "displayName", "username", "clientToken"]
+        case "youtube-music": keys = ["cookie", "authUser", "delegatedSessionID", "displayName"]
+        default: keys = []
+        }
+        guard !keys.isEmpty else { return }
+        var updates: [String: String] = [:]
+        for k in keys {
+            if let val = fields[k]?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                updates[k] = val
+            }
+        }
+        guard !updates.isEmpty else { return }
+        var secrets = pStore.loadSecretsDict()
+        var changed = false
+        for (k, v) in updates where secrets[k]?.stringValue != v {
+            secrets[k] = .string(v)
+            changed = true
+        }
+        if changed {
+            try? pStore.saveSecretsDict(secrets)
+        }
+    }
+
+    private static func browserCookieService(for pluginID: String) -> BrowserCookieService? {
+        switch pluginID {
+        case "spotify": .spotify
+        case "youtube-music": .youtubeMusic
+        default: nil
+        }
+    }
+
+    private static func needsWebAccountNameResolution(_ raw: String?, pluginID: String) -> Bool {
         let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty || trimmed == "Spotify Web" || trimmed == "Account" { return true }
-        if trimmed.count >= 20, trimmed.allSatisfy({ ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") }) {
+        if trimmed.isEmpty || trimmed == "Account" || trimmed == "Spotify Web" || trimmed == "YouTube Music Web" {
+            return true
+        }
+        if pluginID == "spotify",
+           trimmed.count >= 20,
+           trimmed.allSatisfy({ ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") }) {
             return true
         }
         return false
+    }
+
+    private static func loginFields(from webSession: YouTubeMusicWebAuthSession) -> [String: String] {
+        var fields: [String: String] = ["cookie": webSession.cookieHeader]
+        if let displayName = webSession.displayName, !displayName.isEmpty {
+            fields["displayName"] = displayName
+        }
+        if let authUser = webSession.authUser, !authUser.isEmpty {
+            fields["authUser"] = authUser
+        }
+        if let delegated = webSession.delegatedSessionID, !delegated.isEmpty {
+            fields["delegatedSessionID"] = delegated
+        }
+        return fields
     }
 
     private static func loginFields(from webSession: SpotifyWebAuthSession) -> [String: String] {
@@ -913,6 +1112,11 @@ final class PluginController {
         }
         if let displayName = webSession.displayName, !displayName.isEmpty {
             fields["displayName"] = displayName
+        }
+        if !webSession.pathfinderHashes.isEmpty,
+           let data = try? JSONEncoder().encode(webSession.pathfinderHashes),
+           let jsonStr = String(data: data, encoding: .utf8) {
+            fields["pathfinderHashesJSON"] = jsonStr
         }
         return fields
     }

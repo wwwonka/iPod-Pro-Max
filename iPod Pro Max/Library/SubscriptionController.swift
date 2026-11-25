@@ -14,6 +14,7 @@ final class SubscriptionController {
     static let shared = SubscriptionController()
 
     private(set) var subscriptions: [SubscriptionEntry] = []
+    private(set) var cachedUserPlaylistsByPlugin: [String: [RemotePlaylistSummary]] = [:]
     private(set) var liveStatesBySubID: [UUID: [String: SubscribedTrackState]] = [:]
     private(set) var syncingSubIDs: Set<UUID> = []
     private(set) var activeDownloadStats: [UUID: (active: Int, total: Int)] = [:]
@@ -42,6 +43,15 @@ final class SubscriptionController {
     private var engine: SubscriptionEngine?
     private var readyTracksByID: [UUID: LibraryTrack] = [:]
     private var saveChain: Task<Void, Never>?
+
+    var pendingCoverVerificationMessage: String?
+    var pendingCoverVerificationURL: URL?
+
+    func dismissCoverVerificationAlert() {
+        pendingCoverVerificationMessage = nil
+        pendingCoverVerificationURL = nil
+        notify()
+    }
 
     private var observers: [AnyHashable: () -> Void] = [:]
 
@@ -249,6 +259,7 @@ final class SubscriptionController {
         case unsupportedURL
         case pluginUnavailable(String)
         case pluginDisabled(DiscoveredPlugin)
+        case unauthorized(String)
         case fetchFailed(String)
 
         var errorDescription: String? {
@@ -257,6 +268,7 @@ final class SubscriptionController {
             case .unsupportedURL: "Unsupported URL — install a plug-in for this music service in Settings › Plug-ins."
             case .pluginUnavailable(let name): "\(name) plug-in is unavailable on this computer."
             case .pluginDisabled(let p): "\(p.name) is currently disabled."
+            case .unauthorized(let name): "Sign in to \(name) in Settings › Plug-ins to browse your playlists."
             case .fetchFailed(let msg): msg
             }
         }
@@ -268,7 +280,7 @@ final class SubscriptionController {
         let normalized = trimmed.contains("://") || trimmed.contains(":") ? trimmed : "https://\(trimmed)"
         guard let url = URL(string: normalized),
               let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" || scheme == "spotify" else {
+              scheme == "http" || scheme == "https" || scheme == "spotify" || scheme == "ytmusic" else {
             return nil
         }
         let plugin = PluginController.shared.registry?.matchPlaylistSource(for: trimmed, includeDisabled: true)
@@ -325,7 +337,8 @@ final class SubscriptionController {
         }
         guard let plugin = PluginController.shared.plugins.first(where: { $0.id == pluginID && !$0.overriddenByUnpacked }),
               plugin.isEnabledEligible else {
-            throw SubscribeError.pluginUnavailable("Spotify")
+            let serviceLabel = pluginID == "youtube-music" ? "YouTube Music" : pluginID.capitalized
+            throw SubscribeError.pluginUnavailable(serviceLabel)
         }
         guard PluginController.shared.isEnabled(plugin.id) else {
             throw SubscribeError.pluginDisabled(plugin)
@@ -358,11 +371,137 @@ final class SubscriptionController {
         )
     }
 
+    struct PlaylistImportSummary: Sendable {
+        let importedCount: Int
+        let skippedExistingCount: Int
+        let failed: [(title: String, error: String)]
+    }
+
+    func subscribedSourcePlaylistIDs(for pluginID: String) -> Set<String> {
+        let existingLibraryIDs = Set(getPlaylistsSnapshot().map(\.id))
+        return Set(
+            subscriptions
+                .filter { $0.sourcePluginID == pluginID && existingLibraryIDs.contains($0.playlistID) }
+                .map(\.sourcePlaylistID)
+        )
+    }
+
+    func clearCachedUserPlaylists(for pluginID: String? = nil) {
+        if let pluginID {
+            cachedUserPlaylistsByPlugin.removeValue(forKey: pluginID)
+        } else {
+            cachedUserPlaylistsByPlugin.removeAll()
+        }
+    }
+
+    func fetchUserPlaylists(pluginID: String) async throws -> [RemotePlaylistSummary] {
+        guard let registry = PluginController.shared.registry else {
+            throw SubscribeError.noLibrary
+        }
+        guard let plugin = PluginController.shared.plugins.first(where: { $0.id == pluginID && !$0.overriddenByUnpacked }),
+              plugin.isEnabledEligible else {
+            let serviceLabel = pluginID == "youtube-music" ? "YouTube Music" : pluginID.capitalized
+            throw SubscribeError.pluginUnavailable(serviceLabel)
+        }
+        guard PluginController.shared.isEnabled(plugin.id) else {
+            throw SubscribeError.pluginDisabled(plugin)
+        }
+        guard let runtime = registry.runtime(for: plugin.id) else {
+            throw SubscribeError.fetchFailed("Could not start \(plugin.name) plug-in.")
+        }
+
+        let serviceLabel = plugin.manifest?.serviceName ?? plugin.name
+        do {
+            let raw = try await executeWithAuthRetry(
+                pluginID: plugin.id,
+                preferredPlaylistID: nil,
+                runtime: runtime,
+                operation: {
+                    try await runtime.listUserPlaylists()
+                }
+            )
+            let sorted = RemotePlaylistSummary.sortedForDisplay(raw)
+            cachedUserPlaylistsByPlugin[plugin.id] = sorted
+            return sorted
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let pErr as PluginError where pErr.code == .cancelled {
+            throw CancellationError()
+        } catch let pErr as PluginError where pErr.code == .unauthorized {
+            throw SubscribeError.unauthorized(serviceLabel)
+        } catch let pErr as PluginError {
+            throw SubscribeError.fetchFailed(pErr.message)
+        } catch {
+            throw SubscribeError.fetchFailed(error.localizedDescription)
+        }
+    }
+
+    func importUserPlaylists(
+        _ playlists: [RemotePlaylistSummary],
+        plugin: DiscoveredPlugin,
+        markLikedAsFavorites: Bool = false
+    ) async throws -> PlaylistImportSummary {
+        guard let store, let registry = PluginController.shared.registry else {
+            throw SubscribeError.noLibrary
+        }
+        guard plugin.isEnabledEligible else {
+            throw SubscribeError.pluginUnavailable(plugin.name)
+        }
+        guard PluginController.shared.isEnabled(plugin.id) else {
+            throw SubscribeError.pluginDisabled(plugin)
+        }
+        guard let runtime = registry.runtime(for: plugin.id) else {
+            throw SubscribeError.fetchFailed("Could not start \(plugin.name) plug-in.")
+        }
+
+        let alreadySubscribed = subscribedSourcePlaylistIDs(for: plugin.id)
+        var skipped = 0
+        var imported = 0
+        var failures: [(title: String, error: String)] = []
+        var didSelectFirst = false
+
+        for item in playlists {
+            if alreadySubscribed.contains(item.id) {
+                skipped += 1
+                continue
+            }
+            do {
+                let fetched = try await executeWithAuthRetry(
+                    pluginID: plugin.id,
+                    preferredPlaylistID: item.id,
+                    runtime: runtime,
+                    operation: {
+                        try await runtime.fetch(url: item.url)
+                    }
+                )
+                let syncFavs = markLikedAsFavorites && item.isLikedSongs
+                _ = await registerNewSubscription(
+                    plugin: plugin,
+                    resolvedURL: item.url,
+                    fetched: fetched,
+                    store: store,
+                    selectPlaylist: !didSelectFirst,
+                    syncFavorites: syncFavs
+                )
+                didSelectFirst = true
+                imported += 1
+            } catch let pErr as PluginError {
+                failures.append((item.title, pErr.message))
+            } catch {
+                failures.append((item.title, error.localizedDescription))
+            }
+        }
+
+        return PlaylistImportSummary(importedCount: imported, skippedExistingCount: skipped, failed: failures)
+    }
+
     private func registerNewSubscription(
         plugin: DiscoveredPlugin,
         resolvedURL: URL,
         fetched: PlaylistFetchResult,
-        store: PortableLibraryStore
+        store: PortableLibraryStore,
+        selectPlaylist: Bool = true,
+        syncFavorites: Bool = false
     ) async -> SubscriptionEntry {
 
         let subID = UUID()
@@ -390,6 +529,7 @@ final class SubscriptionController {
             lastSyncedAt: Date(),
             lastError: nil,
             dateAdded: Date(),
+            syncFavorites: syncFavorites ? true : nil,
             tracks: entries
         )
 
@@ -427,12 +567,16 @@ final class SubscriptionController {
             parentID: nil,
             subscriptionID: subID
         )
+        let syncedTrackIDs = initialTrackIDs
         applyLibraryMutation { cache in
             cache.playlists.append(playlist)
+            Self.markTrackIDsFavoriteIfNeeded(syncedTrackIDs, cache: &cache, syncFavorites: syncFavorites)
         }
 
         notify()
-        selectPlaylistHandler(playlistID.uuidString)
+        if selectPlaylist {
+            selectPlaylistHandler(playlistID.uuidString)
+        }
 
         if let coverURL = finalizedSub.artworkURL {
             Task { [weak self] in
@@ -614,7 +758,12 @@ final class SubscriptionController {
         if request.movedItemUIDs.count != movedKeys.count,
            let runtime = PluginController.shared.registry?.runtime(for: pluginID),
            let url = URL(string: sourceURLString),
-           let fetched = try? await runtime.fetch(url: url) {
+           let fetched = try? await executeWithAuthRetry(
+            pluginID: pluginID,
+            preferredPlaylistID: request.playlistID,
+            runtime: runtime,
+            operation: { try await runtime.fetch(url: url) }
+           ) {
             var uidByKey: [String: String] = [:]
             for (idx, ref) in fetched.tracks.enumerated() {
                 if let uid = ref.remoteItemUID {
@@ -776,10 +925,11 @@ final class SubscriptionController {
     ) async {
         defer { endActivity(subscriptionID) }
 
+        let serviceName = subscription(id: subscriptionID)?.sourceName ?? "this service"
         guard let runtime = PluginController.shared.registry?.runtime(for: pluginID) else {
             setReorderNotice(
                 for: subscriptionID,
-                message: "Cannot add tracks upstream — plug-in '\(pluginID)' is not running. Only playlists that you own can be modified on Spotify."
+                message: "Cannot add tracks upstream — plug-in '\(pluginID)' is not running. Only playlists that you own can be modified on \(serviceName)."
             )
             return
         }
@@ -808,14 +958,14 @@ final class SubscriptionController {
         } catch let err as PluginError where err.code == .unauthorized {
             setReorderNotice(
                 for: subscriptionID,
-                message: "Sign in to Spotify in Settings › Plug-ins to add songs — only playlists that you own can be modified on Spotify."
+                message: "Sign in to \(serviceName) in Settings › Plug-ins to add songs — only playlists that you own can be modified on \(serviceName)."
             )
             return
         } catch let err as PluginError {
-            setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(err.message))
+            setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(err.message, serviceName: serviceName))
             return
         } catch {
-            setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(error.localizedDescription))
+            setReorderNotice(for: subscriptionID, message: Self.addFailureMessage(error.localizedDescription, serviceName: serviceName))
             return
         }
 
@@ -847,7 +997,7 @@ final class SubscriptionController {
         } else {
             let listed = result.notFoundTitles.prefix(3).joined(separator: ", ")
             let suffix = result.notFoundTitles.count > 3 ? " (+\(result.notFoundTitles.count - 3) more)" : ""
-            sub.lastError = "Added \(result.added.count) track(s); not found on Spotify: \(listed)\(suffix)."
+            sub.lastError = "Added \(result.added.count) track(s); not found on \(serviceName): \(listed)\(suffix)."
         }
 
         subscriptions[subIdx] = sub
@@ -867,8 +1017,8 @@ final class SubscriptionController {
         await refreshAfterMutation(subscriptionID: subscriptionID, pluginID: pluginID, runtime: runtime)
     }
 
-    private static func addFailureMessage(_ detail: String) -> String {
-        failureNoticeMessage(detail, prefix: "Couldn't add song(s) to Spotify")
+    private static func addFailureMessage(_ detail: String, serviceName: String) -> String {
+        failureNoticeMessage(detail, prefix: "Couldn't add song(s) to \(serviceName)")
     }
 
     // MARK: - Remove Tracks Upstream
@@ -1042,6 +1192,26 @@ final class SubscriptionController {
                 expectedArtworkKey: prepared.key,
                 operation: { runtime in
                     try await runtime.setPlaylistArtwork(request: request)
+                },
+                onFailure: { error in
+                    let msg = error.localizedDescription
+                    let needsPhoneVerification = pluginID == "youtube-music"
+                        && (msg.localizedCaseInsensitiveContains("phone")
+                            || msg.localizedCaseInsensitiveContains("verify"))
+                    guard needsPhoneVerification else { return }
+                    await MainActor.run {
+                        if let idx = self.subscriptions.firstIndex(where: { $0.id == subID }) {
+                            self.subscriptions[idx].artworkKey = previousArtworkKey
+                            self.subscriptions[idx].lastError = "YouTube requires verifying your phone number before custom playlist covers can be set."
+                        }
+                        self.verifiedArtworkKeys.remove(prepared.key)
+                        self.recentCoverOverrides.removeValue(forKey: subID)
+                        try? FileManager.default.removeItem(at: store.artwork.appendingPathComponent("\(prepared.key).jpg"))
+                        self.pendingCoverVerificationMessage = "YouTube Phone Verification Required\n\nYouTube requires verifying your phone number before adding custom playlist thumbnails.\n\nConfirm your number on YouTube first (youtube.com/verify or directly inside YouTube Music), then try changing the cover again."
+                        self.pendingCoverVerificationURL = URL(string: "https://www.youtube.com/verify")
+                        self.saveSubscriptionsAsync()
+                        self.notify()
+                    }
                 }
             )
         }
@@ -1057,7 +1227,8 @@ final class SubscriptionController {
         unauthAction: String,
         expectedTitle: String? = nil,
         expectedArtworkKey: String? = nil,
-        operation: (ExternalPlugin) async throws -> Void
+        operation: (ExternalPlugin) async throws -> Void,
+        onFailure: (@Sendable (Error) async -> Void)? = nil
     ) async {
         defer { endActivity(subscriptionID) }
         guard let runtime = PluginController.shared.registry?.runtime(for: pluginID) else {
@@ -1081,28 +1252,31 @@ final class SubscriptionController {
                 expectedArtworkKey: expectedArtworkKey
             )
         } catch let err as PluginError where err.code == .unauthorized {
+            let serviceName = subscription(id: subscriptionID)?.sourceName ?? "this service"
             setReorderNotice(
                 for: subscriptionID,
-                message: "\(failurePrefix). Sign in to Spotify in Settings › Plug-ins to \(unauthAction) — only playlists that you own can be modified on Spotify."
+                message: "\(failurePrefix). Sign in to \(serviceName) in Settings › Plug-ins to \(unauthAction) — only playlists that you own can be modified on \(serviceName)."
             )
+            await onFailure?(err)
         } catch let err as PluginError {
             setReorderNotice(for: subscriptionID, message: Self.failureNoticeMessage(err.message, prefix: failurePrefix))
+            await onFailure?(err)
         } catch {
             setReorderNotice(for: subscriptionID, message: Self.failureNoticeMessage(error.localizedDescription, prefix: failurePrefix))
+            await onFailure?(error)
         }
     }
 
     private func executeWithAuthRetry<T>(
         pluginID: String,
         preferredPlaylistID: String?,
-        runtime: ExternalPlugin,
+        runtime _: ExternalPlugin,
         operation: () async throws -> T
     ) async throws -> T {
         do {
             return try await operation()
         } catch let err as PluginError where err.code == .unauthorized {
-            if pluginID == "spotify",
-               await PluginController.shared.refreshSpotifyWebSessionIfPossible(preferredPlaylistID: preferredPlaylistID) {
+            if await PluginController.shared.refreshWebSessionIfPossible(pluginID: pluginID, preferredPlaylistID: preferredPlaylistID) {
                 return try await operation()
             }
             throw err
@@ -1236,7 +1410,12 @@ final class SubscriptionController {
         if let existing = self.engine {
             engine = existing
         } else {
-            let created = SubscriptionEngine(host: RegistryPluginHost(registry: registry))
+            let created = SubscriptionEngine(host: RegistryPluginHost(
+                registry: registry,
+                onUnauthorized: { pluginID in
+                    await PluginController.shared.refreshWebSessionIfPossible(pluginID: pluginID, preferredPlaylistID: nil)
+                }
+            ))
             self.engine = created
             engine = created
         }
@@ -1342,10 +1521,13 @@ final class SubscriptionController {
                 return url.standardizedFileURL.path.hasPrefix(normalizedPrefix)
             }
 
+        let syncFavs = (finalEntry.syncFavorites == true)
         applyLibraryMutation { cache in
             let existingIDs = Set(cache.tracks.map(\.id))
             for t in newTracks where !existingIDs.contains(t.id) {
-                cache.tracks.append(t)
+                var copy = t
+                if syncFavs { copy.isFavorite = true }
+                cache.tracks.append(copy)
             }
             if !tracksToRemove.isEmpty {
                 cache.tracks.removeAll { tracksToRemove.contains($0.id) }
@@ -1354,6 +1536,7 @@ final class SubscriptionController {
                 cache.playlists[pIdx].name = finalTitle
                 cache.playlists[pIdx].trackIDs = finalTrackIDs
             }
+            Self.markTrackIDsFavoriteIfNeeded(finalTrackIDs, cache: &cache, syncFavorites: syncFavs)
         }
 
         if !pathsToTrash.isEmpty {
@@ -1397,10 +1580,15 @@ final class SubscriptionController {
         liveStatesBySubID[subscriptionID] = Self.initialStates(for: subscriptions[idx])
         let playlistUUID = subscriptions[idx].playlistID
         let linkedIDs = items.compactMap(\.libraryTrackID)
+        let syncFavs = (subscriptions[idx].syncFavorites == true)
         saveSubscriptionsAsync()
         applyLibraryMutation { cache in
             if !cache.tracks.contains(where: { $0.id == readyTrack.id }) {
-                cache.tracks.append(readyTrack)
+                var copy = readyTrack
+                if syncFavs { copy.isFavorite = true }
+                cache.tracks.append(copy)
+            } else if syncFavs {
+                Self.markTrackIDsFavoriteIfNeeded([readyTrack.id], cache: &cache, syncFavorites: true)
             }
             if let pIdx = cache.playlists.firstIndex(where: { $0.id == playlistUUID }) {
                 cache.playlists[pIdx].trackIDs = linkedIDs
@@ -1414,6 +1602,7 @@ final class SubscriptionController {
         subscriptions[idx].tracks = items
         let playlistUUID = subscriptions[idx].playlistID
         let linkedIDs = items.compactMap(\.libraryTrackID)
+        let syncFavs = (subscriptions[idx].syncFavorites == true)
         for track in addedTracks {
             readyTracksByID[track.id] = track
         }
@@ -1422,12 +1611,26 @@ final class SubscriptionController {
             applyLibraryMutation { cache in
                 let existing = Set(cache.tracks.map(\.id))
                 for t in addedTracks where !existing.contains(t.id) {
-                    cache.tracks.append(t)
+                    var copy = t
+                    if syncFavs { copy.isFavorite = true }
+                    cache.tracks.append(copy)
                 }
                 if let pIdx = cache.playlists.firstIndex(where: { $0.id == playlistUUID }) {
                     cache.playlists[pIdx].trackIDs = linkedIDs
                 }
             }
+        }
+    }
+
+    private nonisolated static func markTrackIDsFavoriteIfNeeded(
+        _ trackIDs: [UUID],
+        cache: inout PortableLibraryCache,
+        syncFavorites: Bool
+    ) {
+        guard syncFavorites, !trackIDs.isEmpty else { return }
+        let wanted = Set(trackIDs)
+        for i in cache.tracks.indices where wanted.contains(cache.tracks[i].id) {
+            cache.tracks[i].isFavorite = true
         }
     }
 

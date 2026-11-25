@@ -9,8 +9,9 @@ Chaque service externe (Spotify, Soulseek, yt-dlp, YouTube Music, Deezer…) est
 | Fichier | Rôle |
 |---|---|
 | `Types.swift` | Rôles (`PluginRole`), `TrackRef`, `Playlist`, `Candidate`, `Availability`, `QualityPolicy`, `ShareIndexEntry`, erreurs et valeurs JSON. |
-| `Protocols.swift` | Protocoles Swift par rôle (`PlaylistSource`, `PlaylistReorderable`, `PlaylistEditable`, `Resolver`, `Downloader`, `ShareProvider`, `MetadataLookupProvider`, `LyricsLookupProvider`) et protocoles optionnels (`PluginConfigurable`, `PluginAccountHandling`, `PluginActionHandling`). |
+| `Protocols.swift` | Protocoles Swift par rôle (`PlaylistSource`, `PlaylistReorderable`, `PlaylistEditable`, `PlaylistBrowsable`, `Resolver`, `Downloader`, `ShareProvider`, `MetadataLookupProvider`, `LyricsLookupProvider`) et protocoles optionnels (`PluginConfigurable`, `PluginAccountHandling`, `PluginActionHandling`). |
 | `MetadataFinder.swift`, `LyricsProvider.swift` | Fournisseurs intégrés déplacés de MediaKit (MusicBrainz, AcoustID, iTunes, LRCLIB, Musixmatch). |
+| `SHA1.swift`, `SHA256.swift` | Hashes portables en Swift pur (`PluginSHA1`, `SHA256`) utilisables par les plug-ins (révision déterministe, signature `SAPISIDHASH` YouTube Music) sans `CryptoKit`. |
 | `PluginMain.swift` | Boucle JSON-RPC côté plug-in (`PluginMain.run(roles:)`), gestion de `$/cancelRequest`, limitation de `$/progress` (≤ 4/s), arrêt automatique à la fermeture de `stdin`. |
 | `ExternalPlugin.swift` | Adaptateur côté app, conforme à tous les protocoles de rôle, avec partage de processus entre opérations concurrentes, `shutdown` sans minuteur d'inactivité et suivi des plantages (3 en 60 s → état Error). |
 | `Manifest.swift`, `SVGPath.swift` | Lecture et validation de `plugin.json`, sélection de l'exécutable par OS/architecture, validation du badge SVG à un seul tracé (`M`, `L`, `C`, `Z`). |
@@ -35,7 +36,7 @@ Un agent qui écrit un nouveau plug-in ne touche **ni au moteur d'abonnements, n
    swift run ipodpromax plugin new Deezer --role playlistSource
    ```
    Crée `Plug-ins/Deezer/` avec `plugin.json`, `Sources/DeezerPlugin/main.swift`, `DeezerHandler.swift`, `badge.svg`, `README.md` et `Tests/fixtures.json`.
-2. **Implémenter le rôle** (en s'inspirant de `Plug-ins/Spotify/` pour les sources) :
+2. **Implémenter le rôle** (en s'inspirant de `Plug-ins/Spotify/` et `Plug-ins/YouTubeMusic/` pour les sources) :
    - conformer le gestionnaire aux protocoles nécessaires (`PlaylistSource`, `Resolver`, `Downloader`, `ShareProvider`, `PluginConfigurable`, `PluginAccountHandling`, `PluginActionHandling`) ;
    - vérifier `Task.checkCancellation()` pendant les appels longs pour répondre `cancelled` en moins de 2 s ;
    - pour un `PlaylistSource`, calculer une `Playlist.revision` déterministe (par exemple `SHA256` du titre + `sourceID` ordonnés).
@@ -84,6 +85,7 @@ Transport : **une ligne JSON UTF-8 terminée par `\n` par message**, sur `stdin`
 | `source/rename` | app → plug-in | `PlaylistRenameRequest` (`playlistID`, `name`) → `{}` (optionnel, `PlaylistEditable`) |
 | `source/createPlaylist` | app → plug-in | `PlaylistCreateRequest` (`name`, `description?`) → `PlaylistCreateResult` (`playlist`, `url`) (optionnel, `PlaylistEditable`) |
 | `source/setArtwork` | app → plug-in | `PlaylistArtworkRequest` (`playlistID`, `jpegData?`) → `{}` (optionnel, `PlaylistEditable`) |
+| `source/listUserPlaylists` | app → plug-in | `{}` → `SourceListPlaylistsResult` (`playlists: [RemotePlaylistSummary]`) (optionnel, `PlaylistBrowsable`) |
 | `resolver/search` | app → plug-in | `{track: TrackRef, policy}` → `{candidates}` (liste finale) ; partiels via notification `resolver/candidates` `{requestID, candidates}` |
 | `downloader/download` | app → plug-in | `{candidate, destinationDir}` → `{path}` |
 | `share/setIndex` | app → plug-in | `{part, lastPart, entries:[{virtualPath, realPath, size, bitrateKbps?, durationMs?}], uploadSlots}` → `{}` |

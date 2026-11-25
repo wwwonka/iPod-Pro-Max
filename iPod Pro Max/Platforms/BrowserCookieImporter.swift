@@ -1,6 +1,33 @@
 import Foundation
 
-/// A local browser profile that appears to contain an active Spotify session (`sp_dc`) cookie.
+/// Supported Web services whose browser session cookies can be imported on macOS.
+enum BrowserCookieService: Sendable {
+    case spotify
+    case youtubeMusic
+
+    var serviceDisplayName: String {
+        switch self {
+        case .spotify: "Spotify (open.spotify.com)"
+        case .youtubeMusic: "YouTube Music (music.youtube.com)"
+        }
+    }
+
+    var primaryDomains: [String] {
+        switch self {
+        case .spotify: ["spotify.com"]
+        case .youtubeMusic: ["youtube.com", "google.com"]
+        }
+    }
+
+    var probeCookieNames: [String] {
+        switch self {
+        case .spotify: ["sp_dc"]
+        case .youtubeMusic: ["__Secure-3PAPISID", "SAPISID", "__Secure-1PAPISID"]
+        }
+    }
+}
+
+/// A local browser profile that appears to contain an active Web session cookie.
 struct BrowserCookieCandidate: Identifiable, Hashable, Sendable {
     enum SourceKind: Hashable, Sendable {
         case firefox(dbPath: String)
@@ -24,24 +51,24 @@ struct BrowserCookieCandidate: Identifiable, Hashable, Sendable {
 
 enum BrowserCookieImportError: LocalizedError {
     case unsupportedPlatform
-    case noCookiesFound
+    case noCookiesFound(service: String)
     case safariPermissionDenied
     case keychainDenied(browser: String)
-    case decryptFailed(browser: String)
+    case decryptFailed(browser: String, service: String)
     case malformedDatabase(String)
 
     var errorDescription: String? {
         switch self {
         case .unsupportedPlatform:
             return "Browser cookie import is currently only supported on macOS."
-        case .noCookiesFound:
-            return "No active Spotify session (sp_dc) found in local browsers. Sign in on open.spotify.com in Chrome, Brave, Arc, or Firefox first."
+        case .noCookiesFound(let service):
+            return "No active \(service) session found in local browsers. Sign in there in Chrome, Brave, Arc, or Firefox first."
         case .safariPermissionDenied:
             return "Safari requires Full Disk Access in System Settings › Privacy & Security › Full Disk Access. You can import from Chrome, Firefox, Brave, or Arc instead."
         case .keychainDenied(let browser):
             return "macOS Keychain access for '\(browser) Safe Storage' was denied."
-        case .decryptFailed(let browser):
-            return "Could not decrypt the Spotify cookie from \(browser)."
+        case .decryptFailed(let browser, let service):
+            return "Could not decrypt the \(service) cookie from \(browser)."
         case .malformedDatabase(let detail):
             return detail
         }
@@ -54,7 +81,7 @@ import CryptoKit
 import Security
 import SQLite3
 
-/// Reads Spotify `sp_dc` cookies on demand from installed macOS browsers (zero background work).
+/// Reads Spotify (`sp_dc`) and YouTube Music cookies on demand from installed macOS browsers (zero background work).
 enum BrowserCookieImporter {
     static var isSupportedOnPlatform: Bool { true }
 
@@ -88,14 +115,17 @@ enum BrowserCookieImporter {
         FirefoxSpec(name: "Waterfox", relativeProfilesDir: "Waterfox/Profiles"),
     ]
 
-    /// Scans browser cookie stores on disk for Spotify `sp_dc` presence without touching macOS Keychain.
-    static func discoverSpotifyCookieBrowsers() -> [BrowserCookieCandidate] {
+    /// Scans browser cookie stores on disk for an active session of `service` without touching macOS Keychain.
+    static func discoverCookieBrowsers(for service: BrowserCookieService) -> [BrowserCookieCandidate] {
         let fm = FileManager.default
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return []
         }
 
         var results: [BrowserCookieCandidate] = []
+        let ffHostClause = sqlHostCondition(column: "host", domains: service.primaryDomains)
+        let chrHostClause = sqlHostCondition(column: "host_key", domains: service.primaryDomains)
+        let nameList = service.probeCookieNames.map { "'\($0)'" }.joined(separator: ", ")
 
         // 1. Firefox family (unencrypted SQLite)
         for spec in firefoxSpecs {
@@ -108,7 +138,7 @@ enum BrowserCookieImporter {
                 guard fm.fileExists(atPath: dbURL.path) else { continue }
                 if let info = probeSQLite(
                     dbURL: dbURL,
-                    sql: "SELECT expiry FROM moz_cookies WHERE (host LIKE '%.spotify.com' OR host = 'spotify.com') AND name = 'sp_dc' AND length(value) > 0 ORDER BY expiry DESC LIMIT 1"
+                    sql: "SELECT expiry FROM moz_cookies WHERE (\(ffHostClause)) AND name IN (\(nameList)) AND length(value) > 0 ORDER BY expiry DESC LIMIT 1"
                 ) {
                     let cleanProfile = profileDir.lastPathComponent.split(separator: ".").dropFirst().joined(separator: ".")
                     results.append(BrowserCookieCandidate(
@@ -146,7 +176,7 @@ enum BrowserCookieImporter {
                 guard fm.fileExists(atPath: dbURL.path) else { continue }
                 if let expiry = probeSQLite(
                     dbURL: dbURL,
-                    sql: "SELECT expires_utc FROM cookies WHERE (host_key LIKE '%.spotify.com' OR host_key = 'spotify.com') AND name = 'sp_dc' AND (length(value) > 0 OR length(encrypted_value) > 0) ORDER BY expires_utc DESC LIMIT 1"
+                    sql: "SELECT expires_utc FROM cookies WHERE (\(chrHostClause)) AND name IN (\(nameList)) AND (length(value) > 0 OR length(encrypted_value) > 0) ORDER BY expires_utc DESC LIMIT 1"
                 ) {
                     let label = (dir == baseDir) ? nil : dir.lastPathComponent
                     results.append(BrowserCookieCandidate(
@@ -168,45 +198,86 @@ enum BrowserCookieImporter {
         let safariPath = fm.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies")
             .path
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: safariPath)),
-           let cookie = parseSafariBinaryCookies(data: data, domainSuffix: "spotify.com", cookieName: "sp_dc"),
-           !cookie.isEmpty {
-            results.append(BrowserCookieCandidate(
-                id: "safari:\(safariPath)",
-                browserName: "Safari",
-                profileLabel: nil,
-                lastExpiry: Int64.max / 2,
-                kind: .safari(binaryCookiesPath: safariPath)
-            ))
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: safariPath)) {
+            let safariCookies = parseSafariBinaryCookies(data: data, domains: service.primaryDomains)
+            if service.probeCookieNames.contains(where: { !(safariCookies[$0]?.isEmpty ?? true) }) {
+                results.append(BrowserCookieCandidate(
+                    id: "safari:\(safariPath)",
+                    browserName: "Safari",
+                    profileLabel: nil,
+                    lastExpiry: Int64.max / 2,
+                    kind: .safari(binaryCookiesPath: safariPath)
+                ))
+            }
         }
 
         return results.sorted { $0.lastExpiry > $1.lastExpiry }
     }
 
-    /// Reads and decrypts the `sp_dc` value for the chosen browser profile.
-    static func readSpotifyCookie(from candidate: BrowserCookieCandidate) throws -> String {
+    /// Reads and decrypts the cookie string (`sp_dc` value for Spotify, full `Cookie:` header for YouTube Music).
+    static func readCookiePayload(from candidate: BrowserCookieCandidate, service: BrowserCookieService) throws -> String {
+        switch service {
+        case .spotify:
+            let map = try readCookieMap(from: candidate, service: service)
+            guard let spDC = map["sp_dc"], !spDC.isEmpty else {
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
+            }
+            return spDC
+
+        case .youtubeMusic:
+            let map = try readCookieMap(from: candidate, service: service)
+            guard service.probeCookieNames.contains(where: { !(map[$0]?.isEmpty ?? true) }) else {
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
+            }
+            return map.keys.sorted().compactMap { name in
+                guard let val = map[name], !val.isEmpty else { return nil }
+                return "\(name)=\(val)"
+            }.joined(separator: "; ")
+        }
+    }
+
+    private static func sqlHostCondition(column: String, domains: [String]) -> String {
+        domains.map { "\(column) LIKE '%.\($0)' OR \(column) = '\($0)'" }.joined(separator: " OR ")
+    }
+
+    private static func readCookieMap(from candidate: BrowserCookieCandidate, service: BrowserCookieService) throws -> [String: String] {
+        let hostCol = { (col: String) in sqlHostCondition(column: col, domains: service.primaryDomains) }
         switch candidate.kind {
         case .firefox(let dbPath):
-            guard let val = try withTemporarySQLiteCopy(at: URL(fileURLWithPath: dbPath), query: { (db) -> String? in
-                let sql = "SELECT value FROM moz_cookies WHERE (host LIKE '%.spotify.com' OR host = 'spotify.com') AND name = 'sp_dc' AND length(value) > 0 ORDER BY expiry DESC LIMIT 1"
+            let map = try withTemporarySQLiteCopy(at: URL(fileURLWithPath: dbPath), query: { (db) -> [String: String] in
+                let filter = service == .spotify ? "AND name = 'sp_dc'" : ""
+                let sql = "SELECT host, name, value FROM moz_cookies WHERE (\(hostCol("host"))) \(filter) AND length(value) > 0 ORDER BY expiry ASC"
                 var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [:] }
                 defer { sqlite3_finalize(stmt) }
-                guard sqlite3_step(stmt) == SQLITE_ROW, let cStr = sqlite3_column_text(stmt, 0) else { return nil }
-                return String(cString: cStr).trimmingCharacters(in: .whitespacesAndNewlines)
-            }), !val.isEmpty else {
-                throw BrowserCookieImportError.noCookiesFound
+                var collected: [String: String] = [:]
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let host = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                    guard let nPtr = sqlite3_column_text(stmt, 1),
+                          let vPtr = sqlite3_column_text(stmt, 2) else { continue }
+                    let name = String(cString: nPtr).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let value = String(cString: vPtr).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty, !value.isEmpty else { continue }
+                    // Prefer `.youtube.com` over `.google.com` if both define a key.
+                    if collected[name] == nil || host.contains("youtube.com") {
+                        collected[name] = value
+                    }
+                }
+                return collected
+            }) ?? [:]
+            guard !map.isEmpty else {
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
             }
-            return val
+            return map
 
         case .chromium(let dbPath, let keychainService, let keychainAccount):
             struct Row {
+                var hostKey: String
+                var name: String
                 var plain: String
                 var encrypted: Data
-                var hostKey: String
-                var metaVersion: Int
             }
-            guard let row: Row = try withTemporarySQLiteCopy(at: URL(fileURLWithPath: dbPath), query: { db in
+            let payload: (metaVersion: Int, rows: [Row])? = try withTemporarySQLiteCopy(at: URL(fileURLWithPath: dbPath), query: { db in
                 var metaVersion = 0
                 var mStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'version' LIMIT 1", -1, &mStmt, nil) == SQLITE_OK {
@@ -216,58 +287,86 @@ enum BrowserCookieImporter {
                     sqlite3_finalize(mStmt)
                 }
 
-                let sql = "SELECT value, encrypted_value, host_key FROM cookies WHERE (host_key LIKE '%.spotify.com' OR host_key = 'spotify.com') AND name = 'sp_dc' ORDER BY expires_utc DESC LIMIT 1"
+                let filter = service == .spotify ? "AND name = 'sp_dc'" : ""
+                let sql = "SELECT host_key, name, value, encrypted_value FROM cookies WHERE (\(hostCol("host_key"))) \(filter) ORDER BY expires_utc ASC"
                 var stmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return (metaVersion, []) }
                 defer { sqlite3_finalize(stmt) }
-                guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-
-                let plain = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-                let bytes = sqlite3_column_bytes(stmt, 1)
-                let blob: Data
-                if bytes > 0, let rawPtr = sqlite3_column_blob(stmt, 1) {
-                    blob = Data(bytes: rawPtr, count: Int(bytes))
-                } else {
-                    blob = Data()
+                var rows: [Row] = []
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let hostKey = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                    let name = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                    let plain = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                    let bytes = sqlite3_column_bytes(stmt, 3)
+                    let blob: Data
+                    if bytes > 0, let rawPtr = sqlite3_column_blob(stmt, 3) {
+                        blob = Data(bytes: rawPtr, count: Int(bytes))
+                    } else {
+                        blob = Data()
+                    }
+                    guard !name.isEmpty else { continue }
+                    rows.append(Row(hostKey: hostKey, name: name, plain: plain, encrypted: blob))
                 }
-                let hostKey = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-                return Row(plain: plain, encrypted: blob, hostKey: hostKey, metaVersion: metaVersion)
-            }) else {
-                throw BrowserCookieImportError.noCookiesFound
+                return (metaVersion, rows)
+            })
+
+            guard let payload, !payload.rows.isEmpty else {
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
             }
 
-            let trimmedPlain = row.plain.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedPlain.isEmpty {
-                return trimmedPlain
-            }
-            guard !row.encrypted.isEmpty else {
-                throw BrowserCookieImportError.noCookiesFound
+            var password: String?
+            var collected: [String: String] = [:]
+            var failedDecrypts = 0
+            for row in payload.rows {
+                let value: String?
+                let trimmedPlain = row.plain.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedPlain.isEmpty {
+                    value = trimmedPlain
+                } else if !row.encrypted.isEmpty {
+                    if password == nil {
+                        password = try readKeychainPassword(service: keychainService, account: keychainAccount, browserName: candidate.browserName)
+                    }
+                    value = decryptChromiumMacCookie(
+                        encryptedValue: row.encrypted,
+                        hostKey: row.hostKey,
+                        metaVersion: payload.metaVersion,
+                        password: password!
+                    )
+                    if value == nil || value?.isEmpty == true {
+                        failedDecrypts += 1
+                    }
+                } else {
+                    value = nil
+                }
+
+                if let value, !value.isEmpty {
+                    if collected[row.name] == nil || row.hostKey.contains("youtube.com") {
+                        collected[row.name] = value
+                    }
+                }
             }
 
-            let password = try readKeychainPassword(service: keychainService, account: keychainAccount, browserName: candidate.browserName)
-            guard let decrypted = decryptChromiumMacCookie(
-                encryptedValue: row.encrypted,
-                hostKey: row.hostKey,
-                metaVersion: row.metaVersion,
-                password: password
-            ), !decrypted.isEmpty else {
-                throw BrowserCookieImportError.decryptFailed(browser: candidate.browserName)
+            if collected.isEmpty {
+                if failedDecrypts > 0 {
+                    throw BrowserCookieImportError.decryptFailed(browser: candidate.browserName, service: service.serviceDisplayName)
+                }
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
             }
-            return decrypted
+            return collected
 
         case .safari(let path):
             do {
                 let data = try Data(contentsOf: URL(fileURLWithPath: path))
-                guard let val = parseSafariBinaryCookies(data: data, domainSuffix: "spotify.com", cookieName: "sp_dc"),
-                      !val.isEmpty else {
-                    throw BrowserCookieImportError.noCookiesFound
+                let map = parseSafariBinaryCookies(data: data, domains: service.primaryDomains)
+                guard !map.isEmpty else {
+                    throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
                 }
-                return val
+                return map
             } catch let err as NSError where err.domain == NSCocoaErrorDomain && (err.code == NSFileReadNoPermissionError || err.code == NSFileNoSuchFileError) {
                 if err.code == NSFileReadNoPermissionError {
                     throw BrowserCookieImportError.safariPermissionDenied
                 }
-                throw BrowserCookieImportError.noCookiesFound
+                throw BrowserCookieImportError.noCookiesFound(service: service.serviceDisplayName)
             }
         }
     }
@@ -419,7 +518,7 @@ enum BrowserCookieImporter {
 
     // MARK: - Safari Binary Cookies Parser
 
-    private static func parseSafariBinaryCookies(data: Data, domainSuffix: String, cookieName: String) -> String? {
+    private static func parseSafariBinaryCookies(data: Data, domains: [String]) -> [String: String] {
         func readUInt32BE(_ offset: Int) -> UInt32? {
             guard offset >= 0, offset + 4 <= data.count else { return nil }
             var val: UInt32 = 0
@@ -447,17 +546,18 @@ enum BrowserCookieImporter {
         guard data.count >= 8,
               String(data: data.prefix(4), encoding: .ascii) == "cook",
               let numPages = readUInt32BE(4) else {
-            return nil
+            return [:]
         }
 
         var cursor = 8
         var pageSizes: [Int] = []
         for _ in 0..<numPages {
-            guard let sz = readUInt32BE(cursor) else { return nil }
+            guard let sz = readUInt32BE(cursor) else { return [:] }
             pageSizes.append(Int(sz))
             cursor += 4
         }
 
+        var collected: [String: String] = [:]
         for pageSize in pageSizes {
             let pageStart = cursor
             let pageEnd = min(pageStart + pageSize, data.count)
@@ -480,12 +580,17 @@ enum BrowserCookieImporter {
                       let value = readCString(from: cookieStart + Int(valueOff), limit: cookieLimit) else {
                     continue
                 }
-                if name == cookieName && (domain == domainSuffix || domain.hasSuffix("." + domainSuffix)) && !value.isEmpty {
-                    return value
+                let matchesDomain = domains.contains { d in
+                    domain == d || domain.hasSuffix("." + d)
+                }
+                if matchesDomain && !name.isEmpty && !value.isEmpty {
+                    if collected[name] == nil || domain.contains("youtube.com") {
+                        collected[name] = value
+                    }
                 }
             }
         }
-        return nil
+        return collected
     }
 }
 
@@ -493,8 +598,8 @@ enum BrowserCookieImporter {
 
 enum BrowserCookieImporter {
     static var isSupportedOnPlatform: Bool { false }
-    static func discoverSpotifyCookieBrowsers() -> [BrowserCookieCandidate] { [] }
-    static func readSpotifyCookie(from candidate: BrowserCookieCandidate) throws -> String {
+    static func discoverCookieBrowsers(for _: BrowserCookieService) -> [BrowserCookieCandidate] { [] }
+    static func readCookiePayload(from _: BrowserCookieCandidate, service _: BrowserCookieService) throws -> String {
         throw BrowserCookieImportError.unsupportedPlatform
     }
     static func safariBlockedByPermissions() -> Bool { false }

@@ -568,6 +568,95 @@ final class SubscriptionTests: XCTestCase {
         XCTAssertEqual(result.playlistTrackIDs.count, 3)
     }
 
+    func testYouTubeVideoTracksBypassSoulseekAndAvoidAlbumMatch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sub-yt-video-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dlDir = root.appendingPathComponent("Downloads", isDirectory: true)
+        let artDir = root.appendingPathComponent("Artwork", isDirectory: true)
+        try FileManager.default.createDirectory(at: dlDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: artDir, withIntermediateDirectories: true)
+
+        let existingAlbumURL = dlDir.appendingPathComponent("studio-album.flac")
+        try AudioFixtures.threeSecondMP3.write(to: existingAlbumURL)
+        let studioAlbumTrack = LibraryTrack(
+            path: existingAlbumURL.path,
+            title: "My Track",
+            artist: "The Artist",
+            album: "Studio LP",
+            durationMs: 3_000,
+            bitrate: 1000,
+            fileExtension: "flac",
+            isLossless: true
+        )
+
+        let videoRef = TrackRef(
+            source: "youtube-music",
+            sourceID: "ytVid999",
+            title: "My Track",
+            artists: ["The Artist"],
+            album: nil,
+            durationMs: 3_000,
+            isVideo: true
+        )
+
+        // 1. LibraryTrackMatcher must NOT link the local studio album FLAC to a video TrackRef.
+        let matcher = LibraryTrackMatcher(tracks: [studioAlbumTrack], downloadFolderPath: dlDir.path)
+        XCTAssertNil(matcher.match(for: videoRef, linkedTrackID: nil))
+
+        // 2. CandidateScorer accepts exact video ID even when acceptYouTubeFallback is false & title says "(Live)".
+        let policyNoYT = QualityPolicy(acceptYouTubeFallback: false)
+        let ytCand = Candidate(
+            resolver: "yt-dlp",
+            token: "https://www.youtube.com/watch?v=ytVid999",
+            displayName: "The Artist - My Track (Live Video)",
+            title: "My Track (Live Video)",
+            artist: "The Artist",
+            durationMs: 3_000,
+            container: "mp3",
+            codec: "mp3",
+            bitrateKbps: 128
+        )
+        XCTAssertTrue(CandidateScorer.evaluate(ytCand, against: videoRef, policy: policyNoYT).accepted)
+
+        // 3. SubscriptionEngine routes isVideo track strictly to yt-dlp (never soulseek), even with acceptYouTubeFallback: false,
+        //    and does not overwrite it on subsequent refresh upgrades.
+        let videoHost = VideoOnlyMockHost(videoRef: videoRef, candidate: ytCand)
+        let engine = SubscriptionEngine(host: videoHost)
+        let sub = SubscriptionEntry(
+            playlistID: UUID(),
+            sourcePluginID: "youtube-music",
+            sourceName: "YouTube Music",
+            sourceURL: "https://music.youtube.com/playlist?list=PLvid",
+            sourcePlaylistID: "PLvid",
+            title: "Video Playlist",
+            revision: "",
+            tracks: []
+        )
+
+        let firstSync = await engine.sync(
+            subscription: sub,
+            existingTracks: [studioAlbumTrack],
+            downloadFolder: dlDir,
+            artworkDir: artDir,
+            qualityPolicy: policyNoYT
+        )
+        XCTAssertEqual(videoHost.requestedResolvers(), ["yt-dlp"])
+        XCTAssertEqual(firstSync.updatedEntry.tracks.first?.status, .available)
+        XCTAssertEqual(firstSync.updatedEntry.tracks.first?.isYouTubeFallback, true)
+
+        // Subsequent upgrade pass must leave the video track alone (no Soulseek album replacement).
+        let secondSync = await engine.sync(
+            subscription: firstSync.updatedEntry,
+            existingTracks: [studioAlbumTrack] + firstSync.newlyImportedTracks,
+            downloadFolder: dlDir,
+            artworkDir: artDir,
+            qualityPolicy: policyNoYT,
+            attemptQualityUpgrades: true
+        )
+        XCTAssertTrue(secondSync.replacedTrackIDs.isEmpty)
+        XCTAssertEqual(videoHost.requestedResolvers(), ["yt-dlp"], "Quality upgrade pass must not re-search Soulseek for video tracks")
+    }
+
     // MARK: - Helpers
 
     private func makeID3Frame(id: String, payload: Data) -> Data {
@@ -686,6 +775,56 @@ private final class MockPluginHost: SubscriptionPluginHost, @unchecked Sendable 
         }
         onProgress(0.5)
         let partURL = destinationDir.appendingPathComponent("\(candidate.token).mp3.part")
+        try AudioFixtures.threeSecondMP3.write(to: partURL)
+        onProgress(1.0)
+        return partURL
+    }
+}
+
+private final class VideoOnlyMockHost: SubscriptionPluginHost, @unchecked Sendable {
+    private let videoRef: TrackRef
+    private let candidate: Candidate
+    private let lock = NSLock()
+    private var resolversSeen: [String] = []
+
+    init(videoRef: TrackRef, candidate: Candidate) {
+        self.videoRef = videoRef
+        self.candidate = candidate
+    }
+
+    func requestedResolvers() -> [String] {
+        lock.withLock { resolversSeen }
+    }
+
+    func fetchPlaylist(pluginID: String, url: String) async throws -> PlaylistFetchResult {
+        PlaylistFetchResult(
+            playlist: PluginKit.Playlist(source: "youtube-music", sourceID: "PLvid", title: "Video Playlist", revision: "rev-vid"),
+            tracks: [videoRef]
+        )
+    }
+
+    func orderedResolvers(includeYouTubeFallback: Bool) async -> [String] {
+        includeYouTubeFallback ? ["soulseek", "yt-dlp"] : ["soulseek"]
+    }
+
+    func searchCandidates(
+        resolverID: String,
+        track: TrackRef,
+        policy: QualityPolicy,
+        onPartial: @escaping @Sendable ([Candidate]) -> Void
+    ) async throws -> [Candidate] {
+        lock.withLock { resolversSeen.append(resolverID) }
+        return resolverID == "yt-dlp" ? [candidate] : []
+    }
+
+    func downloadCandidate(
+        resolverID: String,
+        candidate: Candidate,
+        destinationDir: URL,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+        let partURL = destinationDir.appendingPathComponent("video.mp3.part")
         try AudioFixtures.threeSecondMP3.write(to: partURL)
         onProgress(1.0)
         return partURL

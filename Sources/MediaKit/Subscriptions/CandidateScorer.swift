@@ -85,12 +85,29 @@ public enum CandidateScorer {
         return scored.sorted { $0.tuple < $1.tuple }.map(\.candidate)
     }
 
+    public static func isExactYouTubeVideoCandidate(_ candidate: Candidate, for ref: TrackRef) -> Bool {
+        guard ref.source == "youtube-music",
+              ref.isVideo == true,
+              !ref.sourceID.isEmpty,
+              candidate.resolver == "yt-dlp" else {
+            return false
+        }
+        let token = candidate.token
+        return token == ref.sourceID
+            || token.contains("v=\(ref.sourceID)")
+            || token.contains("/\(ref.sourceID)")
+    }
+
     public static func evaluate(
         _ candidate: Candidate,
         against ref: TrackRef,
         policy: QualityPolicy
     ) -> Decision {
         let bucket = formatBucket(for: candidate)
+
+        if isExactYouTubeVideoCandidate(candidate, for: ref) {
+            return Decision(accepted: true, rejectionReason: nil, formatBucket: bucket)
+        }
 
         let isYouTube = candidate.resolver == "yt-dlp"
         if isYouTube && !policy.acceptYouTubeFallback {

@@ -27,7 +27,9 @@
         var onAddMusicFolder: () -> Void = {}
         var onCreatePlaylist: (Bool) -> Void = { _ in }
         var onNewSubscription: () -> Void = {}
+        var onImportRemotePlaylists: () -> Void = {}
         var onNewSpotifyPlaylist: () -> Void = {}
+        var onNewYouTubeMusicPlaylist: () -> Void = {}
         var onRenamePlaylist: (String, String) -> Void = { _, _ in }
         var onDeletePlaylist: (String) -> Void = { _ in }
         var onRefreshSubscription: (String) -> Void = { _ in }
@@ -99,7 +101,9 @@
             coordinator.onAddMusicFolder = onAddMusicFolder
             coordinator.onCreatePlaylist = onCreatePlaylist
             coordinator.onNewSubscription = onNewSubscription
+            coordinator.onImportRemotePlaylists = onImportRemotePlaylists
             coordinator.onNewSpotifyPlaylist = onNewSpotifyPlaylist
+            coordinator.onNewYouTubeMusicPlaylist = onNewYouTubeMusicPlaylist
             coordinator.onRenamePlaylist = onRenamePlaylist
             coordinator.onDeletePlaylist = onDeletePlaylist
             coordinator.onRefreshSubscription = onRefreshSubscription
@@ -670,7 +674,9 @@
             var onAddMusicFolder: () -> Void = {}
             var onCreatePlaylist: (Bool) -> Void = { _ in }
             var onNewSubscription: () -> Void = {}
+            var onImportRemotePlaylists: () -> Void = {}
             var onNewSpotifyPlaylist: () -> Void = {}
+            var onNewYouTubeMusicPlaylist: () -> Void = {}
             var onRenamePlaylist: (String, String) -> Void = { _, _ in }
             var onDeletePlaylist: (String) -> Void = { _ in }
             var onRefreshSubscription: (String) -> Void = { _ in }
@@ -712,12 +718,18 @@
                 newFolder.target = self
                 let newSub = NSMenuItem(title: "New Subscription…", action: #selector(menuNewSubscription), keyEquivalent: "")
                 newSub.target = self
+                let importPlaylists = NSMenuItem(title: "Import Playlists from Account…", action: #selector(menuImportRemotePlaylists), keyEquivalent: "")
+                importPlaylists.target = self
                 let newSpotify = NSMenuItem(title: "New Spotify Playlist…", action: #selector(menuNewSpotifyPlaylist), keyEquivalent: "")
                 newSpotify.target = self
+                let newYTMusic = NSMenuItem(title: "New YouTube Music Playlist…", action: #selector(menuNewYouTubeMusicPlaylist), keyEquivalent: "")
+                newYTMusic.target = self
                 menu.addItem(newPlaylist)
                 menu.addItem(newFolder)
                 menu.addItem(newSub)
+                menu.addItem(importPlaylists)
                 menu.addItem(newSpotify)
+                menu.addItem(newYTMusic)
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
                 cell.keepPlusVisible = false
                 if let window = cell.window {
@@ -733,7 +745,9 @@
             @objc private func menuNewPlaylist() { onCreatePlaylist(false) }
             @objc private func menuNewPlaylistFolder() { onCreatePlaylist(true) }
             @objc private func menuNewSubscription() { onNewSubscription() }
+            @objc private func menuImportRemotePlaylists() { onImportRemotePlaylists() }
             @objc private func menuNewSpotifyPlaylist() { onNewSpotifyPlaylist() }
+            @objc private func menuNewYouTubeMusicPlaylist() { onNewYouTubeMusicPlaylist() }
 
             @MainActor func refreshFavoriteIcon() {
                 let iconName = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"

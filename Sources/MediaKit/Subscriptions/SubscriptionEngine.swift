@@ -62,9 +62,11 @@ public protocol SubscriptionPluginHost: Sendable {
 /// Default `SubscriptionPluginHost` backed by a `PluginRegistry`.
 public final class RegistryPluginHost: SubscriptionPluginHost, @unchecked Sendable {
     private let registry: PluginRegistry
+    private let onUnauthorized: (@Sendable (String) async -> Bool)?
 
-    public init(registry: PluginRegistry) {
+    public init(registry: PluginRegistry, onUnauthorized: (@Sendable (String) async -> Bool)? = nil) {
         self.registry = registry
+        self.onUnauthorized = onUnauthorized
     }
 
     public func fetchPlaylist(pluginID: String, url: String) async throws -> PlaylistFetchResult {
@@ -72,7 +74,14 @@ public final class RegistryPluginHost: SubscriptionPluginHost, @unchecked Sendab
               let parsedURL = URL(string: url) else {
             throw PluginError(code: .unsupported, message: "Plug-in '\(pluginID)' is not enabled or URL is invalid.")
         }
-        return try await runtime.fetch(url: parsedURL)
+        do {
+            return try await runtime.fetch(url: parsedURL)
+        } catch let err as PluginError where err.code == .unauthorized {
+            if let onUnauthorized, await onUnauthorized(pluginID) {
+                return try await runtime.fetch(url: parsedURL)
+            }
+            throw err
+        }
     }
 
     public func orderedResolvers(includeYouTubeFallback: Bool) async -> [String] {
@@ -237,9 +246,12 @@ public actor SubscriptionEngine {
         // 2. Fast-path check when playlist revision hasn't changed (`SUB-9`, `SUB-18` < 2 s target).
         let existingByID = Dictionary(existingTracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let resolverIDsForCheck = await host.orderedResolvers(includeYouTubeFallback: qualityPolicy.acceptYouTubeFallback)
+        let resolversWithYTFallback = await host.orderedResolvers(includeYouTubeFallback: true)
+        let ytOnlyResolvers = resolversWithYTFallback.filter { $0 == "yt-dlp" }
         let hasNonYTForUpgrade = resolverIDsForCheck.contains { $0 != "yt-dlp" }
         let hasPendingUpgrades = attemptQualityUpgrades && hasNonYTForUpgrade && entry.tracks.contains { item in
             guard item.status == .available,
+                  item.trackRef.isVideo != true,
                   let tid = item.libraryTrackID,
                   let track = existingByID[tid],
                   FileManager.default.fileExists(atPath: track.path) else {
@@ -346,6 +358,7 @@ public actor SubscriptionEngine {
             ? updatedItems.indices.filter { idx in
                 let item = updatedItems[idx]
                 guard !targetKeySet.contains(item.key),
+                      item.trackRef.isVideo != true,
                       item.status == .available,
                       let tid = item.libraryTrackID,
                       let localTrack = matchedByID[tid] else {
@@ -362,7 +375,13 @@ public actor SubscriptionEngine {
             }
             : []
 
-        if (!targetIndices.isEmpty || !upgradeIndices.isEmpty) && resolverIDs.isEmpty {
+        let actionableTargets = targetIndices.filter { idx in
+            let item = updatedItems[idx]
+            let itemResolvers = (item.trackRef.isVideo == true) ? ytOnlyResolvers : resolverIDs
+            return !itemResolvers.isEmpty
+        }
+
+        if (!targetIndices.isEmpty || !upgradeIndices.isEmpty) && actionableTargets.isEmpty && upgradeIndices.isEmpty {
             entry.tracks = updatedItems
             entry.lastSyncedAt = now
             entry.lastError = nil
@@ -383,13 +402,15 @@ public actor SubscriptionEngine {
 
         var liveStates = buildLiveStates(for: updatedItems, noDownloadSource: false)
         for idx in targetIndices {
-            liveStates[updatedItems[idx].key] = .waiting
+            let item = updatedItems[idx]
+            let itemResolvers = (item.trackRef.isVideo == true) ? ytOnlyResolvers : resolverIDs
+            liveStates[item.key] = itemResolvers.isEmpty ? .noDownloadSource : .waiting
         }
 
         let stateBox = SyncStateBox(
             items: updatedItems,
             liveStates: liveStates,
-            totalToDownload: targetIndices.count + upgradeIndices.count
+            totalToDownload: actionableTargets.count + upgradeIndices.count
         )
 
         let subID = entry.id
@@ -429,17 +450,18 @@ public actor SubscriptionEngine {
         try? FileManager.default.createDirectory(at: partRootDir, withIntermediateDirectories: true)
 
         await withTaskGroup(of: Void.self) { group in
-            for idx in targetIndices {
+            for idx in actionableTargets {
                 if Task.isCancelled || stateBox.isDiskFullPaused || stateBox.areAllResolversBlocked() {
                     break
                 }
                 let item = updatedItems[idx]
+                let itemResolvers = (item.trackRef.isVideo == true) ? ytOnlyResolvers : resolverIDs
                 group.addTask(priority: .utility) { [weak stateBox] in
                     guard let stateBox else { return }
                     await self.processTrack(
                         index: idx,
                         item: item,
-                        resolverIDs: resolverIDs,
+                        resolverIDs: itemResolvers,
                         qualityPolicy: qualityPolicy,
                         serviceName: entry.sourceName,
                         downloadFolder: downloadFolder,

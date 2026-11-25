@@ -80,6 +80,7 @@ public struct SubscriptionEntry: Identifiable, Codable, Hashable, Sendable {
     public var lastSyncedAt: Date?
     public var lastError: String?
     public var dateAdded: Date
+    public var syncFavorites: Bool?
     public var tracks: [SubscribedTrackEntry]
 
     public init(
@@ -97,6 +98,7 @@ public struct SubscriptionEntry: Identifiable, Codable, Hashable, Sendable {
         lastSyncedAt: Date? = nil,
         lastError: String? = nil,
         dateAdded: Date = Date(),
+        syncFavorites: Bool? = nil,
         tracks: [SubscribedTrackEntry] = []
     ) {
         self.id = id
@@ -113,6 +115,7 @@ public struct SubscriptionEntry: Identifiable, Codable, Hashable, Sendable {
         self.lastSyncedAt = lastSyncedAt
         self.lastError = lastError
         self.dateAdded = dateAdded
+        self.syncFavorites = syncFavorites
         self.tracks = tracks
     }
 }

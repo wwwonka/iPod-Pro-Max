@@ -18,6 +18,8 @@ Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lanc
 - [[Corrections de revue du lecteur]] : résolutions, carte du code, mesures et protocole de validation
 - [[Revue du lecteur novembre 2026]] : constats sourcés, reproductions et limites des vérifications
 - [[Modules]] : découpage du code en packages
+- [[Plug-ins]] : architecture des plug-ins hors processus et protocole JSON-RPC 2.0
+- [[YouTube Music et import de comptes]] : InnerTube, import multi-playlists, vidéos vs albums et persistance de session Web
 - [[Compilation multiplateforme]] : un `Package.swift`, trois OS
 - [[MediaKit]] : tags, pochettes, transcodage (rapide sur Mac, portable ailleurs)
 - [[DeviceKit]] : détection d'iPod, numéro de série USB, éjection

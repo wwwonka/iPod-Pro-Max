@@ -42,7 +42,13 @@ struct SubscriptionHeaderView: View {
                     .onTapGesture {
                         if !syncing { onChangeCover?() }
                     }
-                    .help(syncing ? "Sync in progress" : "Click to change cover (1:1 JPEG, min 300×300 px)")
+                    .help(
+                        syncing
+                            ? "Sync in progress"
+                            : (sub.sourcePluginID == "youtube-music"
+                                ? "Click to change cover (requires a phone-verified YouTube account)"
+                                : "Click to change cover (1:1 JPEG, min 300×300 px)")
+                    )
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(sub.title)
@@ -77,10 +83,23 @@ struct SubscriptionHeaderView: View {
                 .padding(.vertical, 10)
 
                 if let errorText = sub.lastError, !errorText.isEmpty {
+                    let bannerAction: (label: String, action: () -> Void)? = {
+                        if errorText.localizedCaseInsensitiveContains("sign in") {
+                            return ("Plug-in Settings…", { AppCommands.openSettings?() })
+                        }
+                        if errorText.localizedCaseInsensitiveContains("phone") || errorText.localizedCaseInsensitiveContains("verify") {
+                            return ("Verify on YouTube…", {
+                                if let url = URL(string: "https://www.youtube.com/verify") {
+                                    _ = SafeStorage.openURL(url)
+                                }
+                            })
+                        }
+                        return nil
+                    }()
                     bannerBar(
                         message: errorText,
-                        actionLabel: errorText.localizedCaseInsensitiveContains("sign in") ? "Plug-in Settings…" : nil,
-                        onAction: { AppCommands.openSettings?() },
+                        actionLabel: bannerAction?.label,
+                        onAction: bannerAction?.action,
                         onDismiss: { controller.dismissError(for: sub.id) }
                     )
                 } else if let fallback = controller.downloadFallbackBanner, !fallback.isEmpty {

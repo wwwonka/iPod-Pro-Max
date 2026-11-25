@@ -71,8 +71,14 @@ struct ContentView: View {
     @State private var pluginSheetRevision = 0
     @State private var subscriptionRevision = 0
     @State private var subscriptionsLoaded = false
+    private struct RemotePlaylistTarget: Equatable {
+        var pluginID: String
+        var serviceName: String
+    }
+
     @State private var newSubscriptionVisible = false
-    @State private var newSpotifyPlaylistVisible = false
+    @State private var importRemotePlaylistsVisible = false
+    @State private var newRemotePlaylistTarget: RemotePlaylistTarget? = nil
     @State private var newSubscriptionInitialURL = ""
     @State private var subscriptionNotice: String?
     private let appearanceToken = AppearanceObserverToken()
@@ -179,8 +185,14 @@ struct ContentView: View {
                 newSubscriptionInitialURL = ""
                 newSubscriptionVisible = true
             }
+            AppCommands.importRemotePlaylists = {
+                importRemotePlaylistsVisible = true
+            }
             AppCommands.newSpotifyPlaylist = {
-                newSpotifyPlaylistVisible = true
+                newRemotePlaylistTarget = RemotePlaylistTarget(pluginID: "spotify", serviceName: "Spotify")
+            }
+            AppCommands.newYouTubeMusicPlaylist = {
+                newRemotePlaylistTarget = RemotePlaylistTarget(pluginID: "youtube-music", serviceName: "YouTube Music")
             }
             AppCommands.newSubscriptionWithURL = { url in
                 newSubscriptionInitialURL = url
@@ -414,6 +426,29 @@ struct ContentView: View {
         }
         .alert($ejectError) {}
         .alert($subscriptionNotice) {}
+        .alert(
+            Binding(
+                get: {
+                    let _ = subscriptionRevision
+                    return SubscriptionController.shared.pendingCoverVerificationMessage
+                },
+                set: { newValue in
+                    if newValue == nil {
+                        SubscriptionController.shared.dismissCoverVerificationAlert()
+                    }
+                }
+            )
+        ) {
+            Button("Verify on YouTube…") {
+                if let url = SubscriptionController.shared.pendingCoverVerificationURL {
+                    _ = SafeStorage.openURL(url)
+                }
+                SubscriptionController.shared.dismissCoverVerificationAlert()
+            }
+            Button("OK") {
+                SubscriptionController.shared.dismissCoverVerificationAlert()
+            }
+        }
         .sheet(
             isPresented: Binding(
                 get: {
@@ -438,11 +473,36 @@ struct ContentView: View {
                 }
             )
         }
-        .sheet(isPresented: $newSpotifyPlaylistVisible) {
-            NewSpotifyPlaylistSheet(
-                isPresented: $newSpotifyPlaylistVisible,
-                pluginRevision: pluginSheetRevision
+        .sheet(isPresented: $importRemotePlaylistsVisible) {
+            ImportRemotePlaylistsSheet(
+                isPresented: $importRemotePlaylistsVisible,
+                pluginRevision: pluginSheetRevision,
+                subscriptionRevision: subscriptionRevision,
+                onNoDownloadSource: {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        subscriptionNotice = "Playlists Imported\n\nNo download source plug-in is currently enabled. Missing tracks will remain as unavailable placeholders until you enable a download source plug-in in Settings › Plug-ins."
+                    }
+                }
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { newRemotePlaylistTarget != nil },
+                set: { if !$0 { newRemotePlaylistTarget = nil } }
+            )
+        ) {
+            if let target = newRemotePlaylistTarget {
+                NewRemotePlaylistSheet(
+                    isPresented: Binding(
+                        get: { newRemotePlaylistTarget != nil },
+                        set: { if !$0 { newRemotePlaylistTarget = nil } }
+                    ),
+                    pluginID: target.pluginID,
+                    serviceName: target.serviceName,
+                    pluginRevision: pluginSheetRevision
+                )
+            }
         }
     }
 
@@ -758,7 +818,7 @@ struct ContentView: View {
             panel.allowedFileTypes = ["jpg", "jpeg", "png", "heic", "tiff", "webp", "bmp", "gif"]
         }
         panel.prompt = "Choose Cover"
-        panel.message = "Choose an image (converted to 1:1 sRGB JPEG, 300–640 px, ≤ 256 KB per Spotify requirements)."
+        panel.message = "Choose an image (converted to 1:1 sRGB JPEG, 300–640 px, ≤ 256 KB)."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         SubscriptionController.shared.setPlaylistArtwork(playlistID: id, imageURL: url)
         #endif
@@ -1409,7 +1469,9 @@ struct ContentView: View {
                 onAddMusicFolder: { AppCommands.addMusicFolder?() },
                 onCreatePlaylist: { isFolder in createNewPlaylist(isFolder: isFolder) },
                 onNewSubscription: { AppCommands.newSubscription?() },
+                onImportRemotePlaylists: { AppCommands.importRemotePlaylists?() },
                 onNewSpotifyPlaylist: { AppCommands.newSpotifyPlaylist?() },
+                onNewYouTubeMusicPlaylist: { AppCommands.newYouTubeMusicPlaylist?() },
                 onRenamePlaylist: { id, name in renamePlaylist(id, to: name) },
                 onDeletePlaylist: { id in deletePlaylist(id) },
                 onRefreshSubscription: { id in SubscriptionController.shared.refresh(playlistID: id) },
