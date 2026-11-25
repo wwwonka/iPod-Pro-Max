@@ -51,7 +51,7 @@ import AVKit
         super.viewDidMoveToWindow()
         observers.forEach(NotificationCenter.default.removeObserver); observers.removeAll()
         if window != nil {
-            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, MacWindowLifecycle.visualActivationDidChange] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.updateTint() }
                 })
@@ -66,7 +66,7 @@ import AVKit
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateTint() }
     private func updateTint() {
-        let active = playerControlWindow(for: self)?.isKeyWindow == true && NSApp.isActive
+        let active = MacWindowLifecycle.shared.isWindowVisuallyActive(playerControlWindow(for: self)) && (NSApp.isActive || playerControlWindow(for: self)?.isMiniaturized == true)
         if !rendersNativeGlyph {
             for state: AVRoutePickerView.ButtonState in [.normal, .normalHighlighted, .active, .activeHighlighted] { setRoutePickerButtonColor(.clear, for: state) }
             return

@@ -200,7 +200,7 @@ final class RailButton: NSButton {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: hitBounds, options: [.mouseEnteredAndExited, .activeAlways],
+        addTrackingArea(NSTrackingArea(rect: hitBounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
                                        owner: self, userInfo: nil))
     }
 
@@ -290,7 +290,7 @@ final class RailButton: NSButton {
         observers = []
         guard let window else { hovering = false; return }
         // A toolbar's items dim when their window isn't the key one; the rail does the same.
-        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, MacWindowLifecycle.visualActivationDidChange] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -315,7 +315,7 @@ final class RailButton: NSButton {
     }
 
     func refresh(animated: Bool = false) {
-        let active = window?.isKeyWindow ?? true
+        let active = window.map { MacWindowLifecycle.shared.isWindowVisuallyActive($0) } ?? true
         let plate: NSColor
         let tint: NSColor
         if isDropTarget { plate = .controlAccentColor; tint = .white }
@@ -482,7 +482,7 @@ final class ExtraMenuRow: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
     override func mouseEntered(with event: NSEvent) { highlighted = true }

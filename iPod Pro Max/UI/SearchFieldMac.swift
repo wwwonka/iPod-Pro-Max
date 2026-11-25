@@ -27,18 +27,29 @@
             var prompt = ""
             var text = ""
             var onChange: (String) -> Void = { _ in }
+            private var lastSynced: (visible: Bool, prompt: String, text: String)?
+            private var syncScheduled = false
 
             override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); sync() }
             override func viewDidHide() { super.viewDidHide(); sync() }
             override func viewDidUnhide() { super.viewDidUnhide(); sync() }
 
             func sync() {
+                let visible = window != nil && !isHiddenOrHasHiddenAncestor
+                if let lastSynced, lastSynced == (visible, prompt, text), MacChrome.shared.isCurrentSearchOwner(self) {
+                    MacChrome.shared.updateSearchCallback(owner: self, onChange: onChange)
+                    return
+                }
+                guard !syncScheduled else { return }
+                syncScheduled = true
                 // Not in the middle of a layout pass: the toolbar changes after it.
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     MainActor.assumeIsolated {
-                        let visible = self.window != nil && !self.isHiddenOrHasHiddenAncestor
-                        MacChrome.shared.setSearch(owner: self, visible: visible, prompt: self.prompt, text: self.text, onChange: self.onChange)
+                        self.syncScheduled = false
+                        let currentVisible = self.window != nil && !self.isHiddenOrHasHiddenAncestor
+                        self.lastSynced = (currentVisible, self.prompt, self.text)
+                        MacChrome.shared.setSearch(owner: self, visible: currentVisible, prompt: self.prompt, text: self.text, onChange: self.onChange)
                     }
                 }
             }

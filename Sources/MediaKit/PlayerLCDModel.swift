@@ -141,37 +141,81 @@ public struct PlayerSpectrumPeaks: Sendable {
     }
 }
 
-/// Short, event-triggered release; the renderer stops its clock when this settles.
+/// Short, event-triggered release and staggered attack; the renderer stops its clock when settled.
 public struct PlayerSpectrumRelease: Sendable {
-    public static let duration = 0.84
+    public static let duration = 1.15
     public private(set) var levels = [Float](repeating: 0, count: 32)
     private var initial = [Float](repeating: 0, count: 32)
+    private var delays = [Double](repeating: 0, count: 32)
+    private var speeds = [Double](repeating: 1 / duration, count: 32)
     private var began: Double?
+    private var riseInitial = [Float](repeating: 0, count: 32)
+    private var riseDelays = [Double](repeating: 0, count: 32)
+    private var riseDurations = [Double](repeating: 0.18, count: 32)
+    private var riseBegan: Double?
     public var isReleasing: Bool { began != nil }
+    public var isRising: Bool { riseBegan != nil }
     public init() {}
-    public mutating func show(_ values: [Float]) {
+    public mutating func beginRise(at now: Double, animated: Bool) {
         began = nil
-        levels = (0..<32).map { values.indices.contains($0) && values[$0].isFinite ? min(1, max(0, values[$0])) : 0 }
+        guard animated else { riseBegan = nil; return }
+        riseInitial = levels
+        riseBegan = now
+        for band in 0..<32 {
+            riseDelays[band] = Double.random(in: 0...0.18)
+            riseDurations[band] = Double.random(in: 0.13...0.22)
+        }
+    }
+    public mutating func show(_ values: [Float], at now: Double? = nil) {
+        began = nil
+        let targets = (0..<32).map { values.indices.contains($0) && values[$0].isFinite ? min(1, max(0, values[$0])) : 0 }
+        guard let riseStart = riseBegan, let now else {
+            riseBegan = nil
+            levels = targets
+            return
+        }
+        let elapsed = max(0, now - riseStart)
+        var done = true
+        for band in 0..<32 {
+            let t = (elapsed - riseDelays[band]) / max(0.01, riseDurations[band])
+            if t < 1 { done = false }
+            let clamped = min(1, max(0, t))
+            let eased = Float(1 - (1 - clamped) * (1 - clamped))
+            levels[band] = riseInitial[band] + (targets[band] - riseInitial[band]) * eased
+        }
+        if done { riseBegan = nil }
     }
     public mutating func pause(at now: Double, animated: Bool) {
+        riseBegan = nil
         guard animated, levels.contains(where: { $0 > 0 }) else { finish(); return }
         initial = levels; began = now
+        let leftFirst = Bool.random()
+        for band in 0..<32 {
+            let isLeft = band < 16
+            let channelBias = (isLeft == leftFirst) ? 0.0 : Double.random(in: 0.12...0.24)
+            let delay = channelBias + Double.random(in: 0...0.18)
+            delays[band] = delay
+            let span = Double.random(in: 0.38...max(0.42, Self.duration - delay))
+            speeds[band] = 1.0 / span
+        }
     }
     public mutating func advance(to now: Double) {
         guard let began else { return }
-        let fall = Float(max(0, (now - began) / Self.duration))
-        for band in levels.indices { levels[band] = max(0, initial[band] - fall) }
+        let elapsed = max(0, now - began)
+        for band in levels.indices {
+            let active = max(0, elapsed - delays[band])
+            levels[band] = max(0, initial[band] - Float(active * speeds[band]))
+        }
         if levels.allSatisfy({ $0 == 0 }) { finish() }
     }
-    public mutating func finish() { began = nil; levels = Array(repeating: 0, count: 32) }
+    public mutating func finish() { began = nil; riseBegan = nil; levels = Array(repeating: 0, count: 32) }
 }
 
 
-/// Each peak waits for its own last visible segment, then holds and fades.
+/// Each peak waits longer after its column drops, then snaps off cleanly without fading.
 /// One display-link release drives all columns; no timers per band or idle work.
 public struct PlayerSpectrumPeakRelease: Sendable {
     public static let holdDuration = 0.20
-    public static let fadeDuration = 0.22
     public private(set) var opacities = [Double](repeating: 0, count: 32)
     public var opacity: Double { opacities.max() ?? 0 }
     private var offDelays = [Double](repeating: 0, count: 32)
@@ -185,18 +229,25 @@ public struct PlayerSpectrumPeakRelease: Sendable {
     public mutating func pause(at now: Double, levels: [Float], animated: Bool) {
         guard animated else { finish(); return }
         began = now
+        let leftFirst = Bool.random()
         for band in opacities.indices {
             let value = levels.indices.contains(band) && levels[band].isFinite ? min(1, max(0, levels[band])) : 0
-            // Six lit segments: extinction happens below the first threshold.
-            offDelays[band] = max(0, Double(value) - 1.0 / 6) * PlayerSpectrumRelease.duration
-            opacities[band] = 1
+            if value > 0 {
+                let channelBias = ((band < 16) == leftFirst) ? 0.0 : Double.random(in: 0.10...0.22)
+                let baseDrop = Double(value) * Double.random(in: 0.50...0.95)
+                offDelays[band] = baseDrop + Self.holdDuration + channelBias + Double.random(in: 0...0.12)
+                opacities[band] = 1
+            } else {
+                offDelays[band] = 0
+                opacities[band] = 0
+            }
         }
     }
     public mutating func advance(to now: Double) {
         guard let began else { return }
+        let elapsed = max(0, now - began)
         for band in opacities.indices {
-            let elapsed = max(0, now - began - offDelays[band] - Self.holdDuration)
-            opacities[band] = max(0, 1 - elapsed / Self.fadeDuration)
+            opacities[band] = elapsed < offDelays[band] ? 1 : 0
         }
         if opacities.allSatisfy({ $0 == 0 }) { finish() }
     }

@@ -1,12 +1,6 @@
 import Foundation
 import SwiftCrossUI
 
-private func matchingAlbums(_ albums: [AlbumInfo], _ query: String) -> [AlbumInfo] {
-    let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    if query.isEmpty { return albums }
-    return albums.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.artist.localizedCaseInsensitiveContains(query) }
-}
-
 #if canImport(AppKitBackend)
 import AppKit
 import AppKitBackend
@@ -53,13 +47,49 @@ struct AlbumBrowser: NSViewRepresentable {
             if let id = NativePlaybackReveal.pendingAlbumID { c.revealPlaybackTrack(id, in: collection) }
         }
         guard changed || sizeChanged else { return }
+        let sameAlbums = c.source.sameStorage(as: albums)
         c.source = albums; c.query = query; c.folder = artworkFolder
         if !c.zoomActive { c.artworkSize = artworkSize }
-        if changed { c.albums = matchingAlbums(albums, query) }
+        if changed { c.albums = c.filterAlbums(albums, query: query, sameSource: sameAlbums) }
         c.reflow(collection, reload: changed)
     }
     final class Coordinator: NSObject, NSCollectionViewDataSource, NSCollectionViewDelegateFlowLayout, NSDraggingSource {
         var source: [AlbumInfo] = []
+        private var keysSource: [AlbumInfo] = []
+        private var foldedKeys: [String] = []
+        private var lastFoldedQuery = ""
+        private var filteredIndices: [Int] = []
+
+        func filterAlbums(_ albums: [AlbumInfo], query: String, sameSource: Bool) -> [AlbumInfo] {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                lastFoldedQuery = ""
+                filteredIndices = []
+                return albums
+            }
+            if !albums.sameStorage(as: keysSource) {
+                foldedKeys = albums.map(FastSearch.albumKey)
+                keysSource = albums
+            }
+            let needle = FastSearch.fold(trimmed)
+            let narrowing = sameSource && !lastFoldedQuery.isEmpty && needle.hasPrefix(lastFoldedQuery)
+            var nextIndices: [Int] = []
+            var nextAlbums: [AlbumInfo] = []
+            if narrowing {
+                for i in filteredIndices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                    nextIndices.append(i)
+                    nextAlbums.append(albums[i])
+                }
+            } else {
+                for i in albums.indices where FastSearch.containsUTF8(foldedKeys[i], needle: needle) {
+                    nextIndices.append(i)
+                    nextAlbums.append(albums[i])
+                }
+            }
+            lastFoldedQuery = needle
+            filteredIndices = nextIndices
+            return nextAlbums
+        }
         var albums: [AlbumInfo] = [] {
             didSet {
                 selectedIndex = selectedID.flatMap { id in albums.firstIndex { $0.id == id } }
@@ -1139,7 +1169,7 @@ private final class AlbumTile: NSCollectionViewItem {
     coordinator.reflow(collection, reload: true)
     precondition(coordinator.selectedID == "check" && coordinator.selectedIndex == 1,
                  "An open album must keep its identity when the list is reordered")
-    coordinator.albums = matchingAlbums(coordinator.albums, "Album")
+    coordinator.albums = coordinator.filterAlbums(coordinator.albums, query: "Album", sameSource: false)
     coordinator.reflow(collection, reload: true)
     precondition(coordinator.selectedID == "check" && coordinator.selectedIndex == 0,
                  "Filtering must relocate the selected album without dropping it")

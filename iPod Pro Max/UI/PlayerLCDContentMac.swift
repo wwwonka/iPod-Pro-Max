@@ -9,7 +9,7 @@ import MediaKit
     private let activities = PlayerActivityController.shared
     private let title = LCDMarquee()
     private let subtitle = LCDMarquee(fontSize: 10, weight: .regular, color: .secondaryLabelColor)
-    private let elapsed = NSTextField(labelWithString: "")
+    private let elapsed = PassiveLCDLabel(labelWithString: "")
     private let remaining = ToolbarPlaybackButton()
     private let mode = LCDModeButton()
     private let previousMode = LCDModeButton(), nextMode = LCDModeButton()
@@ -19,7 +19,7 @@ import MediaKit
     private let backActivity = ToolbarPlaybackButton()
     private let nextActivity = ToolbarPlaybackButton()
     private let cancel = ToolbarPlaybackButton()
-    private let indicator = NSTextField(labelWithString: "")
+    private let indicator = PassiveLCDLabel(labelWithString: "")
     private let plot = LCDPlaybackPlot()
     var isSpectrumAnimating: Bool { plot.isSpectrumAnimating }
     private let progressOverlay = LCDProgressOverlay()
@@ -83,9 +83,10 @@ import MediaKit
         for view in [previousMode, nextMode] { addSubview(view) }
         addSubview(progressOverlay, positioned: .above, relativeTo: nil)
         plot.onPreview = { [weak self] value in self?.refresh(preview: value) }
+        plot.onSpectrumReleaseFinished = { [weak self] in self?.refresh() }
         plot.onHover = { [weak self] value in
             guard let self else { return }
-            let overTimeline = value != nil && self.plot.hoverPoint.y >= 0 && self.plot.hoverPoint.y <= 7
+            let overTimeline = value != nil && (self.plot.isScrubbing || (self.plot.hoverPoint.y >= 0 && self.plot.hoverPoint.y <= 7))
             self.progressOverlay.setPointerX(overTimeline ? self.plot.hoverX : nil)
             self.hoverTime.isHidden = !overTimeline || self.activities.list.selected != nil || self.display.resolvedMode == .spectrum
             self.needsLayout = true
@@ -94,8 +95,9 @@ import MediaKit
         title.onClick = { [weak self] in
             guard self?.display.resolvedMode == .title else { return }; self?.revealTrack()
         }
+        title.tracksClick = true
         displaySubscription = display.didChange.observe { [weak self] in self?.refresh() }
-        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.willMiniaturizeNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, MacWindowLifecycle.visualActivationDidChange] {
             tokens.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 MainActor.assumeIsolated {
                     guard let self, notification.object as? NSWindow === self.window else { return }
@@ -118,17 +120,27 @@ import MediaKit
     private func visibilityChanged() {
         playback.setVisible(isDisplayVisible)
         display.setVisible(isDisplayVisible)
+        if window?.isKeyWindow != true {
+            hovered = false; hoverTime.isHidden = true; progressOverlay.setPointerX(nil)
+        }
         if !isDisplayVisible { hoverTime.isHidden = true; setSpinning(false); title.stop(); subtitle.stop(); plot.suspendSpectrum() }
         else { refresh(); title.scrollOnce(); subtitle.scrollOnce() }
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeAlways], owner: self)
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeInKeyWindow], owner: self)
         addTrackingArea(area); tracking = area
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; refresh() }
-    override func mouseExited(with event: NSEvent) { hovered = false; hoverTime.isHidden = true; refresh() }
+    override func mouseExited(with event: NSEvent) {
+        hovered = false
+        if !plot.isScrubbing {
+            hoverTime.isHidden = true
+            progressOverlay.setPointerX(nil)
+        }
+        refresh()
+    }
     func refresh(preview: Double? = nil, force: Bool = false) {
         guard (force || isDisplayVisible || capturesHiddenWindow), !rendering else { return }
         rendering = true; defer { rendering = false }
@@ -172,7 +184,6 @@ import MediaKit
         more.isEnabled = available && showTitle
         elapsed.isHidden = !available || effective == .spectrum || effective == .lyrics
         remaining.isHidden = elapsed.isHidden
-        plot.isHidden = !available
         setSpinning(activity?.state == .running && activity?.fraction == nil)
         for view in [backActivity, nextActivity, cancel, indicator] { view.isHidden = activity == nil && activities.list.items.isEmpty }
         cancel.isHidden = activity == nil
@@ -181,7 +192,7 @@ import MediaKit
             hoverTime.isHidden = true
             title.setText(activity.title); subtitle.stringValue = activity.detail
             title.isHidden = false; subtitle.isHidden = false
-            plot.isHidden = false; plot.activity = activity; plot.needsDisplay = true
+            plot.activity = activity; plot.needsDisplay = true
             cancel.isEnabled = activity.cancellable || activity.state != .running
             cancel.setSymbol(activity.state == .failed ? "xmark" : activity.state == .completed ? "checkmark" : "xmark", size: 10)
         } else if !playback.error.isEmpty {
@@ -207,8 +218,8 @@ import MediaKit
         }
         title.canAnimate = playback.playing && activity == nil && isDisplayVisible && (effective == .title || effective == .lyrics)
         let trackOpacity: CGFloat = track != nil && !playback.playing && activity == nil ? 0.65 : 1
-        let spectrumOverlay = available && effective == .spectrum
-        let active = window?.isKeyWindow == true
+        let spectrumOverlay = (available || plot.isReleasingSpectrum) && effective == .spectrum
+        let active = MacWindowLifecycle.shared.isWindowVisuallyActive(window)
         let metadataOpacity: CGFloat = spectrumOverlay ? 0 : trackOpacity * (active ? 1 : 0.45)
         fade(title, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(subtitle, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
@@ -231,9 +242,11 @@ import MediaKit
         subtitle.canAnimate = title.canAnimate
         fade(plot, to: 1, animated: false)
         plot.update(trackID: track?.id, position: position, duration: playback.duration, mode: effective, samples: playback.samples, chapters: display.chapters)
+        let showReleasingSpectrum = !available && activity == nil && playback.error.isEmpty && plot.isReleasingSpectrum
+        plot.isHidden = !available && !showReleasingSpectrum
         if effective == .spectrum { hoverTime.isHidden = true }
-        progressOverlay.isHidden = plot.isHidden
-        progressOverlay.update(position: position, duration: playback.duration, activity: activity, proposed: plot.scrub.proposed, chapters: display.chapters)
+        progressOverlay.isHidden = !available && activity == nil
+        progressOverlay.update(position: position, duration: playback.duration, activity: activity, proposed: plot.scrub.proposed, chapters: display.chapters, playing: playback.playing && activity == nil)
         if trackID != track?.id {
             trackID = track?.id; artworkTask?.cancel()
             if let key = track?.artworkKey, let folder = PlayerArtwork.folder {
@@ -301,8 +314,9 @@ import MediaKit
         plot.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: expanded && activities.list.selected == nil ? height - 3 : 7)
         progressOverlay.frame = NSRect(x: artEdge, y: 0, width: max(0, width - artEdge), height: 7)
         spinner.frame = NSRect(x: width - 72, y: 3, width: 12, height: 12)
-        let tooltipWidth = min(160, max(42, hoverTime.intrinsicContentSize.width + 8))
-        let handle = convert(progressOverlay.handleRect, from: progressOverlay)
+        let tooltipWidth = min(160, max(38, hoverTime.intrinsicContentSize.width + 10))
+        let handle = convert(progressOverlay.hoverHandleRect, from: progressOverlay)
+        // Match the 3 pt bottom clearance of the LCD inside the toolbar.
         let tooltip = NSRect(x: handle.midX - tooltipWidth / 2, y: handle.maxY + 3, width: tooltipWidth, height: 15)
         hoverTime.frame = convert(tooltip, to: hoverTime.superview)
 
@@ -372,6 +386,7 @@ import MediaKit
             view.subviews.forEach(checkSidebar)
         }
         if let root = window.contentView { checkSidebar(root) }
+        findVolumeSlider(in: window.contentView?.superview ?? window.contentView)?.checkInactiveFill()
         display.choose(oldMode); refresh(force: true)
         log("PASS: inactive LCD metadata, both clocks and sidebar headings share restrained emphasis")
     }
@@ -403,8 +418,8 @@ import MediaKit
         hoverTime.stringValue = "1:59"; hoverTime.isHidden = false
         needsLayout = true; layoutSubtreeIfNeeded()
         let label = convert(hoverTime.frame, from: hoverTime.superview)
-        let handle = convert(progressOverlay.handleRect, from: progressOverlay)
-        precondition(abs(label.midX - handle.midX) < 0.01, "Hover time stays centered on the capsule, including at the edge")
+        let handle = convert(progressOverlay.hoverHandleRect, from: progressOverlay)
+        precondition(abs(label.midX - handle.midX) < 0.01, "Hover time stays centered on the pointer, including at the edge")
         snapshot("timeline-hover")
         progressOverlay.setPointerX(nil); hoverTime.isHidden = true
         display.choose(.spectrum); hovered = true; refresh(force: true); layoutSubtreeIfNeeded()
@@ -421,6 +436,12 @@ import MediaKit
         log("PASS: right-side LCD controls below timeline; spectrum hover preserves bars; artwork and accent title actions")
     }
 
+    private func findVolumeSlider(in view: NSView?) -> PlayerVolumeSlider? {
+        guard let view else { return nil }
+        if let slider = view as? PlayerVolumeSlider { return slider }
+        for child in view.subviews { if let found = findVolumeSlider(in: child) { return found } }
+        return nil
+    }
     private func time(_ value: Double) -> String { let n = Int(max(0, value.isFinite ? value : 0)); return n >= 3600 ? String(format: "%d:%02d:%02d", n / 3600, n / 60 % 60, n % 60) : String(format: "%d:%02d", n / 60, n % 60) }
     @objc private func previousLCDMode() { changeLCDMode(-1) }
     @objc private func nextLCDMode() { changeLCDMode(1) }
@@ -493,7 +514,43 @@ import MediaKit
     override func rightMouseDown(with event: NSEvent) { guard isEnabled else { return }; NSMenu.popUpContextMenu(makeMenu(), with: event, for: self) }
 }
 
-@MainActor private final class LCDHoverLabel: NSTextField {
+@MainActor private final class LCDHoverLabel: NSView {
+    private let label = NSTextField(labelWithString: "")
+    var font: NSFont? { get { label.font } set { label.font = newValue; needsLayout = true } }
+    var alignment: NSTextAlignment { get { label.alignment } set { label.alignment = newValue } }
+    var drawsBackground = true { didSet { needsDisplay = true } }
+    var backgroundColor: NSColor? { didSet { layer?.backgroundColor = backgroundColor?.cgColor } }
+    var stringValue: String {
+        get { label.stringValue }
+        set { guard label.stringValue != newValue else { return }; label.stringValue = newValue; needsLayout = true }
+    }
+    override var intrinsicContentSize: NSSize { label.intrinsicContentSize }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        label.lineBreakMode = .byTruncatingMiddle
+        label.usesSingleLineMode = true
+        addSubview(label)
+    }
+    convenience init(labelWithString string: String) {
+        self.init(frame: .zero)
+        stringValue = string
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func layout() {
+        super.layout()
+        layer?.backgroundColor = backgroundColor?.cgColor
+        let size = label.intrinsicContentSize
+        let width = min(bounds.width - 4, size.width)
+        let capOffset: CGFloat = -0.5
+        label.frame = NSRect(x: (bounds.width - width) / 2,
+                             y: (bounds.height - size.height) / 2 + capOffset,
+                             width: max(0, width), height: size.height)
+    }
+}
+
+@MainActor private final class PassiveLCDLabel: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
@@ -533,6 +590,33 @@ import MediaKit
     }
     private let placeholder = LCDArtworkPlaceholder()
     var fillsArtwork = false { didSet { placeholder.isHidden = fillsArtwork; needsDisplay = true } }
+    override func mouseDown(with event: NSEvent) {
+        guard fillsArtwork, let window else {
+            window?.performDrag(with: event)
+            return
+        }
+        let downPoint = event.locationInWindow
+        var dragged = false
+        var releasedInside = false
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { [weak self] ev, stop in
+            guard let self, let ev else { stop.pointee = true; return }
+            if ev.type == .leftMouseDragged {
+                let p = ev.locationInWindow
+                if hypot(p.x - downPoint.x, p.y - downPoint.y) >= 3 {
+                    dragged = true
+                    stop.pointee = true
+                }
+            } else {
+                releasedInside = self.bounds.contains(self.convert(ev.locationInWindow, from: nil))
+                stop.pointee = true
+            }
+        }
+        if dragged {
+            window.performDrag(with: event)
+        } else if releasedInside {
+            sendAction(action, to: target)
+        }
+    }
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
         placeholder.image = systemSymbol("music.note", pointSize: 16)
@@ -564,11 +648,41 @@ import MediaKit
     private let label = NSTextField(labelWithString: "")
     private let continuation = NSTextField(labelWithString: "")
     var onClick: () -> Void = {}
+    var tracksClick = false
     var stringValue: String { get { label.stringValue } set { setText(newValue) } }
     var canAnimate = false {
         didSet { guard canAnimate != oldValue else { return }; if !canAnimate { stop() }; needsLayout = true }
     }
-    override func mouseDown(with event: NSEvent) { onClick() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        tracksClick && !stringValue.isEmpty ? super.hitTest(point) : nil
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard tracksClick, let window else {
+            superview?.mouseDown(with: event)
+            return
+        }
+        let downPoint = event.locationInWindow
+        var dragged = false
+        var releasedInside = false
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .greatestFiniteMagnitude, mode: .eventTracking) { [weak self] ev, stop in
+            guard let self, let ev else { stop.pointee = true; return }
+            if ev.type == .leftMouseDragged {
+                let p = ev.locationInWindow
+                if hypot(p.x - downPoint.x, p.y - downPoint.y) >= 3 {
+                    dragged = true
+                    stop.pointee = true
+                }
+            } else {
+                releasedInside = self.bounds.contains(self.convert(ev.locationInWindow, from: nil))
+                stop.pointee = true
+            }
+        }
+        if dragged {
+            window.performDrag(with: event)
+        } else if releasedInside {
+            onClick()
+        }
+    }
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true; layer?.masksToBounds = true
         for view in [label, continuation] {

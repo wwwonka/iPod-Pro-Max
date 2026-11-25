@@ -39,6 +39,7 @@ extension AudioEngine {
     @SwiftCrossUI.Published private(set) var samples: [Float] = []
     @SwiftCrossUI.Published private(set) var rate = 1.0
     @SwiftCrossUI.Published private(set) var queueRevision = 0
+    private(set) var transportAnimationNonce = 0
     private(set) var queueRows: [TrackRow] = []
     var onQueueReset: (() -> Void)?
     var onEnqueue: (([TrackRow]) -> Void)?
@@ -77,14 +78,15 @@ extension AudioEngine {
         self.session = session; sessionFactory = { SimulatedMediaSession() }
         configure(engine); configureSessionCommands()
     }
+    func requestTransportAnimation() { transportAnimationNonce += 1 }
     private func configureSessionCommands() {
         session?.onCommand = { [weak self] command in
             guard let self, self.track != nil else { return }
             if ProcessInfo.processInfo.environment["IPPM_PLAYER_QA"] != nil { log("[media QA] command: \(command)") }
             switch command {
-            case .play: self.setPlaying(true)
-            case .pause: self.setPlaying(false)
-            case .toggle: self.toggle()
+            case .play: self.requestTransportAnimation(); self.setPlaying(true)
+            case .pause: self.requestTransportAnimation(); self.setPlaying(false)
+            case .toggle: self.requestTransportAnimation(); self.toggle()
             case .next: self.next()
             case .previous: self.previous()
             case .seek(let value): self.seek(value)

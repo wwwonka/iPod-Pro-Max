@@ -99,12 +99,18 @@ import MediaKit
     window.makeKeyAndOrderFront(nil)
     var finishedEntering = window.styleMask.contains(.fullScreen)
     var finishedExiting = false
+    var lightsHiddenWhenEntering = false
     let enteredObserver = NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) { _ in finishedEntering = true }
     let exitedObserver = NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in finishedExiting = true }
-    defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver) }
+    let willEnterObserver = NotificationCenter.default.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+        MainActor.assumeIsolated { lightsHiddenWhenEntering = MacChrome.shared.hidesFullScreenTrafficLights }
+    }
+    defer { NotificationCenter.default.removeObserver(enteredObserver); NotificationCenter.default.removeObserver(exitedObserver); NotificationCenter.default.removeObserver(willEnterObserver) }
     if !window.styleMask.contains(.fullScreen) { window.standardWindowButton(.zoomButton)?.performClick(nil) }
     let entered = await waitUntil { finishedEntering && MacChrome.shared.playerUsesFullScreenSpacing }
     guard require(entered, "entered full screen") else { return false }
+    guard require(!lightsHiddenWhenEntering && MacChrome.shared.hidesFullScreenTrafficLights, "traffic lights stay in starting snapshot and fade during native zoom in") else { return false }
+    log("PASS: traffic lights and spacing crossfade during native full-screen zoom in")
     guard require(MacChrome.shared.playerUsesFullScreenSpacing, "fullscreen removes the traffic-light clearance from playback controls") else { return false }
     let visible = await waitUntil {
         originalLCD.window === window && originalLCD.superview === originalHeader && originalHeader.isDescendant(of: window.contentView!) &&

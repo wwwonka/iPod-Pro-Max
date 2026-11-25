@@ -60,14 +60,11 @@ struct ArtistTrackList: NSViewRepresentable {
         // Read before the rows are rebuilt: the selected songs stay selected (a favorite was saved).
         let selected = (scroll.documentView as? NSTableView).map { Set(c.selectedSongIDs($0)) } ?? []
         if changedRows {
+            let sameAlbums = c.albums.sameStorage(as: albums)
             c.albums = albums
             c.artworkFolder = artworkFolder
             c.query = query
-            c.entries = albums.flatMap { album -> [Coordinator.Entry] in
-                let songs = album.rows.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-                    || $0.artist.localizedCaseInsensitiveContains(query) || $0.album.localizedCaseInsensitiveContains(query) }
-                return songs.isEmpty ? [] : [Coordinator.Entry.album(album)] + songs.map(Coordinator.Entry.song)
-            }
+            c.rebuildEntries(sameAlbums: sameAlbums)
         }
         if let table = scroll.documentView as? NSTableView {
             table.reloadData()
@@ -103,8 +100,36 @@ struct ArtistTrackList: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         enum Entry { case album(AlbumInfo), song(TrackRow) }
         var albums: [AlbumInfo] = []
+        private var keysAlbums: [AlbumInfo] = []
+        private var foldedSongKeys: [[String]] = []
         var artworkFolder: URL?
         var entries: [Entry] = []
+
+        func rebuildEntries(sameAlbums: Bool) {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                entries = albums.flatMap { [Entry.album($0)] + $0.rows.map(Entry.song) }
+                return
+            }
+            if !sameAlbums || !albums.sameStorage(as: keysAlbums) {
+                foldedSongKeys = albums.map { $0.rows.map(FastSearch.rowKey) }
+                keysAlbums = albums
+            }
+            let needle = FastSearch.fold(trimmed)
+            var next: [Entry] = []
+            for (albumIndex, album) in albums.enumerated() {
+                let keys = foldedSongKeys[albumIndex]
+                var matched: [TrackRow] = []
+                for (rowIndex, row) in album.rows.enumerated() where FastSearch.containsUTF8(keys[rowIndex], needle: needle) {
+                    matched.append(row)
+                }
+                if !matched.isEmpty {
+                    next.append(.album(album))
+                    next.append(contentsOf: matched.map(Entry.song))
+                }
+            }
+            entries = next
+        }
         var dragPayload: String?
         var query = ""
         var devices: [String] = []

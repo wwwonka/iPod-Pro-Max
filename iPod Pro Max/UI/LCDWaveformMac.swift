@@ -26,7 +26,7 @@ import MediaKit
     func update(samples: [Float], fraction: Double, playing: Bool, scrubbing: Bool) {
         if !self.samples.sameStorage(as: samples) { self.samples = samples; needsPath = true; needsLayout = true }
         let next = min(1, max(0, fraction))
-        let interpolate = self.playing && playing && !scrubbing && abs(next - self.fraction) < 0.02
+        let interpolate = self.playing && playing && !scrubbing && abs(next - self.fraction) < 0.05
         self.playing = playing; self.fraction = next
         renderProgress(animated: interpolate)
     }
@@ -83,11 +83,12 @@ import MediaKit
         cursor.isHidden = samples.isEmpty || fraction <= 0 || fraction >= 1
         CATransaction.commit()
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { suspend(); return }
+        let linear = CAMediaTimingFunction(name: .linear)
         let reveal = CABasicAnimation(keyPath: "bounds.size.width")
-        reveal.fromValue = previous; reveal.toValue = width; reveal.duration = 0.25
+        reveal.fromValue = previous; reveal.toValue = width; reveal.duration = 0.25; reveal.timingFunction = linear
         clip.add(reveal, forKey: "progress")
         let move = CABasicAnimation(keyPath: "position.x")
-        move.fromValue = previousX; move.toValue = cursor.position.x; move.duration = 0.25
+        move.fromValue = previousX; move.toValue = cursor.position.x; move.duration = 0.25; move.timingFunction = linear
         cursor.add(move, forKey: "progress")
     }
 }

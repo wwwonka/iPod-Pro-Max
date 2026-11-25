@@ -364,7 +364,7 @@
                 super.viewDidMoveToWindow()
                 emphasisObservers.forEach(NotificationCenter.default.removeObserver); emphasisObservers.removeAll()
                 if let window {
-                    for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                    for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, MacWindowLifecycle.visualActivationDidChange] {
                         emphasisObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                             MainActor.assumeIsolated { self?.updateTextEmphasis() }
                         })
@@ -373,7 +373,7 @@
                 updateTextEmphasis()
             }
             private func updateTextEmphasis() {
-                let opacity: CGFloat = window?.isKeyWindow == true ? 1 : 0.45
+                let opacity: CGFloat = MacWindowLifecycle.shared.isWindowVisuallyActive(window) ? 1 : 0.45
                 textField?.alphaValue = opacity; headerLabel?.alphaValue = opacity
             }
             deinit { emphasisObservers.forEach(NotificationCenter.default.removeObserver) }
@@ -1934,7 +1934,7 @@
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             trackingAreas.forEach(removeTrackingArea)
-            addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                            owner: self, userInfo: nil))
         }
 
