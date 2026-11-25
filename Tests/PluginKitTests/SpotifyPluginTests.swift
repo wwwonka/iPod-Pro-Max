@@ -694,6 +694,50 @@ final class SpotifyPluginTests: XCTestCase {
         }
     }
 
+    func testSpotifyRemoveTracksSkipsBundleScrapingAndUsesFastPath() async throws {
+        let hitCounter = SendableOpsState()
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"userfast","display_name":"wwwonka"}"#.utf8))
+            }
+            if url.contains("open.spotify.com") || url.contains("spotifycdn.com") {
+                hitCounter.markAdd() // Reuse flag to assert zero HTML/bundle fetches on remove.
+                return HTTPResponseData(statusCode: 500, body: Data())
+            }
+            if req.httpMethod == "POST" && url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plFast/changes") {
+                hitCounter.markRemove()
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"revision":"rev-fast"}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spotify-fast-rm-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "0.1", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+
+        try await source.removeTracks(request: PlaylistRemoveTracksRequest(
+            playlistID: "plFast",
+            trackIDs: ["1234567890123456789012"],
+            itemUIDs: ["uid-1"]
+        ))
+        XCTAssertFalse(hitCounter.didAdd, "removeTracks should not scrape open.spotify.com bundles when hash is uncached")
+        XCTAssertTrue(hitCounter.didRemove)
+    }
+
     private static func makeEmbedHTML(token: String, expiresAtMs: Int64) -> String {
         """
         <html><body>

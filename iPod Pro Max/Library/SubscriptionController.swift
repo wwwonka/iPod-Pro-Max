@@ -910,11 +910,14 @@ final class SubscriptionController {
                 cache.playlists[pIdx].trackIDs = updatedTrackIDs
             }
         }
+        notify()
 
         let subID = sub.id
         let pluginID = sub.sourcePluginID
         let sourcePlaylistID = sub.sourcePlaylistID
         let trackIDs = removedEntries.map(\.trackRef.sourceID).filter { !$0.isEmpty }
+        let removedSourceIDSet = Set(trackIDs)
+        let hasRemainingDuplicate = remaining.contains { removedSourceIDSet.contains($0.trackRef.sourceID) }
         let uids = removedEntries.compactMap(\.trackRef.remoteItemUID)
         beginActivity(subID)
 
@@ -935,6 +938,7 @@ final class SubscriptionController {
                 preferredPlaylistID: sourcePlaylistID,
                 failurePrefix: "Removed locally",
                 unauthAction: "remove tracks",
+                skipPlaylistRefetch: !hasRemainingDuplicate,
                 operation: { runtime in
                     try await runtime.removeTracksFromPlaylist(request: request)
                 }
@@ -1057,6 +1061,7 @@ final class SubscriptionController {
         unauthAction: String,
         expectedTitle: String? = nil,
         expectedArtworkKey: String? = nil,
+        skipPlaylistRefetch: Bool = false,
         operation: (ExternalPlugin) async throws -> Void
     ) async {
         defer { endActivity(subscriptionID) }
@@ -1073,13 +1078,25 @@ final class SubscriptionController {
                 operation: { try await operation(runtime) }
             )
             clearReorderError(for: subscriptionID)
-            await refreshAfterMutation(
-                subscriptionID: subscriptionID,
-                pluginID: pluginID,
-                runtime: runtime,
-                expectedTitle: expectedTitle,
-                expectedArtworkKey: expectedArtworkKey
-            )
+            if skipPlaylistRefetch {
+                if let idx = subscriptions.firstIndex(where: { $0.id == subscriptionID }) {
+                    subscriptions[idx].revision = Self.safeRevision(
+                        title: subscriptions[idx].title,
+                        trackIDs: subscriptions[idx].tracks.map(\.trackRef.sourceID)
+                    )
+                    subscriptions[idx].lastSyncedAt = Date()
+                    saveSubscriptionsAsync()
+                    notify()
+                }
+            } else {
+                await refreshAfterMutation(
+                    subscriptionID: subscriptionID,
+                    pluginID: pluginID,
+                    runtime: runtime,
+                    expectedTitle: expectedTitle,
+                    expectedArtworkKey: expectedArtworkKey
+                )
+            }
         } catch let err as PluginError where err.code == .unauthorized {
             setReorderNotice(
                 for: subscriptionID,
