@@ -62,7 +62,8 @@ struct ContentView: View {
     @State var playerVisible = false
     /// macOS: the sidebar card is open, so the content leaves it room.
     @State var sidebarOpen = true
-    @State var albumArtworkSize = 172.0
+    /// Cover width of each grid page, by `GridSection.key`.
+    @State var gridArtworkSizes: [String: Double] = [:]
     @State var sidebarPoints = Int(sidebarWidth)
     @State var sectionTabs: [String: String] = [:]
     @State var sidebarOrder: [String: [String]] = [:]
@@ -1260,6 +1261,7 @@ struct ContentView: View {
         case .music, .audiobooks:
             try await loadPortableLocked(refresh: true, removedKind: removedPath == nil ? nil : kind, removedSourcePath: removedPath)
         case .photos: _ = await PhotoInventory.shared.load(store, refresh: true)
+        case .games: _ = await GameCatalog.shared.load(store, refresh: true)
         default: break
         }
         SettingsController.shared.attach(store)
@@ -1332,7 +1334,7 @@ struct ContentView: View {
             )
             if !settingsLoaded {
                 let settings = await Task.detached(priority: .utility) { loaded.store.data.read(PortableSettings.self, from: "settings.json") }.value
-                albumArtworkSize = min(max(settings?.albumArtworkSize ?? 172, 110), 280)
+                gridArtworkSizes = settings?.gridArtworkSizes ?? [:]
                 mode = MusicMode(rawValue: settings?.musicViewMode ?? "") ?? .allSongs
                 sectionTabs = settings?.sectionTabs ?? [:]
                 sidebarOrder = settings?.sidebarOrder ?? [:]
@@ -1520,14 +1522,11 @@ struct ContentView: View {
                                        SubscriptionController.shared.retryTrack(playlistID: playlistID, trackKey: trackKey)
                                    })
                         if selection == .albums && selectedAlbumID == nil {
-                            AlbumBrowser(albums: library.albums, artworkFolder: library.artworkFolder, query: search,
-                                         onSelect: { selectedAlbumID = $0 }, artworkSize: albumArtworkSize,
-                                         onArtworkSize: { size in
-                                             #if !canImport(AppKitBackend)
-                                             albumArtworkSize = size
-                                             #endif
-                                             if let store = portableLibrary?.store { PortablePreferences.shared.stageAlbumArtworkSize(size, store: store) }
-                                         }, onArtworkCommit: { size in albumArtworkSize = size }, onPlay: { row, rows in startPlayback(row, displayed: rows, library: library) })
+                            GridPage(section: .albums, items: library.albums, artworkFolder: library.artworkFolder, query: search,
+                                     artworkSizes: gridArtworkSizes, store: portableLibrary?.store,
+                                     action: .expand(onSelect: { selectedAlbumID = $0 },
+                                                     onPlay: { row, rows in startPlayback(row, displayed: rows, library: library) }),
+                                     onArtworkSizesChange: { gridArtworkSizes = $0 })
                                 .background(WindowBackground())
                         }
                         ForEach(ipods, id: \.id) { device in
@@ -1572,6 +1571,13 @@ struct ContentView: View {
                                     MusicTransfer.shared.enqueuePhotos(device: device, loaded: loaded, selection: PhotoChoices.shared.selection)
                                 },
                                 onAddFolder: { await addSource(kind: SourceKind.photos.rawValue, folder: $0) },
+                                onRemoveFolder: { await removeSource(id: $0) })
+                                .background(WindowBackground())
+                        }
+                        if selection == .games {
+                            GamesView(store: portableLibrary?.store, query: search, artworkSizes: gridArtworkSizes,
+                                onArtworkSizesChange: { gridArtworkSizes = $0 },
+                                onAddFolder: { await addSource(kind: SourceKind.games.rawValue, folder: $0) },
                                 onRemoveFolder: { await removeSource(id: $0) })
                                 .background(WindowBackground())
                         }
@@ -1825,7 +1831,7 @@ struct ContentView: View {
                               message: "Music you add to your library will appear here.")
         case .recentMusic, .albums, .favorites:
             return nil
-        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
+        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .games, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).
