@@ -17,7 +17,9 @@
   },
   "urlPatterns": [
     "^(?:https?://)?(?:open|play)\\.spotify\\.com/(?:embed/)?(?:intl-[a-z]+(?:-[a-z]+)?/)?(?:playlist|album)/[0-9a-z]{22}(?:[/?#].*)?$",
-    "^spotify:(?:playlist|album):[0-9a-z]{22}$"
+    "^(?:https?://)?(?:open|play)\\.spotify\\.com/(?:intl-[a-z]+(?:-[a-z]+)?/)?collection/tracks(?:[/?#].*)?$",
+    "^spotify:(?:playlist|album):[0-9a-z]{22}$",
+    "^spotify:(?:collection:tracks|user:[^:]+:collection)$"
   ],
   "badge": "badge.svg",
   "requiresConsent": "scraping",

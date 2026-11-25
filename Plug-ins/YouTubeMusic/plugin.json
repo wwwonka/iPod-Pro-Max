@@ -1,0 +1,48 @@
+{
+  "id": "youtube-music",
+  "name": "YouTube Music",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Reads public YouTube Music playlists and albums and edits your own playlists without an API key or Premium.",
+  "author": "iPod Pro Max",
+  "license": "MIT",
+  "serviceName": "YouTube Music",
+  "roles": ["playlistSource"],
+  "executable": {
+    "macos": "bin/macos/youtube-music-plugin",
+    "windows-x64": "bin/windows-x64/youtube-music-plugin.exe",
+    "windows-arm64": "bin/windows-arm64/youtube-music-plugin.exe",
+    "linux-x86_64": "bin/linux-x86_64/youtube-music-plugin",
+    "linux-aarch64": "bin/linux-aarch64/youtube-music-plugin"
+  },
+  "urlPatterns": [
+    "^(?:https?://)?(?:music|www|m)\\.youtube\\.com/playlist\\?(?:.*&)?list=[a-z0-9_-]+(?:[&#].*)?$",
+    "^(?:https?://)?(?:music|www|m)\\.youtube\\.com/browse/(?:VL|MPREb_|OLAK5uy_)[a-z0-9_-]+(?:[/?#].*)?$",
+    "^(?:https?://)?youtu\\.be/.*[?&]list=[a-z0-9_-]+(?:[&#].*)?$",
+    "^ytmusic:(?:playlist|album):[a-z0-9_-]+$"
+  ],
+  "badge": "badge.svg",
+  "requiresConsent": "scraping",
+  "settings": [
+    {
+      "key": "account",
+      "type": "account",
+      "label": "YouTube Music Web Account",
+      "help": "Sign in to edit playlists that you own back to YouTube Music (Free or Premium) and read private playlists. If Google blocks embedded login, import from your browser or paste your Cookie header from music.youtube.com.",
+      "oauth": true,
+      "fields": [
+        {
+          "key": "cookie",
+          "label": "Session Cookie",
+          "type": "secret",
+          "placeholder": "Optional Cookie header (SAPISID=...; SID=...)",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "config": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "clientVersion": "1.20261117.06.00"
+  }
+}

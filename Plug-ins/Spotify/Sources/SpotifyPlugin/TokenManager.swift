@@ -153,6 +153,7 @@ public actor TokenManager {
     private var userSession: UserWebSession?
     private var sessionFileURL: URL?
     private var inFlightBootstrap: Task<EmbedSession, Error>?
+    private var inFlightUserRefresh: Task<(accessToken: String, clientToken: String?), Error>?
     private var logHandler: (@Sendable (PluginLogLevel, String) async -> Void)?
     private var apiChangedHandler: (@Sendable (String) async -> Void)?
 
@@ -177,7 +178,9 @@ public actor TokenManager {
     }
 
     public func configureStorage(dataDirectory: String) {
-        let dir = URL(fileURLWithPath: dataDirectory, isDirectory: true)
+        let trimmed = dataDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let dir = URL(fileURLWithPath: trimmed, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent(".spotify-session.json")
         self.sessionFileURL = file
@@ -231,15 +234,156 @@ public actor TokenManager {
         )
     }
 
-    public func getUserWriteCredentials() throws -> (accessToken: String, clientToken: String?) {
+    public func getUserWriteCredentials() async throws -> (accessToken: String, clientToken: String?) {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        guard let userSession,
-              let token = userSession.accessToken,
-              !token.isEmpty,
-              userSession.expiresAtMs == 0 || nowMs < userSession.expiresAtMs - 30_000 else {
-            throw PluginError(code: .unauthorized, message: "Spotify web session expired or not signed in.")
+        if let userSession,
+           let token = userSession.accessToken,
+           !token.isEmpty,
+           userSession.expiresAtMs == 0 || nowMs < userSession.expiresAtMs - 30_000 {
+            if let existingCT = userSession.clientToken, !existingCT.isEmpty {
+                return (token, existingCT)
+            }
+            if let refreshedCT = await fetchWebClientTokenIfPossible() {
+                var updated = userSession
+                updated.clientToken = refreshedCT
+                self.userSession = updated
+                persistUserSession(updated)
+                return (token, refreshedCT)
+            }
+            return (token, nil)
         }
-        return (token, userSession.clientToken)
+
+        if let userSession,
+           let spDC = userSession.spDC?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !spDC.isEmpty {
+            return try await refreshUserSessionWithSpDC(spDC)
+        }
+
+        throw PluginError(code: .unauthorized, message: "Spotify web session expired or not signed in.")
+    }
+
+    private func refreshUserSessionWithSpDC(_ spDC: String) async throws -> (accessToken: String, clientToken: String?) {
+        if let existing = inFlightUserRefresh {
+            return try await existing.value
+        }
+        let ua = self.userAgent
+        let existingSession = self.userSession
+        let transport = self.transport
+        let task = Task<(accessToken: String, clientToken: String?), Error> {
+            try Task.checkCancellation()
+            guard let homeURL = URL(string: "https://open.spotify.com/") else {
+                throw PluginError(code: .unauthorized, message: "Spotify web session expired or not signed in.")
+            }
+            var req = URLRequest(url: homeURL, timeoutInterval: 20)
+            req.setValue(ua, forHTTPHeaderField: "User-Agent")
+            req.setValue("sp_dc=\(spDC)", forHTTPHeaderField: "Cookie")
+            req.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+
+            let resp = try await transport.send(req)
+            guard (200..<300).contains(resp.statusCode),
+                  let html = String(data: resp.body, encoding: .utf8),
+                  let webSession = Self.extractWebSessionScript(fromHTML: html),
+                  !webSession.isAnonymous,
+                  !webSession.accessToken.isEmpty else {
+                throw PluginError(code: .unauthorized, message: "Spotify web session expired or not signed in.")
+            }
+
+            let appCfg = Self.extractJSONScript(id: "appServerConfig", fromHTML: html)
+                ?? Self.extractJSONScript(id: "config", fromHTML: html)
+            let clientID = (appCfg?["clientId"] as? String) ?? (appCfg?["client_id"] as? String)
+            let clientVer = (appCfg?["clientVersion"] as? String) ?? (appCfg?["app_version"] as? String)
+            var resolvedClientToken = existingSession?.clientToken
+            if resolvedClientToken?.isEmpty ?? true {
+                resolvedClientToken = await Self.fetchClientToken(
+                    transport: transport,
+                    userAgent: ua,
+                    clientID: clientID,
+                    clientVersion: clientVer
+                )
+            }
+            return (webSession.accessToken, resolvedClientToken)
+        }
+
+        inFlightUserRefresh = task
+        do {
+            let refreshed = try await task.value
+            inFlightUserRefresh = nil
+            var updated = self.userSession ?? UserWebSession(spDC: spDC)
+            updated.spDC = spDC
+            updated.accessToken = refreshed.accessToken
+            if let ct = refreshed.clientToken, !ct.isEmpty {
+                updated.clientToken = ct
+            }
+            updated.expiresAtMs = Int64(Date().timeIntervalSince1970 * 1000) + 3_300_000
+            self.userSession = updated
+            persistUserSession(updated)
+            return refreshed
+        } catch {
+            inFlightUserRefresh = nil
+            throw error
+        }
+    }
+
+    private func fetchWebClientTokenIfPossible() async -> String? {
+        await Self.fetchClientToken(transport: transport, userAgent: userAgent, clientID: nil, clientVersion: nil)
+    }
+
+    private static func fetchClientToken(
+        transport: any HTTPTransport,
+        userAgent: String,
+        clientID: String?,
+        clientVersion: String?
+    ) async -> String? {
+        guard let url = URL(string: "https://clienttoken.spotify.com/v1/clienttoken") else { return nil }
+        let payload: [String: Any] = [
+            "client_data": [
+                "client_version": clientVersion ?? "1.2.52.442.g07d9e696",
+                "client_id": clientID ?? "d8a5ed958d274c2e8ee717e6a4b0971d",
+                "js_sdk_data": [
+                    "device_brand": "Apple",
+                    "device_model": "unknown",
+                    "os": "macos",
+                    "os_version": "15.0",
+                    "device_type": "computer",
+                ],
+            ]
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        req.httpBody = body
+        guard let resp = try? await transport.send(req),
+              (200..<300).contains(resp.statusCode),
+              let json = (try? JSONSerialization.jsonObject(with: resp.body)) as? [String: Any],
+              let granted = (json["granted_token"] as? [String: Any])?["token"] as? String,
+              !granted.isEmpty else {
+            return nil
+        }
+        return granted
+    }
+
+    private static func extractWebSessionScript(fromHTML html: String) -> EmbedSession? {
+        guard let json = extractJSONScript(id: "session", fromHTML: html),
+              let token = json["accessToken"] as? String, !token.isEmpty else {
+            return nil
+        }
+        let expMs = (json["accessTokenExpirationTimestampMs"] as? NSNumber)?.int64Value ?? 0
+        let isAnon = (json["isAnonymous"] as? Bool) ?? true
+        return EmbedSession(accessToken: token, expiresAtMs: expMs, isAnonymous: isAnon)
+    }
+
+    private static func extractJSONScript(id: String, fromHTML html: String) -> [String: Any]? {
+        let escaped = NSRegularExpression.escapedPattern(for: id)
+        guard let startRange = html.range(of: #"<script[^>]*id="\#(escaped)"[^>]*>"#, options: [.regularExpression, .caseInsensitive]),
+              let endRange = html[startRange.upperBound...].range(of: "</script>", options: .caseInsensitive) else {
+            return nil
+        }
+        let raw = String(html[startRange.upperBound..<endRange.lowerBound])
+        guard let data = raw.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     public func getPreferredAuth(preferredPlaylistID: String? = nil) async throws -> (accessToken: String, clientToken: String?, isUserToken: Bool) {

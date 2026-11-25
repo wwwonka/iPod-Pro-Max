@@ -21,6 +21,217 @@ public enum SpotifyParsers {
         public var warnings: [String]
     }
 
+    public struct ParsedUserPlaylistsPage: Sendable {
+        public var playlists: [RemotePlaylistSummary]
+        public var nextURL: URL?
+        public var nextOffset: Int?
+        public var totalCount: Int?
+    }
+
+    // MARK: - User Playlists (Pathfinder `libraryV3` sidebar & Web API `/v1/me/playlists`)
+
+    /// Parses one page from Pathfinder `libraryV3` (the `open.spotify.com` left sidebar Your Library › Playlists feed).
+    public static func parseLibraryV3PlaylistsPage(
+        data: [String: Any],
+        currentUsername: String? = nil,
+        currentDisplayName: String? = nil
+    ) throws -> ParsedUserPlaylistsPage {
+        guard let libraryV3 = (data["me"] as? [String: Any])?["libraryV3"] as? [String: Any],
+              let rawItems = libraryV3["items"] as? [[String: Any]] else {
+            throw PluginError(code: .apiChanged, message: SpotifyMessages.apiChanged)
+        }
+
+        var playlists: [RemotePlaylistSummary] = []
+        playlists.reserveCapacity(rawItems.count)
+
+        for entry in rawItems {
+            let itemObj = (entry["item"] as? [String: Any]) ?? entry
+            let typename = (itemObj["__typename"] as? String) ?? ""
+            let inner = (itemObj["data"] as? [String: Any]) ?? itemObj
+            let innerType = (inner["__typename"] as? String) ?? typename
+            let uri = ((inner["uri"] as? String) ?? (itemObj["_uri"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if innerType.contains("Folder") || typename.contains("Folder") {
+                continue
+            }
+            if uri.contains(":collection") || innerType.contains("PseudoPlaylist") || typename.contains("PseudoPlaylist") {
+                // Skip Your Episodes / podcast queues; keep Liked Songs (`collection` or `spotify:user:...:collection`).
+                if let name = (inner["name"] as? String)?.nonEmpty,
+                   !name.localizedCaseInsensitiveContains("episode"),
+                   !uri.contains("your-episodes"),
+                   let likedURL = URL(string: "https://open.spotify.com/collection/tracks") {
+                    let count = (inner["count"] as? NSNumber)?.intValue
+                        ?? ((inner["content"] as? [String: Any])?["totalCount"] as? NSNumber)?.intValue
+                    playlists.append(RemotePlaylistSummary(
+                        id: "collection-tracks",
+                        title: name,
+                        owner: currentDisplayName,
+                        trackCount: count,
+                        artworkURL: parsePlaylistArtworkURL(from: inner["images"] ?? inner["image"]),
+                        url: likedURL,
+                        isLikedSongs: true,
+                        isOwned: true
+                    ))
+                }
+                continue
+            }
+
+            guard uri.hasPrefix("spotify:playlist:") else { continue }
+            let id = SpotifyURL.idFromURI(uri)
+            guard SpotifyURL.isValidSpotifyID(id),
+                  let title = (inner["name"] as? String)?.nonEmpty,
+                  let url = URL(string: "https://open.spotify.com/playlist/\(id)") else {
+                continue
+            }
+            let ownerData = (inner["ownerV2"] as? [String: Any])?["data"] as? [String: Any]
+            let ownerUsername = (ownerData?["username"] as? String)?.nonEmpty
+                ?? (ownerData?["uri"] as? String).map(SpotifyURL.idFromURI)?.nonEmpty
+            let owner = (ownerData?["name"] as? String)?.nonEmpty ?? ownerUsername
+            let content = inner["content"] as? [String: Any]
+            let tracksObj = inner["tracks"] as? [String: Any]
+            let trackCount = (content?["totalCount"] as? NSNumber)?.intValue
+                ?? (inner["totalCount"] as? NSNumber)?.intValue
+                ?? (inner["trackCount"] as? NSNumber)?.intValue
+                ?? (inner["tracksCount"] as? NSNumber)?.intValue
+                ?? (tracksObj?["totalCount"] as? NSNumber)?.intValue
+                ?? (tracksObj?["total"] as? NSNumber)?.intValue
+            let artworkURL = parsePlaylistArtworkURL(from: inner["images"])
+                ?? parseCoverArtLargestURL(from: inner["images"])
+
+            let isOwned = matchesSpotifyOwner(
+                ownerID: ownerUsername,
+                ownerName: owner,
+                currentUsername: currentUsername,
+                currentDisplayName: currentDisplayName
+            )
+
+            playlists.append(RemotePlaylistSummary(
+                id: id,
+                title: title,
+                owner: owner,
+                trackCount: trackCount,
+                artworkURL: artworkURL,
+                url: url,
+                isLikedSongs: false,
+                isOwned: isOwned
+            ))
+        }
+
+        let paging = libraryV3["pagingInfo"] as? [String: Any]
+        let limit = (paging?["limit"] as? NSNumber)?.intValue ?? 50
+        let offset = (paging?["offset"] as? NSNumber)?.intValue ?? 0
+        let total = (libraryV3["totalCount"] as? NSNumber)?.intValue ?? 0
+        let candidateNext = offset + max(rawItems.count, 1)
+        let nextOffset: Int? = (!rawItems.isEmpty && candidateNext < total && limit > 0) ? candidateNext : nil
+
+        return ParsedUserPlaylistsPage(playlists: playlists, nextURL: nil, nextOffset: nextOffset, totalCount: total)
+    }
+
+    public static func parseLibraryTracksPage(data: [String: Any]) throws -> ParsedTracksPage {
+        guard let tracksConn = ((data["me"] as? [String: Any])?["library"] as? [String: Any])?["tracks"] as? [String: Any] else {
+            throw PluginError(code: .apiChanged, message: SpotifyMessages.apiChanged)
+        }
+        let totalCount = (tracksConn["totalCount"] as? NSNumber)?.intValue ?? 0
+        let rawItems = tracksConn["items"] as? [[String: Any]] ?? []
+        var tracks: [TrackRef] = []
+        var warnings: [String] = []
+        tracks.reserveCapacity(rawItems.count)
+
+        for entry in rawItems {
+            let trackWrapper = (entry["track"] as? [String: Any]) ?? entry
+            let node = (trackWrapper["data"] as? [String: Any]) ?? trackWrapper
+            if let ref = parseTrackNode(
+                node,
+                defaultAlbumName: nil,
+                defaultAlbumArtist: nil,
+                defaultArtworkURL: nil,
+                defaultReleaseDate: nil,
+                warnings: &warnings
+            ) {
+                tracks.append(ref)
+            }
+        }
+        let paging = tracksConn["pagingInfo"] as? [String: Any]
+        let offset = (paging?["offset"] as? NSNumber)?.intValue ?? 0
+        let nextOffset: Int? = (!rawItems.isEmpty && offset + rawItems.count < totalCount) ? (offset + rawItems.count) : nil
+        return ParsedTracksPage(tracks: tracks, totalCount: max(totalCount, tracks.count), nextOffset: nextOffset, warnings: warnings)
+    }
+
+    /// Parses one page from `GET https://api.spotify.com/v1/me/playlists`, ignoring null slots that Spotify occasionally emits.
+    public static func parseMePlaylistsPage(
+        data: Data,
+        currentUsername: String? = nil,
+        currentDisplayName: String? = nil
+    ) throws -> ParsedUserPlaylistsPage {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let rawItems = root["items"] as? [Any] else {
+            throw PluginError(code: .apiChanged, message: "Spotify playlists response is not valid JSON.")
+        }
+
+        var playlists: [RemotePlaylistSummary] = []
+        playlists.reserveCapacity(rawItems.count)
+
+        for entry in rawItems {
+            guard let item = entry as? [String: Any],
+                  let id = (item["id"] as? String)?.nonEmpty,
+                  let title = (item["name"] as? String)?.nonEmpty else {
+                continue
+            }
+            let ownerObj = item["owner"] as? [String: Any]
+            let ownerID = (ownerObj?["id"] as? String)?.nonEmpty
+            let owner = (ownerObj?["display_name"] as? String)?.nonEmpty ?? ownerID
+            let tracksObj = (item["tracks"] as? [String: Any]) ?? (item["items"] as? [String: Any])
+            let trackCount = (tracksObj?["total"] as? NSNumber)?.intValue
+            let artworkURL = parsePlaylistArtworkURL(from: item["images"])
+            let externalURLString = ((item["external_urls"] as? [String: Any])?["spotify"] as? String)?.nonEmpty
+                ?? "https://open.spotify.com/playlist/\(id)"
+            guard let url = URL(string: externalURLString) else { continue }
+
+            let isOwned = matchesSpotifyOwner(
+                ownerID: ownerID,
+                ownerName: owner,
+                currentUsername: currentUsername,
+                currentDisplayName: currentDisplayName
+            )
+
+            playlists.append(RemotePlaylistSummary(
+                id: id,
+                title: title,
+                owner: owner,
+                trackCount: trackCount,
+                artworkURL: artworkURL,
+                url: url,
+                isLikedSongs: false,
+                isOwned: isOwned
+            ))
+        }
+
+        var nextURL: URL?
+        if let nextStr = (root["next"] as? String)?.nonEmpty {
+            nextURL = URL(string: nextStr)
+        }
+        return ParsedUserPlaylistsPage(playlists: playlists, nextURL: nextURL, nextOffset: nil, totalCount: nil)
+    }
+
+    private static func matchesSpotifyOwner(
+        ownerID: String?,
+        ownerName: String?,
+        currentUsername: String?,
+        currentDisplayName: String?
+    ) -> Bool? {
+        let cu = currentUsername?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cd = currentDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cu == nil && cd == nil { return nil }
+        if let cu, !cu.isEmpty {
+            if let ownerID, ownerID.caseInsensitiveCompare(cu) == .orderedSame { return true }
+            if let ownerName, ownerName.caseInsensitiveCompare(cu) == .orderedSame { return true }
+        }
+        if let cd, !cd.isEmpty, let ownerName, ownerName.caseInsensitiveCompare(cd) == .orderedSame {
+            return true
+        }
+        return (ownerID != nil || ownerName != nil) ? false : nil
+    }
+
     // MARK: - Playlist
 
     public static func parsePlaylistInitial(

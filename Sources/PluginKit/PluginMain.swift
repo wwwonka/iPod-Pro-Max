@@ -147,6 +147,7 @@ private actor PluginServer {
     private let playlistSource: (any PlaylistSource)?
     private let playlistReorderable: (any PlaylistReorderable)?
     private let playlistEditable: (any PlaylistEditable)?
+    private let playlistBrowsable: (any PlaylistBrowsable)?
     private let resolver: (any Resolver)?
     private let downloader: (any Downloader)?
     private let shareProvider: (any ShareProvider)?
@@ -172,6 +173,7 @@ private actor PluginServer {
         var ps: (any PlaylistSource)?
         var psReorder: (any PlaylistReorderable)?
         var psEditable: (any PlaylistEditable)?
+        var psBrowsable: (any PlaylistBrowsable)?
         var res: (any Resolver)?
         var dl: (any Downloader)?
         var sh: (any ShareProvider)?
@@ -185,6 +187,7 @@ private actor PluginServer {
             if ps == nil, let h = handler as? any PlaylistSource { ps = h; foundRoles.append(PluginRole.playlistSource.rawValue) }
             if psReorder == nil, let h = handler as? any PlaylistReorderable { psReorder = h }
             if psEditable == nil, let h = handler as? any PlaylistEditable { psEditable = h }
+            if psBrowsable == nil, let h = handler as? any PlaylistBrowsable { psBrowsable = h }
             if res == nil, let h = handler as? any Resolver { res = h; foundRoles.append(PluginRole.resolver.rawValue) }
             if dl == nil, let h = handler as? any Downloader { dl = h; foundRoles.append(PluginRole.downloader.rawValue) }
             if sh == nil, let h = handler as? any ShareProvider { sh = h; foundRoles.append(PluginRole.share.rawValue) }
@@ -198,6 +201,7 @@ private actor PluginServer {
         self.playlistSource = ps
         self.playlistReorderable = psReorder
         self.playlistEditable = psEditable
+        self.playlistBrowsable = psBrowsable
         self.resolver = res
         self.downloader = dl
         self.shareProvider = sh
@@ -458,6 +462,17 @@ private actor PluginServer {
                 try await playlistEditable.setPlaylistArtwork(request: req)
                 try Task.checkCancellation()
                 writer.sendResponse(id: id, result: .object([:]))
+
+            case "source/listUserPlaylists":
+                guard let playlistBrowsable else {
+                    throw PluginError(code: .unsupported, message: "Plug-in does not support browsing account playlists.")
+                }
+                let playlists = try await playlistBrowsable.listUserPlaylists()
+                try Task.checkCancellation()
+                writer.sendResponse(
+                    id: id,
+                    result: try JsonRpcCodec.encodeValue(SourceListPlaylistsResult(playlists: playlists))
+                )
 
             case "resolver/search":
                 guard let resolver else {

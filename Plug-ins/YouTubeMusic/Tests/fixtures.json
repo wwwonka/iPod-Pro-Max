@@ -1,0 +1,45 @@
+{
+  "playlistSource": {
+    "url": "https://music.youtube.com/playlist?list=PL4fGSI1pDJn6O1LS0XSdF3RyO0Rq_LDeI",
+    "offlineResponse": {
+      "playlist": {
+        "source": "youtube-music",
+        "sourceID": "PL4fGSI1pDJn6O1LS0XSdF3RyO0Rq_LDeI",
+        "title": "Top 100 Songs United States",
+        "owner": "YouTube Music",
+        "artworkURL": "https://yt3.googleusercontent.com/sample-cover-w544-h544",
+        "revision": "c887a77fe9df2ccbb7d96f9d13054f932cb394f478e5df075fd35a2a38a3dc11"
+      },
+      "tracks": [
+        {
+          "source": "youtube-music",
+          "sourceID": "dQw4w9WgXcQ",
+          "title": "Never Gonna Give You Up",
+          "artists": ["Rick Astley"],
+          "album": "Whenever You Need Somebody",
+          "albumArtist": "Rick Astley",
+          "trackNumber": 1,
+          "discNumber": 1,
+          "durationMs": 213000,
+          "releaseDate": "1987",
+          "artworkURL": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+          "explicit": false
+        },
+        {
+          "source": "youtube-music",
+          "sourceID": "4NRXx6U8ABQ",
+          "title": "Blinding Lights",
+          "artists": ["The Weeknd"],
+          "album": "After Hours",
+          "albumArtist": "The Weeknd",
+          "trackNumber": 9,
+          "discNumber": 1,
+          "durationMs": 200000,
+          "releaseDate": "2020",
+          "artworkURL": "https://i.ytimg.com/vi/4NRXx6U8ABQ/hqdefault.jpg",
+          "explicit": false
+        }
+      ]
+    }
+  }
+}

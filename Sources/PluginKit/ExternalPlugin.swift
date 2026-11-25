@@ -195,6 +195,13 @@ public final class ExternalPlugin: @unchecked Sendable, PlaylistSource, Resolver
         }
     }
 
+    public func listUserPlaylists() async throws -> [RemotePlaylistSummary] {
+        try await session.withLease {
+            let result = try await session.call(method: "source/listUserPlaylists", params: .object([:]))
+            return try JsonRpcCodec.decodeValue(SourceListPlaylistsResult.self, from: result).playlists
+        }
+    }
+
     public func search(
         track: TrackRef,
         policy: QualityPolicy,

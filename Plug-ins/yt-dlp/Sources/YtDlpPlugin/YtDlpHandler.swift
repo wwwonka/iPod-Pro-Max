@@ -78,6 +78,31 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
 
         let ytDlp = try requireExecutableYtDlp()
         let artist = Self.primaryArtist(from: track.artists.first ?? "")
+
+        // Direct lookup when the track comes from YouTube Music with an exact video ID.
+        if track.source == "youtube-music", !track.sourceID.isEmpty {
+            let directURL = (track.isVideo == true)
+                ? "https://www.youtube.com/watch?v=\(track.sourceID)"
+                : "https://music.youtube.com/watch?v=\(track.sourceID)"
+            if let direct = try? await executeSearchQuery(
+                ytDlp: ytDlp,
+                target: directURL,
+                isYTMusic: track.isVideo != true,
+                primaryArtist: artist,
+                track: track,
+                directVideoLookup: true
+            ), !direct.isEmpty {
+                await onPartialCandidates(direct)
+                if track.isVideo == true {
+                    return direct
+                }
+                // For non-video YTMusic tracks, still validate direct match or continue to fallback search if needed.
+                if direct.contains(where: { Self.isPlausibleMatch($0, for: track) }) {
+                    return direct
+                }
+            }
+        }
+
         let cleanTitle = Self.cleanSearchText(track.title)
         let combined = [artist, cleanTitle].filter { !$0.isEmpty }.joined(separator: " ")
 
@@ -127,14 +152,18 @@ public actor YtDlpHandler: Resolver, Downloader, PluginConfigurable, PluginActio
         target: String,
         isYTMusic: Bool,
         primaryArtist: String,
-        track: TrackRef
+        track: TrackRef,
+        directVideoLookup: Bool = false
     ) async throws -> [Candidate] {
         var args = [
             "--dump-json",
-            "--flat-playlist",
             "--no-warnings",
-            "--playlist-items", isYTMusic ? "1-10" : "1-5",
         ]
+        if directVideoLookup {
+            args.append("--no-playlist")
+        } else {
+            args += ["--flat-playlist", "--playlist-items", isYTMusic ? "1-10" : "1-5"]
+        }
         if let denoURL {
             args += ["--js-runtimes", "deno:\(denoURL.path)"]
         }

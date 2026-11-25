@@ -89,6 +89,58 @@ public enum Pathfinder {
         return buildQueryURL(operationName: "getAlbum", variables: variables, sha256Hash: sha256Hash)
     }
 
+    public static func makeMePlaylistsURL(offset: Int = 0, limit: Int = 50) -> URL? {
+        var components = URLComponents(string: "https://api.spotify.com/v1/me/playlists")
+        components?.queryItems = [
+            URLQueryItem(name: "limit", value: String(max(1, min(50, limit)))),
+            URLQueryItem(name: "offset", value: String(max(0, offset))),
+        ]
+        return components?.url
+    }
+
+    public static func makeMeTracksURL(offset: Int = 0, limit: Int = 50) -> URL? {
+        var components = URLComponents(string: "https://api.spotify.com/v1/me/tracks")
+        components?.queryItems = [
+            URLQueryItem(name: "limit", value: String(max(1, min(50, limit)))),
+            URLQueryItem(name: "offset", value: String(max(0, offset))),
+        ]
+        return components?.url
+    }
+
+    public static func buildLibraryV3URL(
+        offset: Int = 0,
+        limit: Int = 50,
+        sha256Hash: String,
+        endpointBase: String = endpoint
+    ) -> URL? {
+        let variables: [String: Any] = [
+            "filters": ["Playlists"],
+            "order": NSNull(),
+            "textFilter": "",
+            "features": ["LIKED_SONGS", "YOUR_EPISODES"],
+            "limit": max(1, min(100, limit)),
+            "offset": max(0, offset),
+            "flatten": true,
+            "expandedFolders": [String](),
+            "folderUri": NSNull(),
+            "includeFoldersWhenFlattening": false,
+        ]
+        return buildQueryURL(operationName: "libraryV3", variables: variables, sha256Hash: sha256Hash, endpointBase: endpointBase)
+    }
+
+    public static func buildFetchLibraryTracksURL(
+        offset: Int = 0,
+        limit: Int = 50,
+        sha256Hash: String,
+        endpointBase: String = endpoint
+    ) -> URL? {
+        let variables: [String: Any] = [
+            "offset": max(0, offset),
+            "limit": max(1, min(100, limit)),
+        ]
+        return buildQueryURL(operationName: "fetchLibraryTracks", variables: variables, sha256Hash: sha256Hash, endpointBase: endpointBase)
+    }
+
     public static func makeAuthorizedRequest(
         url: URL,
         token: String,
@@ -124,6 +176,7 @@ public enum Pathfinder {
 
     public static func makeWebAPIPutRequest(
         playlistID: String,
+        pathSuffix: String = "tracks",
         token: String,
         clientToken: String?,
         userAgent: String,
@@ -131,7 +184,7 @@ public enum Pathfinder {
         rangeLength: Int,
         insertBefore: Int
     ) -> URLRequest? {
-        guard let url = URL(string: "https://api.spotify.com/v1/playlists/\(playlistID)/items") else { return nil }
+        guard let url = URL(string: "https://api.spotify.com/v1/playlists/\(playlistID)/\(pathSuffix)") else { return nil }
         let payload: [String: Any] = [
             "range_start": rangeStart,
             "range_length": rangeLength,
@@ -143,6 +196,32 @@ public enum Pathfinder {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         return req
+    }
+
+    public static func makeSpClientMoveItemsRequest(
+        playlistID: String,
+        rangeStart: Int,
+        rangeLength: Int,
+        insertBefore: Int,
+        token: String,
+        clientToken: String?,
+        userAgent: String
+    ) -> URLRequest? {
+        let op: [String: Any] = [
+            "kind": "MOV",
+            "mov": [
+                "fromIndex": rangeStart,
+                "length": rangeLength,
+                "toIndex": insertBefore,
+            ],
+        ]
+        return makeSpClientChangesRequest(
+            playlistID: playlistID,
+            ops: [op],
+            token: token,
+            clientToken: clientToken,
+            userAgent: userAgent
+        )
     }
 
     public static func makeWebAPIAddItemsRequest(
@@ -622,7 +701,8 @@ public enum Pathfinder {
     private static func buildQueryURL(
         operationName: String,
         variables: [String: Any],
-        sha256Hash: String
+        sha256Hash: String,
+        endpointBase: String = endpoint
     ) -> URL? {
         let extensions: [String: Any] = [
             "persistedQuery": [
@@ -635,7 +715,7 @@ public enum Pathfinder {
               let extData = try? JSONSerialization.data(withJSONObject: extensions, options: [.sortedKeys]),
               let varsStr = String(data: varsData, encoding: .utf8),
               let extStr = String(data: extData, encoding: .utf8),
-              var components = URLComponents(string: endpoint) else {
+              var components = URLComponents(string: endpointBase) else {
             return nil
         }
 

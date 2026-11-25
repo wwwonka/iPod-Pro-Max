@@ -109,7 +109,9 @@ public struct PluginSettingsStore: Sendable {
 
     public var hasAccountSecrets: Bool {
         let secrets = loadSecretsDict()
-        return secrets.keys.contains { $0.hasPrefix("_account") || $0 == "token" || $0 == "password" || $0 == "username" }
+        return secrets.keys.contains {
+            $0.hasPrefix("_account") || $0 == "token" || $0 == "password" || $0 == "username" || $0 == "sp_dc" || $0 == "cookie"
+        }
     }
 
     public func cachedAccountDisplayName() -> String? {
@@ -128,7 +130,7 @@ public struct PluginSettingsStore: Sendable {
 
     public func clearAccountSecrets() throws {
         var secrets = loadSecretsDict()
-        for key in secrets.keys where key.hasPrefix("_account") || key == "password" || key == "token" || key == "username" {
+        for key in secrets.keys where key.hasPrefix("_account") || key == "password" || key == "token" || key == "username" || key == "sp_dc" || key == "cookie" || key == "authUser" || key == "delegatedSessionID" || key == "displayName" || key == "clientToken" {
             secrets.removeValue(forKey: key)
         }
         try saveSecretsDict(secrets)

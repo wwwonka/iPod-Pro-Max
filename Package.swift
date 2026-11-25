@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "DeviceKit", targets: ["DeviceKit"]),
         .executable(name: "ipodpromax", targets: ["ipodpromax"]),
         .executable(name: "SpotifyPlugin", targets: ["SpotifyPlugin"]),
+        .executable(name: "YouTubeMusicPlugin", targets: ["YouTubeMusicPlugin"]),
         .executable(name: "SoulseekPlugin", targets: ["SoulseekPlugin"]),
         .executable(name: "YtDlpPlugin", targets: ["YtDlpPlugin"]),
     ],
@@ -81,6 +82,11 @@ let package = Package(
             path: "Plug-ins/Spotify/Sources/SpotifyPlugin"
         ),
         .executableTarget(
+            name: "YouTubeMusicPlugin",
+            dependencies: ["PluginKit"],
+            path: "Plug-ins/YouTubeMusic/Sources/YouTubeMusicPlugin"
+        ),
+        .executableTarget(
             name: "SoulseekPlugin",
             dependencies: ["PluginKit", "CSockets", "CZlib"],
             path: "Plug-ins/Soulseek/Sources/SoulseekPlugin"
@@ -91,7 +97,7 @@ let package = Package(
             path: "Plug-ins/yt-dlp/Sources/YtDlpPlugin"
         ),
         .testTarget(name: "iPodKitTests", dependencies: ["iPodKit"]),
-        .testTarget(name: "PluginKitTests", dependencies: ["PluginKit", "SpotifyPlugin", "SoulseekPlugin", "YtDlpPlugin"]),
+        .testTarget(name: "PluginKitTests", dependencies: ["PluginKit", "SpotifyPlugin", "YouTubeMusicPlugin", "SoulseekPlugin", "YtDlpPlugin"]),
         .testTarget(name: "MediaKitTests", dependencies: ["MediaKit", "PluginKit", "iPodKit"]),
     ],
     // Same language mode as the Xcode app; strict concurrency comes with the AppModel work (phase 3).

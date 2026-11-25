@@ -22,6 +22,11 @@ public protocol PlaylistEditable: PlaylistSource {
     func setPlaylistArtwork(request: PlaylistArtworkRequest) async throws
 }
 
+/// Optional capability on a `PlaylistSource` plug-in that can list playlists from the signed-in account.
+public protocol PlaylistBrowsable: PlaylistSource {
+    func listUserPlaylists() async throws -> [RemotePlaylistSummary]
+}
+
 /// Searches for downloadable candidates matching a `TrackRef` and a `QualityPolicy`.
 public protocol Resolver: PluginRoleHandler {
     func search(

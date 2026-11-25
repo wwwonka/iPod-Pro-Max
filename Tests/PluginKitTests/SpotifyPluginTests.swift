@@ -694,6 +694,487 @@ final class SpotifyPluginTests: XCTestCase {
         }
     }
 
+    func testSpotifyListUserPlaylistsPaginationNullToleranceAndUnauthorized() async throws {
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me/playlists") {
+                if req.value(forHTTPHeaderField: "Authorization") == "Bearer expired-tok" {
+                    return HTTPResponseData(statusCode: 401, body: Data())
+                }
+                if url.contains("offset=0") {
+                    let page1 = """
+                    {
+                      "items": [
+                        {
+                          "id": "pl11111111111111111111",
+                          "name": "Late Night Drives",
+                          "owner": {"id": "u1", "display_name": "wwwonka"},
+                          "tracks": {"total": 24},
+                          "images": [{"url": "https://i.scdn.co/image/pl1", "width": 640, "height": 640}],
+                          "external_urls": {"spotify": "https://open.spotify.com/playlist/pl11111111111111111111"}
+                        },
+                        null
+                      ],
+                      "next": "https://api.spotify.com/v1/me/playlists?limit=50&offset=50"
+                    }
+                    """
+                    return HTTPResponseData(statusCode: 200, body: Data(page1.utf8))
+                }
+                if url.contains("offset=50") {
+                    let page2 = """
+                    {
+                      "items": [
+                        {
+                          "id": "pl11111111111111111111",
+                          "name": "Late Night Drives",
+                          "owner": {"id": "u1"},
+                          "tracks": {"total": 24}
+                        },
+                        {
+                          "id": "pl22222222222222222222",
+                          "name": "Studio Focus",
+                          "owner": {"id": "curator"},
+                          "items": {"total": 12}
+                        }
+                      ],
+                      "next": null
+                    }
+                    """
+                    return HTTPResponseData(statusCode: 200, body: Data(page2.utf8))
+                }
+            }
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"u1","display_name":"wwwonka"}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("spotify-list-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "0.1", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+
+        // Requires signed-in user session
+        do {
+            _ = try await source.listUserPlaylists()
+            XCTFail("Expected .unauthorized when signed out")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unauthorized)
+        }
+
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+
+        let lists = try await source.listUserPlaylists()
+        XCTAssertEqual(lists.count, 2)
+        XCTAssertEqual(lists[0].id, "pl11111111111111111111")
+        XCTAssertEqual(lists[0].title, "Late Night Drives")
+        XCTAssertEqual(lists[0].owner, "wwwonka")
+        XCTAssertEqual(lists[0].trackCount, 24)
+        XCTAssertEqual(lists[0].artworkURL?.absoluteString, "https://i.scdn.co/image/pl1")
+        XCTAssertEqual(lists[1].id, "pl22222222222222222222")
+        XCTAssertEqual(lists[1].trackCount, 12)
+        XCTAssertEqual(lists[1].url.absoluteString, "https://open.spotify.com/playlist/pl22222222222222222222")
+
+        // Verify 401 surfaces .unauthorized so host can refresh session
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "expired-tok",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+        do {
+            _ = try await source.listUserPlaylists()
+            XCTFail("Expected .unauthorized on 401")
+        } catch let err as PluginError {
+            XCTAssertEqual(err.code, .unauthorized)
+        }
+    }
+
+    func testSpotifySpDCRefreshPersistenceAndReorderSpClientFallback() async throws {
+        let state = SendableRenameState()
+        let recorder = RequestRecorder()
+        let transport = MockHTTPTransport { req in
+            await recorder.append(req)
+            let url = req.url?.absoluteString ?? ""
+            if url == "https://open.spotify.com/" {
+                let html = """
+                <html><body>
+                <script id="appServerConfig" type="application/json">{"clientId":"cid-test"}</script>
+                <script id="session" type="application/json">{"accessToken":"refreshed-user-tok","accessTokenExpirationTimestampMs":4102444800000,"isAnonymous":false}</script>
+                </body></html>
+                """
+                return HTTPResponseData(statusCode: 200, body: Data(html.utf8))
+            }
+            if url == "https://clienttoken.spotify.com/v1/clienttoken" {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"granted_token":{"token":"refreshed-client-tok"}}"#.utf8))
+            }
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"julien","display_name":"Julien"}"#.utf8))
+            }
+            if url.contains("pathfinder") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"errors":[{"message":"PersistedQueryNotFound"}]}"#.utf8))
+            }
+            if url.contains("spclient.wg.spotify.com/playlist/v2/playlist/plMove/changes") {
+                XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer refreshed-user-tok")
+                XCTAssertEqual(req.value(forHTTPHeaderField: "client-token"), "refreshed-client-tok")
+                if let body = req.httpBody,
+                   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    state.setSpClientBody(json)
+                }
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"revision":"rev-mov"}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sp-persist-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        do {
+            let source = SpotifySource(transport: transport)
+            try await source.initialize(
+                params: PluginInitializeParams(
+                    host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                    paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+                ),
+                context: TestRuntimeRecorder()
+            )
+            // Initial login with expired accessToken + valid sp_dc
+            _ = try await source.login(key: "account", fields: [
+                "sp_dc": "persistent-sp-dc",
+                "accessToken": "old-expired-tok",
+                "expiresAtMs": "1000",
+                "displayName": "Julien",
+            ])
+        }
+
+        // Simulate app relaunch with a brand new SpotifySource instance loading `.spotify-session.json` from disk
+        let relaunchedSource = SpotifySource(transport: transport)
+        try await relaunchedSource.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        let restoredStatus = try await relaunchedSource.status()
+        XCTAssertEqual(restoredStatus.status, "signedIn")
+        XCTAssertEqual(restoredStatus.displayName, "Julien")
+
+        try await relaunchedSource.reorder(request: PlaylistReorderRequest(
+            playlistID: "plMove",
+            movedItemUIDs: ["uid-1"],
+            beforeItemUID: "uid-3",
+            rangeStart: 0,
+            rangeLength: 1,
+            insertBefore: 3
+        ))
+
+        let deltas = state.spClientBody()?["deltas"] as? [[String: Any]]
+        let ops = deltas?.first?["ops"] as? [[String: Any]]
+        XCTAssertEqual(ops?.first?["kind"] as? String, "MOV")
+        let mov = ops?.first?["mov"] as? [String: Any]
+        XCTAssertEqual(mov?["fromIndex"] as? Int, 0)
+        XCTAssertEqual(mov?["length"] as? Int, 1)
+        XCTAssertEqual(mov?["toIndex"] as? Int, 3)
+    }
+
+    func testSpotifyLibraryV3SidebarPlaylistsAndLikedSongsCollectionFetch() async throws {
+        XCTAssertEqual(try SpotifyURL.parse("https://open.spotify.com/collection/tracks").kind, .collection)
+        XCTAssertEqual(try SpotifyURL.parse("spotify:collection:tracks").kind, .collection)
+        XCTAssertEqual(try SpotifyURL.parse("spotify:user:wwwonka:collection").kind, .collection)
+
+        let transport = MockHTTPTransport { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.contains("/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"wwwonka","display_name":"wwwonka"}"#.utf8))
+            }
+            if url.contains("operationName=libraryV3") {
+                let libJSON = """
+                {
+                  "data": {
+                    "me": {
+                      "libraryV3": {
+                        "totalCount": 4,
+                        "pagingInfo": {"offset": 0, "limit": 50},
+                        "items": [
+                          {
+                            "item": {
+                              "__typename": "LibraryPseudoPlaylistResponseWrapper",
+                              "_uri": "spotify:user:wwwonka:collection",
+                              "data": {
+                                "__typename": "PseudoPlaylist",
+                                "uri": "spotify:user:wwwonka:collection",
+                                "name": "Liked Songs",
+                                "count": 289
+                              }
+                            }
+                          },
+                          {
+                            "item": {
+                              "__typename": "LibraryPseudoPlaylistResponseWrapper",
+                              "_uri": "spotify:user:wwwonka:collection:your-episodes",
+                              "data": {
+                                "__typename": "PseudoPlaylist",
+                                "uri": "spotify:user:wwwonka:collection:your-episodes",
+                                "name": "Your Episodes",
+                                "count": 4
+                              }
+                            }
+                          },
+                          {
+                            "item": {
+                              "__typename": "PlaylistResponseWrapper",
+                              "data": {
+                                "__typename": "Playlist",
+                                "uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+                                "name": "LAVA LAMP",
+                                "ownerV2": {"data": {"name": "wwwonka", "username": "wwwonka"}},
+                                "content": {"totalCount": 31}
+                              }
+                            }
+                          },
+                          {
+                            "item": {
+                              "__typename": "FolderResponseWrapper",
+                              "data": {
+                                "__typename": "Folder",
+                                "uri": "spotify:folder:abc",
+                                "name": "Emiel"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+                """
+                return HTTPResponseData(statusCode: 200, body: Data(libJSON.utf8))
+            }
+            if url.contains("operationName=fetchLibraryTracks") {
+                let likedJSON = """
+                {
+                  "data": {
+                    "me": {
+                      "library": {
+                        "tracks": {
+                          "totalCount": 1,
+                          "pagingInfo": {"offset": 0, "limit": 50},
+                          "items": [
+                            {
+                              "track": {
+                                "data": {
+                                  "__typename": "Track",
+                                  "uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+                                  "name": "Never Gonna Give You Up",
+                                  "duration": {"totalMilliseconds": 213573},
+                                  "artists": {"items": [{"profile": {"name": "Rick Astley"}}]},
+                                  "albumOfTrack": {"name": "Whenever You Need Somebody", "artists": {"items": [{"profile": {"name": "Rick Astley"}}]}}
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+                """
+                return HTTPResponseData(statusCode: 200, body: Data(likedJSON.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sp-libv3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        let hashesJSON = #"{"libraryV3":"1111111111111111111111111111111111111111111111111111111111111111","fetchLibraryTracks":"2222222222222222222222222222222222222222222222222222222222222222"}"#
+        _ = try await source.login(key: "account", fields: [
+            "accessToken": "tok-user",
+            "clientToken": "ct-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+            "pathfinderHashesJSON": hashesJSON,
+        ])
+
+        let lists = try await source.listUserPlaylists()
+        XCTAssertEqual(lists.count, 2)
+        XCTAssertEqual(lists[0].id, "collection-tracks")
+        XCTAssertEqual(lists[0].title, "Liked Songs")
+        XCTAssertEqual(lists[0].trackCount, 289)
+        XCTAssertEqual(lists[0].url.absoluteString, "https://open.spotify.com/collection/tracks")
+        XCTAssertEqual(lists[1].id, "37i9dQZF1DXcBWIGoYBM5M")
+        XCTAssertEqual(lists[1].title, "LAVA LAMP")
+        XCTAssertEqual(lists[1].trackCount, 31)
+
+        let likedFetch = try await source.fetch(url: URL(string: "https://open.spotify.com/collection/tracks")!)
+        XCTAssertEqual(likedFetch.playlist.title, "Liked Songs")
+        XCTAssertEqual(likedFetch.tracks.count, 1)
+        XCTAssertEqual(likedFetch.tracks[0].title, "Never Gonna Give You Up")
+    }
+
+    func testPersistedHashesReuseAndFastWebAPI429Handling() async throws {
+        let playlistCountCalls = LockedCounter()
+        let bundleRequests = LockedCounter()
+
+        let transport = MockHTTPTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            if url.contains("https://open.spotify.com/get_access_token") {
+                return HTTPResponseData(
+                    statusCode: 200,
+                    body: Data(#"{"accessToken":"tok-u","accessTokenExpirationTimestampMs":4102444800000,"isAnonymous":false}"#.utf8)
+                )
+            }
+            if url == "https://open.spotify.com/" || url.hasSuffix(".js") {
+                bundleRequests.increment()
+                return HTTPResponseData(statusCode: 404, body: Data())
+            }
+            if url.contains("https://api.spotify.com/v1/me/playlists") {
+                return HTTPResponseData(statusCode: 429, headers: ["Retry-After": "30"], body: Data())
+            }
+            if url.contains("https://api.spotify.com/v1/me/tracks") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"total":42,"items":[]}"#.utf8))
+            }
+            if url.contains("https://api.spotify.com/v1/me") {
+                return HTTPResponseData(statusCode: 200, body: Data(#"{"id":"wwwonka","display_name":"wwwonka"}"#.utf8))
+            }
+            if url.contains("operationName=fetchPlaylist") {
+                playlistCountCalls.increment()
+                return HTTPResponseData(statusCode: 404, body: Data())
+            }
+            if url.contains("operationName=libraryV3") {
+                let libJSON = """
+                {
+                  "data": {
+                    "me": {
+                      "libraryV3": {
+                        "totalCount": 1,
+                        "pagingInfo": {"offset": 0, "limit": 50},
+                        "items": [
+                          {
+                            "item": {
+                              "__typename": "PlaylistResponseWrapper",
+                              "data": {
+                                "__typename": "Playlist",
+                                "uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+                                "name": "No Count Sidebar",
+                                "ownerV2": {"data": {"name": "wwwonka", "username": "wwwonka"}}
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+                """
+                return HTTPResponseData(statusCode: 200, body: Data(libJSON.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sp-hash-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let firstSource = SpotifySource(transport: transport)
+        try await firstSource.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        _ = try await firstSource.login(key: "account", fields: [
+            "sp_dc": "spdc-val",
+            "accessToken": "tok-u",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+            "pathfinderHashesJSON": #"{"libraryV3":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        ])
+
+        // Re-initialize a fresh instance pointing at the same data folder (simulating app relaunch).
+        let secondSource = SpotifySource(transport: transport)
+        try await secondSource.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+
+        let startedAt = Date()
+        let lists = try await secondSource.listUserPlaylists()
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        XCTAssertLessThan(elapsed, 2.0, "429 during optional Web API count enrichment must not stall listUserPlaylists")
+        XCTAssertEqual(bundleRequests.value, 0, "Persisted libraryV3 hash should skip open.spotify.com JS bundle scraping")
+        XCTAssertEqual(playlistCountCalls.value, 0, "listUserPlaylists must not fire blocking per-playlist fetchPlaylist probes")
+        XCTAssertEqual(lists.map(\.id), ["collection-tracks", "37i9dQZF1DXcBWIGoYBM5M"])
+        XCTAssertEqual(lists[0].trackCount, 42)
+    }
+
+    func testRemoveTracksSkipsBundleDiscoveryAndUsesFastSpClientREM() async throws {
+        let bundleRequests = LockedCounter()
+        let spclientRemCalls = LockedCounter()
+
+        let transport = MockHTTPTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            if url == "https://open.spotify.com/" || url.hasSuffix(".js") {
+                bundleRequests.increment()
+                return HTTPResponseData(statusCode: 200, body: Data())
+            }
+            if url.contains("https://spclient.wg.spotify.com/playlist/v2/playlist/plFast/changes") {
+                spclientRemCalls.increment()
+                return HTTPResponseData(statusCode: 200, body: Data(#"{}"#.utf8))
+            }
+            return HTTPResponseData(statusCode: 404, body: Data())
+        }
+
+        let source = SpotifySource(transport: transport)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sp-fast-del-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try await source.initialize(
+            params: PluginInitializeParams(
+                host: PluginHostInfo(os: "macos", arch: "arm64", appVersion: "1.0", onIPod: false),
+                paths: PluginPaths(data: tmp.path, cache: tmp.path, temp: tmp.path)
+            ),
+            context: TestRuntimeRecorder()
+        )
+        _ = try await source.login(key: "account", fields: [
+            "sp_dc": "spdc-val",
+            "accessToken": "tok-user",
+            "expiresAtMs": String(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000),
+        ])
+
+        try await source.removeTracks(request: PlaylistRemoveTracksRequest(
+            playlistID: "plFast",
+            trackIDs: ["4uLU6hMCjMI75M1A2tKUQC"],
+            itemUIDs: ["uid-row-1"]
+        ))
+
+        XCTAssertEqual(bundleRequests.value, 0, "removeTracks must not scan open.spotify.com JS bundles when removeItemsFromPlaylist hash is uncached")
+        XCTAssertEqual(spclientRemCalls.value, 1, "removeTracks should go directly to fast spclient REM delta")
+    }
+
     private static func makeEmbedHTML(token: String, expiresAtMs: Int64) -> String {
         """
         <html><body>
@@ -934,4 +1415,21 @@ private final class SendableOpsState: @unchecked Sendable {
     func incrementCreatePlaylist() { lock.lock(); _createPlaylistCalls += 1; lock.unlock() }
     func setPicture(_ value: String) { lock.lock(); _picture = value; lock.unlock() }
     func setSearchRateLimit(_ value: Bool) { lock.lock(); _simulateSearchRateLimit = value; lock.unlock() }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
 }

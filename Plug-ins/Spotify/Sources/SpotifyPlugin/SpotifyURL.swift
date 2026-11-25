@@ -6,6 +6,7 @@ public struct SpotifyTarget: Equatable, Sendable {
     public enum Kind: String, Equatable, Sendable {
         case playlist
         case album
+        case collection
 
         var uriPrefix: String { "spotify:\(rawValue):" }
     }
@@ -18,8 +19,16 @@ public struct SpotifyTarget: Equatable, Sendable {
         self.id = id
     }
 
-    public var uri: String { "\(kind.uriPrefix)\(id)" }
-    public var webURLString: String { "https://open.spotify.com/\(kind.rawValue)/\(id)" }
+    public var uri: String {
+        kind == .collection ? "spotify:collection:tracks" : "\(kind.uriPrefix)\(id)"
+    }
+
+    public var webURLString: String {
+        kind == .collection
+            ? "https://open.spotify.com/collection/tracks"
+            : "https://open.spotify.com/\(kind.rawValue)/\(id)"
+    }
+
     public var embedPlaylistURLString: String { "https://open.spotify.com/embed/playlist/\(id)" }
 }
 
@@ -72,11 +81,20 @@ public enum SpotifyURL {
 
     private static func parseURI(_ raw: String) throws -> SpotifyTarget {
         let parts = raw.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 4,
+           parts[0].lowercased() == "spotify",
+           parts[1].lowercased() == "user",
+           parts[3].lowercased() == "collection" {
+            return SpotifyTarget(kind: .collection, id: "collection-tracks")
+        }
         guard parts.count == 3, parts[0].lowercased() == "spotify" else {
             throw PluginError(code: .unsupported, message: "This link isn't supported.")
         }
-        guard let kind = SpotifyTarget.Kind(rawValue: parts[1].lowercased()) else {
-            throw PluginError(code: .unsupported, message: "Only Spotify playlists and albums are supported.")
+        if parts[1].lowercased() == "collection" && parts[2].lowercased() == "tracks" {
+            return SpotifyTarget(kind: .collection, id: "collection-tracks")
+        }
+        guard let kind = SpotifyTarget.Kind(rawValue: parts[1].lowercased()), kind != .collection else {
+            throw PluginError(code: .unsupported, message: "Only Spotify playlists, albums, and Liked Songs are supported.")
         }
         guard isValidSpotifyID(parts[2]) else {
             throw PluginError(code: .unsupported, message: "This link isn't supported.")
@@ -108,8 +126,12 @@ public enum SpotifyURL {
             throw PluginError(code: .unsupported, message: "This link isn't supported.")
         }
 
-        guard let kind = SpotifyTarget.Kind(rawValue: segments[0].lowercased()) else {
-            throw PluginError(code: .unsupported, message: "Only Spotify playlists and albums are supported.")
+        if segments[0].lowercased() == "collection" && segments[1].lowercased() == "tracks" {
+            return SpotifyTarget(kind: .collection, id: "collection-tracks")
+        }
+
+        guard let kind = SpotifyTarget.Kind(rawValue: segments[0].lowercased()), kind != .collection else {
+            throw PluginError(code: .unsupported, message: "Only Spotify playlists, albums, and Liked Songs are supported.")
         }
         let id = segments[1]
         guard isValidSpotifyID(id) else {

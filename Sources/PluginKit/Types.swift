@@ -41,6 +41,8 @@ public struct TrackRef: Codable, Sendable, Equatable, Hashable {
     public var explicit: Bool?
     /// Optional provider-native item identifier (e.g. Spotify playlist item UID) for remote reordering.
     public var remoteItemUID: String?
+    /// True when the upstream entry is a video version rather than a studio album audio track (`MUSIC_VIDEO_TYPE_OMV`/`UGC`).
+    public var isVideo: Bool?
 
     public init(
         source: String,
@@ -56,7 +58,8 @@ public struct TrackRef: Codable, Sendable, Equatable, Hashable {
         releaseDate: String? = nil,
         artworkURL: URL? = nil,
         explicit: Bool? = nil,
-        remoteItemUID: String? = nil
+        remoteItemUID: String? = nil,
+        isVideo: Bool? = nil
     ) {
         self.source = source
         self.sourceID = sourceID
@@ -72,6 +75,7 @@ public struct TrackRef: Codable, Sendable, Equatable, Hashable {
         self.artworkURL = artworkURL
         self.explicit = explicit
         self.remoteItemUID = remoteItemUID
+        self.isVideo = isVideo
     }
 }
 
@@ -303,6 +307,76 @@ public struct PlaylistFetchResult: Codable, Sendable, Equatable {
     public init(playlist: Playlist, tracks: [TrackRef]) {
         self.playlist = playlist
         self.tracks = tracks
+    }
+}
+
+/// Summary metadata for a playlist discovered in a user's remote account (`source/listUserPlaylists`).
+public struct RemotePlaylistSummary: Codable, Sendable, Equatable, Hashable, Identifiable {
+    public var id: String
+    public var title: String
+    public var owner: String?
+    public var trackCount: Int?
+    public var artworkURL: URL?
+    public var url: URL
+    public var isLikedSongs: Bool
+    public var isOwned: Bool?
+
+    public init(
+        id: String,
+        title: String,
+        owner: String? = nil,
+        trackCount: Int? = nil,
+        artworkURL: URL? = nil,
+        url: URL,
+        isLikedSongs: Bool = false,
+        isOwned: Bool? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.owner = owner
+        self.trackCount = trackCount
+        self.artworkURL = artworkURL
+        self.url = url
+        self.isLikedSongs = isLikedSongs
+        self.isOwned = isOwned
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        owner = try c.decodeIfPresent(String.self, forKey: .owner)
+        trackCount = try c.decodeIfPresent(Int.self, forKey: .trackCount)
+        artworkURL = try c.decodeIfPresent(URL.self, forKey: .artworkURL)
+        url = try c.decode(URL.self, forKey: .url)
+        isLikedSongs = try c.decodeIfPresent(Bool.self, forKey: .isLikedSongs) ?? false
+        isOwned = try c.decodeIfPresent(Bool.self, forKey: .isOwned)
+    }
+
+    /// Stable ordering: Liked Songs first, then user-created playlists (`isOwned == true`), then remaining playlists.
+    public static func sortedForDisplay(_ items: [RemotePlaylistSummary]) -> [RemotePlaylistSummary] {
+        items.enumerated()
+            .sorted { lhs, rhs in
+                let lt = sortTier(for: lhs.element)
+                let rt = sortTier(for: rhs.element)
+                if lt != rt { return lt < rt }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    private static func sortTier(for item: RemotePlaylistSummary) -> Int {
+        if item.isLikedSongs { return 0 }
+        if item.isOwned == true { return 1 }
+        return 2
+    }
+}
+
+public struct SourceListPlaylistsResult: Codable, Sendable, Equatable {
+    public var playlists: [RemotePlaylistSummary]
+
+    public init(playlists: [RemotePlaylistSummary]) {
+        self.playlists = playlists
     }
 }
 
