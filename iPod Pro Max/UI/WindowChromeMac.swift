@@ -1098,6 +1098,13 @@
             header.autoresizingMask = [.width, .minYMargin]
             header.wantsLayer = true
             header.layer?.masksToBounds = false
+            // Content that slides under the toolbar (rubber band, scrolling) is blurred as in Safari,
+            // so it reads as passing beneath the bar rather than over it. A plain blur of what lies beneath, with no material tint, as Safari's toolbar: the bar keeps
+            // the rail's colour and only the content passing under it changes.
+            let blur = BackdropBlurView(frame: header.bounds, radius: 12)
+            blur.identifier = NSUserInterfaceItemIdentifier("toolbarBlur")
+            blur.autoresizingMask = [.width, .height]
+            header.addSubview(blur, positioned: .below, relativeTo: nil)
             if #available(macOS 14.0, *) { header.clipsToBounds = false }
             header.onPointerPresence = { [weak self] in self?.player.setHeaderHovered($0) }
             header.onLayout = { [weak self] in
@@ -2107,3 +2114,27 @@ private final class FocusRingPrimerView: NSView {
 }
 
 #endif
+
+
+/// Blurs whatever the window draws beneath it, without tint, through Core Animation's backdrop layer
+/// (what AppKit's own vibrancy and Safari's toolbar rely on). Without that class it stays clear.
+@MainActor
+final class BackdropBlurView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    init(frame: NSRect, radius: CGFloat) {
+        super.init(frame: frame)
+        wantsLayer = true
+        guard let backdropClass = NSClassFromString("CABackdropLayer") as? CALayer.Type,
+              let filterClass = NSClassFromString("CAFilter") as? NSObject.Type,
+              let filter = filterClass.perform(NSSelectorFromString("filterWithType:"), with: "gaussianBlur")?.takeUnretainedValue() as? NSObject
+        else { return }
+        filter.setValue(radius, forKey: "inputRadius")
+        filter.setValue(true, forKey: "inputNormalizeEdges")
+        let backdrop = backdropClass.init()
+        backdrop.filters = [filter]
+        backdrop.frame = bounds
+        backdrop.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        layer?.addSublayer(backdrop)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}

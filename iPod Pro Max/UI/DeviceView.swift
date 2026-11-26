@@ -84,7 +84,7 @@ struct DeviceView: View {
             }
             #if canImport(AppKitBackend)
             .padding(.horizontal, 24)
-            .padding(.top, Int(titleBarHeight) + 24)
+            .padding(.top, Int(titleBarHeight) + 30)
             .padding(.bottom, 24)
             #else
             .padding(24)

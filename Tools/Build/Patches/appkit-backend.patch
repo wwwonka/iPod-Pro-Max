@@ -25,15 +25,24 @@ diff --git a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift b/Sources/App
 index c297bea2..b3def9ce 100644
 --- a/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
 +++ b/Sources/AppKitBackend/Helpers/NSCustomSplitView.swift
-@@ -1,5 +1,142 @@
+@@ -1,5 +1,151 @@
  import AppKit
  
 -class NSCustomSplitView: NSSplitView {
 +public class NSCustomSplitView: NSSplitView {
      var resizingDelegate: NSSplitViewResizingDelegate?
 +    private var animationTimer: Timer?
-+    /// No divider line: it would run through the toolbar.
-+    override public var dividerColor: NSColor { .clear }
++    /// A 1 pt black line, as in macOS sidebars, drawn below the toolbar only (none while the sidebar is closed).
++    override public var dividerColor: NSColor { .black }
++    override public func drawDivider(in rect: NSRect) {
++        guard isSidebarOpen else { return }
++        var line = rect
++        line.size.height -= dividerTopInset
++        if isFlipped { line.origin.y += dividerTopInset }
++        guard line.height > 0 else { return }
++        dividerColor.setFill()
++        line.fill()
++    }
 +    private var openWidth: CGFloat = 200
 +    private var animationTarget: Bool?
 +

@@ -1,6 +1,12 @@
 # iPod Pro Max — working notes
 
-See README.md for what the app does, the repo layout and how it's built. Every change to the app ships on macOS, Windows and Linux together.
+See README.md for what the app does, the repo layout and how it's built.
+
+## Platform strategy (since 2026-11-26, until the owner says otherwise)
+
+- **macOS only for now.** Every change is made, built (`Tools/Build/build.sh mac --run`) and checked on macOS only. Do not touch, build or test the Windows (WinUI) or Linux (GTK) sides; don't run the full three-OS build. The goal is a Mac user experience worthy of V1 first, then a port to Windows and Linux.
+- **Cross-platform is still the goal, so design for the port.** Put logic, state and text in shared code (`Sources/`, platform-neutral files in `iPod Pro Max/`) and keep the `*Mac.swift` files a thin presentation layer. Avoid Mac-only shortcuts that would have to be rewritten three times; once V1 exists, a change should not require triple code.
+- **User messages go on the player.** Progress, tips and status messages are shown through the player LCD (`PlayerActivityController`), not in banners or bars scattered across views.
 
 ## Performance principles (always apply)
 

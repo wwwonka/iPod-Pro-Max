@@ -21,13 +21,14 @@ public enum MediaKind: String, Codable, Sendable {
 /// Which Videos submenu a video appears under on the iPod (Movies/TV Shows/Music Videos), driven by
 /// the track's mediaType bits — no special playlist needed, unlike Podcasts.
 public enum VideoCategory: String, Codable, CaseIterable, Sendable {
-    case movie, tvShow, musicVideo
+    case movie, tvShow, musicVideo, webVideo
 
     public var title: String {
         switch self {
         case .movie: return "Movie"
         case .tvShow: return "TV Show"
         case .musicVideo: return "Music Video"
+        case .webVideo: return "Web Video"
         }
     }
 }

@@ -10,7 +10,7 @@ enum ConnectedDeviceTitles {
 
 enum SidebarItem: Hashable {
     case device(String)
-    case music, recentMusic, artists, albums, favorites, podcasts, recentPodcasts, audiobooks, videos, movies, tvShows, musicVideos, photos
+    case music, recentMusic, artists, albums, soundtracks, classical, favorites, podcasts, recentPodcasts, audiobooks, videos, movies, tvShows, webVideos, musicVideos, photos
     /// Sections kept out of the rail, behind its "…" menu.
     case games, contacts, calendars, notes, files, firmware
     case playlist(String)
@@ -22,6 +22,17 @@ enum SidebarItem: Hashable {
     static let otherSections: [SidebarItem] = [.games, .contacts, .calendars, .notes, .files, .firmware]
 
     /// The page's name in settings.json (an iPod's page isn't remembered).
+    /// The album shelf this page shows, for Soundtracks and Classical.
+    var albumShelf: AlbumShelf? {
+        switch self {
+        case .soundtracks: .soundtracks
+        case .classical: .classical
+        default: nil
+        }
+    }
+    /// Pages drawn as an album cover grid.
+    var isAlbumGrid: Bool { self == .albums || albumShelf != nil }
+
     var persistentName: String? {
         switch self {
         case .device: nil
@@ -29,6 +40,8 @@ enum SidebarItem: Hashable {
         case .recentMusic: "recentMusic"
         case .artists: "artists"
         case .albums: "albums"
+        case .soundtracks: "soundtracks"
+        case .classical: "classical"
         case .favorites: "favorites"
         case .podcasts: "podcasts"
         case .recentPodcasts: "recentPodcasts"
@@ -36,6 +49,7 @@ enum SidebarItem: Hashable {
         case .videos: "videos"
         case .movies: "movies"
         case .tvShows: "tvShows"
+        case .webVideos: "webVideos"
         case .musicVideos: "musicVideos"
         case .photos: "photos"
         case .games: "games"
@@ -51,8 +65,8 @@ enum SidebarItem: Hashable {
     init?(persistentName name: String) {
         if name.hasPrefix("playlist:") { self = .playlist(String(name.dropFirst("playlist:".count))); return }
         if name.hasPrefix("videoPlaylist:") { self = .videoPlaylist(String(name.dropFirst("videoPlaylist:".count))); return }
-        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .favorites, .podcasts, .recentPodcasts, .audiobooks, .videos, .photos,
-                                  .movies, .tvShows, .musicVideos, .games, .contacts, .calendars, .notes, .files, .firmware]
+        let all: [SidebarItem] = [.music, .recentMusic, .artists, .albums, .soundtracks, .classical, .favorites, .podcasts, .recentPodcasts, .audiobooks, .videos, .photos,
+                                  .movies, .tvShows, .webVideos, .musicVideos, .games, .contacts, .calendars, .notes, .files, .firmware]
         guard let item = all.first(where: { $0.persistentName == name }) else { return nil }
         self = item
     }
@@ -60,8 +74,8 @@ enum SidebarItem: Hashable {
     /// The library section this page belongs to (the rail's button); nil for an iPod's page.
     var media: SidebarItem? {
         switch self {
-        case .music, .recentMusic, .artists, .albums, .favorites, .playlist: .music
-        case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: .videos
+        case .music, .recentMusic, .artists, .albums, .soundtracks, .classical, .favorites, .playlist: .music
+        case .videos, .movies, .tvShows, .webVideos, .musicVideos, .videoPlaylist: .videos
         case .recentPodcasts: .podcasts
         case .podcasts, .audiobooks, .photos, .games, .contacts, .calendars, .notes, .files, .firmware: self
         case .device: nil
@@ -75,7 +89,7 @@ enum SidebarItem: Hashable {
         case .podcasts, .recentPodcasts: "Podcasts"
         case .audiobooks: "Audiobooks"
         case .videos: "Videos"
-        case .movies, .tvShows, .musicVideos, .videoPlaylist: "Videos"
+        case .movies, .tvShows, .webVideos, .musicVideos, .videoPlaylist: "Videos"
         case .photos: "Photos"
         case .games: "Games"
         case .contacts: "Contacts"
@@ -95,6 +109,8 @@ enum SidebarItem: Hashable {
         case .recentMusic: "Recently Added"
         case .artists: "Artists"
         case .albums: "Albums"
+        case .soundtracks: "Soundtracks"
+        case .classical: "Classical"
         case .favorites: "Favorites"
         case .podcasts: "Podcasts"
         case .recentPodcasts: "Recently Updated"
@@ -102,6 +118,7 @@ enum SidebarItem: Hashable {
         case .videos: "Videos"
         case .movies: "Movies"
         case .tvShows: "TV Shows"
+        case .webVideos: "Web Videos"
         case .musicVideos: "Music Videos"
         case .photos: "Photos"
         case .games: "Games"
@@ -122,6 +139,8 @@ enum SidebarItem: Hashable {
         case .recentMusic: "clock"
         case .artists: "microphone.dynamic.on.stand"
         case .albums: "square.stack"
+        case .soundtracks: "film.music"
+        case .classical: "music.quarternote.3"
         case .favorites: "star"
         case .podcasts: "podcasts"
         case .recentPodcasts: "clock"
@@ -129,6 +148,7 @@ enum SidebarItem: Hashable {
         case .videos: "film.stack"
         case .movies: "film"
         case .tvShows: "tv"
+        case .webVideos: "play.tv"
         case .musicVideos: "music.note.tv"
         case .photos: "photo.on.rectangle.angled"
         case .games: "gamecontroller"
@@ -198,7 +218,7 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
         return [SidebarSection(title: "Podcasts", rows: orderedSidebarRows(rows, order: sidebarOrder["Podcasts"]))]
     }
     if media == .videos {
-        let videoRows = [SidebarItem.movies, .tvShows, .musicVideos].map {
+        let videoRows = [SidebarItem.movies, .tvShows, .webVideos, .musicVideos].map {
             SidebarSection.Row(title: $0.title, icon: $0.icon, item: $0)
         }
         return [
@@ -212,7 +232,7 @@ func sidebarSections(devices: [String], playlists: [Playlist], videoPlaylists: [
     if media != .music {
         return [SidebarSection(title: media.title, rows: [.init(title: "All \(media.title)", icon: media.icon, item: media)])]
     }
-    let musicRows = [SidebarItem.recentMusic, .artists, .albums, .favorites, .music].map {
+    let musicRows = [SidebarItem.recentMusic, .artists, .albums, .soundtracks, .classical, .favorites, .music].map {
         // The rail shows Apple Music's own icon for Music; the list names the section's songs.
         let favoriteSymbol = ListAppearance.shared.favoriteIcon == .heart ? "heart" : "star"
         let icon = $0 == .music ? "music.note" : ($0 == .favorites ? favoriteSymbol : $0.icon)

@@ -81,8 +81,9 @@
             outline.backgroundColor = .clear
             scroll.hasVerticalScroller = true
             scroll.autohidesScrollers = true
-            // Starts below the toolbar the traffic lights sit in, as SwiftUI's sidebar does.
-            scroll.automaticallyAdjustsContentInsets = true
+            // Reaches up behind the toolbar with a matching inset (set as it is laid out), so rows
+            // scrolled past the top pass under the bar's blur.
+            scroll.automaticallyAdjustsContentInsets = false
             let container = SlidingContainer()
             container.addSubview(scroll)
             return container
@@ -210,15 +211,30 @@
                 if superview != nil { MainActor.assumeIsolated { MacChrome.shared.sidebarAnchor = self } }
             }
 
+            private var resizeObserver: NSObjectProtocol?
             override func viewDidMoveToWindow() {
                 super.viewDidMoveToWindow()
                 if window != nil { MainActor.assumeIsolated { MacChrome.shared.sidebarHierarchyDidChange() } }
+                // The list's reach under the toolbar follows the window's size, not only this view's.
+                resizeObserver = MainActor.assumeIsolated {
+                    watchWindowGeometry(of: self) { [weak self] in
+                        guard let self else { return }
+                        self.resizeSubviews(withOldSize: self.bounds.size)
+                    }
+                }
             }
 
             override func resizeSubviews(withOldSize oldSize: NSSize) {
                 let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
                 guard let scroll = subviews.first else { return }
-                let target = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+                let reach = toolbarReach(of: self)
+                let target = NSRect(x: 0, y: isFlipped ? -reach.extend : 0, width: width, height: bounds.height + reach.extend)
+                if let list = scroll as? NSScrollView, list.contentInsets.top != reach.inset {
+                    let atTop = list.contentView.bounds.minY <= -list.contentInsets.top + 0.5
+                    list.contentInsets = NSEdgeInsets(top: reach.inset, left: 0, bottom: 0, right: 0)
+                    list.scrollerInsets = NSEdgeInsets(top: reach.inset, left: 0, bottom: 0, right: 0)
+                    if atTop { list.contentView.scroll(to: NSPoint(x: 0, y: -reach.inset)); list.reflectScrolledClipView(list.contentView) }
+                }
                 if scroll.frame != target {
                     let pinned = scroll as? PinnedScrollView
                     pinned?.allowsFrameWidthMutation = true

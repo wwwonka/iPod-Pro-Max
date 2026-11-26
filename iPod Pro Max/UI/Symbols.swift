@@ -152,11 +152,37 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
     func systemSymbol(_ name: String, description: String? = nil, pointSize: Double? = nil) -> NSImage? {
         if let custom = customSymbols[name] { return customSymbolImage(custom, description: description, pointSize: pointSize ?? 13) }
         guard #available(macOS 11, *) else { return nil }
+        if name == "film.music" { return filmWithNote(description: description, pointSize: pointSize ?? 13) }
         // `music.mic` is Apple's earlier name for this same symbol on macOS 15 and older.
         let image = NSImage(systemSymbolName: name, accessibilityDescription: description)
             ?? (name == "microphone.dynamic.on.stand" ? NSImage(systemSymbolName: "music.mic", accessibilityDescription: description) : nil)
         guard let pointSize else { return image }
         return image?.withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
+    }
+
+    /// Soundtracks: the `film` symbol with a small eighth note (the one in `music.quarternote.3`)
+    /// centred in its frame, both in the accent colour like the other music shelves.
+    @available(macOS 11, *)
+    func filmWithNote(description: String?, pointSize: Double) -> NSImage? {
+        guard let film = NSImage(systemSymbolName: "film", accessibilityDescription: description)?
+                .withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular)),
+              let note = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: pointSize * 0.5, weight: .semibold))
+        else { return nil }
+        let size = film.size, noteSize = note.size
+        // Drawn when displayed, so the accent colour follows the system setting and appearance.
+        let image = NSImage(size: size, flipped: false) { rect in
+            film.draw(in: rect)
+            let noteRect = NSRect(x: (size.width - noteSize.width) / 2, y: (size.height - noteSize.height) / 2,
+                                  width: noteSize.width, height: noteSize.height)
+            note.draw(in: noteRect)
+            NSColor.controlAccentColor.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        image.isTemplate = false
+        image.accessibilityDescription = description
+        return image
     }
 
     /// A custom symbol as a template image, so it is tinted like an SF Symbol. Square, centered and

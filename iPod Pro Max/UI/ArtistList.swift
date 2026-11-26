@@ -19,7 +19,7 @@ import SwiftCrossUI
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
-        func makeNSView(context: Context) -> NSScrollView {
+        func makeNSView(context: Context) -> UnderToolbarHost {
             let table = NSTableView()
             if #available(macOS 11, *) { table.style = .plain }
             table.headerView = nil
@@ -33,10 +33,12 @@ import SwiftCrossUI
             scroll.documentView = table
             scroll.hasVerticalScroller = true
             scroll.drawsBackground = false
-            return scroll
+            return UnderToolbarHost(scroll)
         }
 
-        func updateNSView(_ scroll: NSScrollView, context: Context) {
+        func updateNSView(_ host: UnderToolbarHost, context: Context) {
+            let scroll = host.scroll
+            host.refresh()
             guard let table = scroll.documentView as? NSTableView else { return }
             let coordinator = context.coordinator
             coordinator.onSelect = { selection = $0 }
@@ -56,7 +58,7 @@ import SwiftCrossUI
             }
         }
 
-        func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> ViewSize {
+        func sizeThatFits(_ proposal: ProposedViewSize, nsView: UnderToolbarHost, context: Context) -> ViewSize {
             ViewSize(proposal.width ?? 250, proposal.height ?? 400)
         }
 

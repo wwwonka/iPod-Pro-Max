@@ -59,11 +59,11 @@ public struct IPodDevice: Identifiable, Hashable, Sendable {
         case .none: return generation == .unknown ? .experimental : .full
         case .hash58:
             guard firewireGUID != nil else { return .unsupported }
-            // Confirmed working on real classic3 (160 GB, 2009) hardware: hash58 signing, playlists,
-            // artwork, podcasts/audiobooks, sort fields. Earlier classics share the mechanism but
-            // weren't the hardware actually tested, so stay experimental out of caution; nano 3G/4G too.
+            // Confirmed working on real iPod classic hardware: hash58 signing, playlists, artwork,
+            // podcasts/audiobooks, sort fields. All classics share the mechanism; nano 3G/4G stay
+            // experimental until tested.
             switch generation {
-            case .classic3: return .full
+            case .classic1, .classic2, .classic3: return .full
             default: return .experimental
             }
         default: return .unsupported

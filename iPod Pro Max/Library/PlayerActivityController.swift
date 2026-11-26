@@ -37,6 +37,20 @@ import MediaKit
             }
         }
     }
+    /// A one-off message (status, tip, error) shown on the player LCD, then dismissed after a few seconds.
+    func notice(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let id = "notice"
+        deadlines.removeValue(forKey: id)?.cancel(); list.remove(id)
+        var value = PlayerActivity(id: id, kind: .notice, title: text, cancellable: false)
+        value.state = .completed
+        list.update(value)
+        deadlines[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }; self?.dismiss(id)
+        }
+    }
     func waitForCompletion(_ id: String) async { await deadlines[id]?.value }
     func dismiss(_ id: String) { deadlines.removeValue(forKey: id)?.cancel(); pending[id] = nil; cancellations[id] = nil; list.remove(id) }
     func cancel(_ id: String) { cancellations[id]?() }

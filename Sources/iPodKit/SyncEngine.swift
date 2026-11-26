@@ -666,7 +666,8 @@ public final class SyncEngine: @unchecked Sendable {
         track.bitrate = t.durationMs > 0 ? UInt32(Double(fileSize) * 8 / Double(t.durationMs)) : 0
         track.sampleRate = 44100
         switch t.videoCategory ?? .movie {
-        case .movie: track.mediaType = IPodMediaType.movie
+        // The iPod has no web video kind: they are listed with the movies.
+        case .movie, .webVideo: track.mediaType = IPodMediaType.movie
         case .tvShow: track.mediaType = IPodMediaType.tvShow
         case .musicVideo: track.mediaType = IPodMediaType.musicVideo
         }

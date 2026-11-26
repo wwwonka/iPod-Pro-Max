@@ -20,7 +20,7 @@ struct AlbumBrowser: NSViewRepresentable {
     /// When set, items don't expand: a click selects and a double-click calls this (games).
     var onOpen: ((String) -> Void)? = nil
     func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSScrollView { Self.makeScroll(coordinator: context.coordinator) }
+    func makeNSView(context: Context) -> UnderToolbarHost { UnderToolbarHost(Self.makeScroll(coordinator: context.coordinator)) }
     static func makeScroll(coordinator: Coordinator) -> NSScrollView {
         let collection = AlbumCollectionView()
         collection.coordinator = coordinator
@@ -40,7 +40,9 @@ struct AlbumBrowser: NSViewRepresentable {
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         return scroll
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    func updateNSView(_ host: UnderToolbarHost, context: Context) {
+        let scroll = host.scroll
+        host.refresh()
         let c = context.coordinator
         c.onOpen = onOpen; c.artworkAspect = artworkAspect
         c.onSelect = onSelect; c.onArtworkSize = onArtworkSize; c.onArtworkCommit = onArtworkCommit; c.onPlay = onPlay

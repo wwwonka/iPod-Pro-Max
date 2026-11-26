@@ -75,7 +75,7 @@ public struct PlayerScrub: Sendable {
 }
 
 public struct PlayerActivity: Equatable, Sendable, Identifiable {
-    public enum Kind: String, Sendable { case importing, sync, transcoding, download }
+    public enum Kind: String, Sendable { case importing, sync, transcoding, download, notice }
     public enum State: Equatable, Sendable { case running, completed, failed }
     public var id: String
     public var kind: Kind

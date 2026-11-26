@@ -165,6 +165,16 @@ final class RailButton: NSButton {
             updateLabel()
         }
     }
+    /// The context menu covers the name: it fades out, as a Dock label does.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        labelSuppressed = true
+        RailLabel.shared.fadeOut()
+    }
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        labelSuppressed = false
+    }
     private func updateLabel() {
         if hovering && hoverRested && !pressed && !labelSuppressed, let window, !label.isEmpty {
             RailLabel.shared.show(label, besideScreenRect: window.convertToScreen(convert(bounds, to: nil)))
@@ -628,8 +638,8 @@ final class RailLabel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
-    /// The name fades away when the pointer has left the rail.
-    private func fadeOut() {
+    /// The name fades away when the pointer has left the rail, or a context menu opens over it.
+    func fadeOut() {
         fadeToken += 1
         let token = fadeToken
         NSAnimationContext.runAnimationGroup({ context in
@@ -779,6 +789,11 @@ final class MediaRailView: NSView {
     private var railMenuTemplate: NSMenu?
     /// "Reset Order" only when there's something to reset: the libraries and the pinned extras in
     /// their default order need no menu.
+    /// A context menu opening here takes the place of the button's name, which fades as the Dock's does.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        RailLabel.shared.fadeOut()
+    }
     override func menu(for event: NSEvent) -> NSMenu? {
         let pinned = railItems.filter { SidebarItem.otherSections.contains($0) }
         let isDefault = railItems == SidebarItem.library + SidebarItem.otherSections.filter { pinned.contains($0) }
@@ -802,7 +817,6 @@ final class MediaRailView: NSView {
         separator.alphaValue = 0
         // A click in the rail's empty space brings up its own menu.
         let railMenu = NSMenu()
-        railMenu.font = .menuFont(ofSize: Self.menuFontSize)
         let reset = NSMenuItem(title: "Reset Order", action: #selector(resetOrder(_:)), keyEquivalent: "")
         reset.target = self
         railMenu.addItem(reset)
@@ -862,7 +876,6 @@ final class MediaRailView: NSView {
             // A pinned extra section can be taken off the rail from its context menu.
             if SidebarItem.otherSections.contains(item) {
                 let menu = NSMenu()
-                menu.font = .menuFont(ofSize: Self.menuFontSize)
                 let unpin = NSMenuItem(title: "Unpin from Sidebar", action: #selector(unpinSection(_:)), keyEquivalent: "")
                 unpin.target = self; unpin.representedObject = item
                 menu.addItem(unpin)
@@ -873,7 +886,7 @@ final class MediaRailView: NSView {
         return button
     }
 
-    /// The rail's menus are a size up from the system's (13 pt).
+    /// The "…" sections menu is a size up from the system's (13 pt); context menus keep the system size.
     private static let menuFontSize: CGFloat = 15
 
     private func rebuildButtons() {
@@ -939,9 +952,8 @@ final class MediaRailView: NSView {
         for (index, button) in buttons.enumerated() {
             let selected: Bool
             if index == 0 { if case .device = selection { selected = true } else { selected = false } }
-            else if button.item == .music {
-                switch selection { case .music, .artists, .albums, .recentMusic, .favorites, .playlist: selected = true; default: selected = false }
-            } else { selected = selection == button.item }
+            // Every page of a section (Soundtracks, TV Shows, a playlist…) lights the section's button.
+            else { selected = selection.media == button.item }
             button.isCurrent = selected
             button.isDropTarget = index == 0 && dropActive
         }

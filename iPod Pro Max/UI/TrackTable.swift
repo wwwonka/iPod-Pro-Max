@@ -113,7 +113,7 @@ extension Array {
 
         func makeCoordinator() -> Coordinator { Coordinator() }
 
-        func makeNSView(context: Context) -> NSScrollView {
+        func makeNSView(context: Context) -> UnderToolbarHost {
             let table = MusicTrackTable()
             table.coordinator = context.coordinator
             table.target = context.coordinator
@@ -149,10 +149,12 @@ extension Array {
             scroll.documentView = table
             scroll.hasVerticalScroller = true
             scroll.drawsBackground = false
-            return scroll
+            return UnderToolbarHost(scroll)
         }
 
-        func updateNSView(_ scroll: NSScrollView, context: Context) {
+        func updateNSView(_ host: UnderToolbarHost, context: Context) {
+            let scroll = host.scroll
+            host.refresh()
             let coordinator = context.coordinator
             defer { NativePlaybackReveal.apply() }
             coordinator.onPlay = onPlay
@@ -508,6 +510,13 @@ extension Array {
     }
 
     final class MusicTrackTable: NSTableView {
+    /// The alternating rows stop at the first row: the inset that reaches under the toolbar stays
+    /// clear, so the bar keeps the rail's colour at rest.
+    override func drawBackground(inClipRect clipRect: NSRect) {
+        let rows = NSRect(x: clipRect.minX, y: max(clipRect.minY, 0), width: clipRect.width, height: max(0, clipRect.maxY - max(clipRect.minY, 0)))
+        guard !rows.isEmpty else { return }
+        super.drawBackground(inClipRect: rows)
+    }
         weak var coordinator: TrackTable.Coordinator?
 
         override func menu(for event: NSEvent) -> NSMenu? {

@@ -65,6 +65,9 @@ struct ContentView: View {
     /// Cover width of each grid page, by `GridSection.key`.
     @State var gridArtworkSizes: [String: Double] = [:]
     @State var sidebarPoints = Int(sidebarWidth)
+    /// Widths of the list columns beside the content (artists, podcast shows), resized by their edge.
+    @State var artistListWidth = 250.0
+    @State var showListWidth = 260.0
     @State var sectionTabs: [String: String] = [:]
     @State var sidebarOrder: [String: [String]] = [:]
     @State var editingPlaylistID: String? = nil
@@ -563,7 +566,7 @@ struct ContentView: View {
             selection = origin; mode = originMode; selectedAlbumID = album; selectedArtists = artists
             if origin == .podcasts || origin == .recentPodcasts { selectedShowID = show; addingPodcast = false }
             search = ""; selectedSongIDs = [id]
-            NativePlaybackReveal.request(id, kind: origin == .albums ? .album : origin == .music && originMode == .byArtist ? .artist : .table)
+            NativePlaybackReveal.request(id, kind: origin.isAlbumGrid ? .album : origin == .music && originMode == .byArtist ? .artist : .table)
         }
         #endif
     }
@@ -1217,10 +1220,25 @@ struct ContentView: View {
         }
     }
 
+    /// The edge of a list column: on the Mac a 1 pt black line that resizes the column when dragged.
+    @ViewBuilder
+    private func columnEdge(width: Double, onResize: @escaping (Double) -> Void) -> some View {
+        #if canImport(AppKitBackend)
+        ColumnResizeHandle(width: width, range: 160...480, onResize: onResize, onResizeEnd: onResize)
+        #else
+        Divider()
+        #endif
+    }
+
+    /// The albums of the current cover-grid page: all of them, or one shelf's.
+    private func gridAlbums(_ library: Library) -> [AlbumInfo] {
+        selection.albumShelf.map { library.shelfAlbums[$0] ?? [] } ?? library.albums
+    }
+
     /// The lists whose rows are songs: only those show the favorite icon.
     private var showsFavoriteIcon: Bool {
         switch selection {
-        case .music, .favorites, .recentMusic, .albums, .playlist: return true
+        case .music, .favorites, .recentMusic, .albums, .soundtracks, .classical, .playlist: return true
         default: return false
         }
     }
@@ -1524,17 +1542,17 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     if selection == .music && mode == .byArtist && !library.artists.isEmpty {
                         ArtistList(artists: library.artists, tracksByArtist: library.rowsByArtist, selection: $selectedArtists)
-                            .frame(width: 250)
-                        Divider()
+                            .frame(width: Int(artistListWidth))
+                        columnEdge(width: artistListWidth) { artistListWidth = $0 }
                     }
                     if selection == .podcasts && !PodcastController.shared.shows.isEmpty {
                         PodcastShowList(revision: podcastRevision, selectedID: Binding(get: { currentShow?.id }, set: { selectedShowID = $0 }))
-                            .frame(width: 260)
-                        Divider()
+                            .frame(width: Int(showListWidth))
+                        columnEdge(width: showListWidth) { showListWidth = $0 }
                     }
                     VStack(spacing: 0) {
-                    if selection == .albums, let id = selectedAlbumID,
-                       let album = library.albums.first(where: { $0.id == id }) {
+                    if selection.isAlbumGrid, let id = selectedAlbumID,
+                       let album = gridAlbums(library).first(where: { $0.id == id }) {
                         MusicAlbumHeader(album: album, artworkFolder: library.artworkFolder,
                             onPlay: { if let first = album.rows.first(where: { $0.path != nil }) {
                                 startPlayback(first, displayed: album.rows, library: library)
@@ -1583,8 +1601,8 @@ struct ContentView: View {
                                    onRetrySubscribedTrack: { playlistID, trackKey in
                                        SubscriptionController.shared.retryTrack(playlistID: playlistID, trackKey: trackKey)
                                    })
-                        if selection == .albums && selectedAlbumID == nil {
-                            GridPage(section: .albums, items: library.albums, artworkFolder: library.artworkFolder, query: search,
+                        if selection.isAlbumGrid && selectedAlbumID == nil {
+                            GridPage(section: .albums, items: gridAlbums(library), artworkFolder: library.artworkFolder, query: search,
                                      artworkSizes: gridArtworkSizes, store: portableLibrary?.store,
                                      action: .expand(onSelect: { selectedAlbumID = $0 },
                                                      onPlay: { row, rows in startPlayback(row, displayed: rows, library: library) }),
@@ -1658,14 +1676,13 @@ struct ContentView: View {
                     }
                 }
                 #if canImport(AppKitBackend)
-                // No standing status bar on the Mac: the line only exists while a transfer runs.
-                if let device = ipods.first(where: { MusicTransfer.shared.isRunning($0) }) {
-                    HStack {
-                        Text(transferStatus).font(.system(size: 12))
-                        Spacer()
-                        Button("Cancel Transfer") { MusicTransfer.shared.cancel(device) }
-                    }.padding(8)
-                }
+                // No status bar on the Mac: messages go to the player LCD, which also shows transfer
+                // progress and its cancel button.
+                Color.clear.frame(width: 0, height: 0)
+                    .onChange(of: transferStatus) {
+                        guard !ipods.contains(where: { MusicTransfer.shared.isRunning($0) }) else { return }
+                        PlayerActivityController.shared.notice(transferStatus)
+                    }
                 #else
                 HStack {
                     Text(scanning ? "Checking music folders…" : transferStatus).font(.system(size: 12))
@@ -1709,10 +1726,11 @@ struct ContentView: View {
         case .recentMusic:
             title = "Recently Added"
             subtitle = songCount(library.recentRows.count)
-        case .albums:
-            let album = library.albums.first { $0.id == selectedAlbumID }
-            title = album?.title ?? "Albums"
-            subtitle = album.map { "\($0.artist) · \(songCount($0.rows.count))" } ?? "\(library.albums.count) albums"
+        case .albums, .soundtracks, .classical:
+            let albums = gridAlbums(library)
+            let album = albums.first { $0.id == selectedAlbumID }
+            title = album?.title ?? selection.title
+            subtitle = album.map { "\($0.artist) · \(songCount($0.rows.count))" } ?? "\(albums.count) albums"
         case .playlist(let id):
             title = library.playlists.first { $0.id == id }?.name ?? "Playlist"
             if let sub = SubscriptionController.shared.subscription(forPlaylistID: id) {
@@ -1731,6 +1749,9 @@ struct ContentView: View {
         case .tvShows:
             title = "TV Shows"
             subtitle = videoCount(library.videoRowsByCategory[.tvShow]?.count ?? 0)
+        case .webVideos:
+            title = "Web Videos"
+            subtitle = videoCount(library.videoRowsByCategory[.webVideo]?.count ?? 0)
         case .musicVideos:
             title = "Music Videos"
             subtitle = videoCount(library.videoRowsByCategory[.musicVideo]?.count ?? 0)
@@ -1750,11 +1771,11 @@ struct ContentView: View {
             subtitle = ""
         }
         return DetailHeader(title: title, subtitle: subtitle) {
-            if selection == .music || selection == .recentMusic || selection == .albums || selection == .favorites {
+            if selection == .music || selection == .recentMusic || selection.isAlbumGrid || selection == .favorites {
                 ToolbarButton(icon: "plus") { Task { await configureMusic() } }
                 ToolbarButton(icon: "arrow.clockwise") { Task { await loadPortable(refresh: true) } }
-                if selection == .albums && selectedAlbumID != nil {
-                    Button("All Albums") { selectedAlbumID = nil }.titleBarControl()
+                if selection.isAlbumGrid && selectedAlbumID != nil {
+                    Button("All \(selection.title)") { selectedAlbumID = nil }.titleBarControl()
                 }
             } else if selection.media == .podcasts {
                 ToolbarButton(icon: "plus") { addingPodcast.toggle() }
@@ -1785,9 +1806,9 @@ struct ContentView: View {
         case .podcasts, .recentPodcasts: return !addingPodcast && !PodcastController.shared.shows.isEmpty
         case .audiobooks: return !audiobookRows.isEmpty
         case .recentMusic: return !library.recentRows.isEmpty
-        case .albums: return selectedAlbumID != nil
+        case .albums, .soundtracks, .classical: return selectedAlbumID != nil
         case .playlist: return true
-        case .videos, .movies, .tvShows, .musicVideos, .videoPlaylist: return true
+        case .videos, .movies, .tvShows, .webVideos, .musicVideos, .videoPlaylist: return true
         default: return false
         }
     }
@@ -1805,8 +1826,8 @@ struct ContentView: View {
         case .recentMusic:
             // Newest first, as indexed; the table keeps that order until a header is clicked.
             return filtered(library.recentRows)
-        case .albums:
-            return selectedAlbumID.flatMap { id in library.albums.first { $0.id == id } }.map { filtered($0.rows) }
+        case .albums, .soundtracks, .classical:
+            return selectedAlbumID.flatMap { id in gridAlbums(library).first { $0.id == id } }.map { filtered($0.rows) }
         case .playlist(let id):
             if let playlist = library.playlists.first(where: { $0.id == id }) {
                 if playlist.isFolder {
@@ -1831,6 +1852,8 @@ struct ContentView: View {
             return filtered(library.videoRowsByCategory[.movie] ?? [])
         case .tvShows:
             return filtered(library.videoRowsByCategory[.tvShow] ?? [])
+        case .webVideos:
+            return filtered(library.videoRowsByCategory[.webVideo] ?? [])
         case .musicVideos:
             return filtered(library.videoRowsByCategory[.musicVideo] ?? [])
         case .videoPlaylist(let id):
@@ -1867,12 +1890,13 @@ struct ContentView: View {
         case .videos where library.videoRows.isEmpty,
              .movies where library.videoRowsByCategory[.movie, default: []].isEmpty,
              .tvShows where library.videoRowsByCategory[.tvShow, default: []].isEmpty,
+             .webVideos where library.videoRowsByCategory[.webVideo, default: []].isEmpty,
              .musicVideos where library.videoRowsByCategory[.musicVideo, default: []].isEmpty:
             return EmptyState(icon: selection.icon, title: "No \(selection.title) Yet",
                               message: "Videos added to the library will appear here according to their category.")
         case .videoPlaylist(let id) where library.rowsByVideoPlaylist[id, default: []].isEmpty:
             return EmptyState(icon: "film.stack", title: "Empty Video Playlist",
-                              message: "Add videos from Movies, TV Shows or Music Videos.")
+                              message: "Add videos from Movies, TV Shows, Web Videos or Music Videos.")
         case .playlist(let id) where library.playlists.first(where: { $0.id == id })?.isFolder == true && !library.playlists.contains(where: { $0.parentID == id }):
             return EmptyState(icon: "folder", title: "Empty Playlist Folder",
                               message: "Drag playlists onto this folder in the sidebar to organize them.")
@@ -1891,9 +1915,15 @@ struct ContentView: View {
         case .albums where library.albums.isEmpty:
             return EmptyState(icon: "square.stack", title: "No Albums Yet",
                               message: "Music you add to your library will appear here.")
-        case .recentMusic, .albums, .favorites:
+        case .soundtracks where gridAlbums(library).isEmpty:
+            return EmptyState(icon: "film.music", title: "No Soundtracks",
+                              message: "Albums whose genre is Soundtrack appear here.")
+        case .classical where gridAlbums(library).isEmpty:
+            return EmptyState(icon: "music.quarternote.3", title: "No Classical Music",
+                              message: "Albums whose genre is Classical appear here.")
+        case .recentMusic, .albums, .soundtracks, .classical, .favorites:
             return nil
-        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .games, .videos, .movies, .tvShows, .musicVideos, .videoPlaylist:
+        case .music, .playlist, .podcasts, .recentPodcasts, .audiobooks, .photos, .games, .videos, .movies, .tvShows, .webVideos, .musicVideos, .videoPlaylist:
             return nil
         case .device:
             // The iPod is gone (its page is drawn before the cover).

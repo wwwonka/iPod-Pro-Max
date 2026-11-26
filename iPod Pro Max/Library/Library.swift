@@ -81,6 +81,20 @@ struct NamedGroup: Identifiable {
 }
 
 /// One album of an artist, with its songs in disc and track order.
+/// Album shelves shown under Albums in the sidebar, picked from the album's genre tag.
+enum AlbumShelf: CaseIterable {
+    case soundtracks, classical
+
+    static func of(genre: String?) -> AlbumShelf? {
+        guard let genre = genre?.lowercased(), !genre.isEmpty else { return nil }
+        let soundtrack = ["soundtrack", "score", "bande originale", "bande-originale", "ost", "film", "movie", "musical", "video game"]
+        let classical = ["classical", "classique", "opera", "opéra", "baroque", "symphon", "orchestral", "chamber", "concerto"]
+        if soundtrack.contains(where: { genre.contains($0) }) { return .soundtracks }
+        if classical.contains(where: { genre.contains($0) }) { return .classical }
+        return nil
+    }
+}
+
 struct AlbumInfo: Identifiable {
     var id: String
     var title: String
@@ -170,6 +184,8 @@ struct Library {
     var favoriteRows: [TrackRow] = []
     var recentRows: [TrackRow] = []
     var albums: [AlbumInfo] = []
+    /// Albums per shelf (Soundtracks, Classical), worked out once while indexing.
+    var shelfAlbums: [AlbumShelf: [AlbumInfo]] = [:]
     var recentAlbums: [AlbumInfo] = []
 
     static func portable(_ cache: PortableLibraryCache, source: String, artworkFolder: URL? = nil) -> Library {
@@ -201,7 +217,7 @@ struct Library {
         }
         library.videoRows = videos
         let categoryByID = Dictionary(uniqueKeysWithValues: cache.tracks.filter { $0.kind == .video }.map {
-            ($0.id.uuidString, $0.videoCategory ?? .movie)
+            ($0.id.uuidString, $0.videoCategory ?? ($0.sourcePluginID != nil ? .webVideo : .movie))
         })
         library.videoRowsByCategory = Dictionary(grouping: videos) { categoryByID[$0.id] ?? .movie }
         let videoByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
@@ -358,6 +374,7 @@ struct Library {
                 return album
             }
         }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        library.shelfAlbums = Dictionary(grouping: library.albums.filter { AlbumShelf.of(genre: $0.genre) != nil }) { AlbumShelf.of(genre: $0.genre)! }
         // Compute recency once during indexing, never while the view renders.
         var datedAlbums: [(index: Int, album: AlbumInfo, latest: Date)] = library.albums.enumerated().map { index, album in
             (index, album, album.rows.compactMap(\.dateAdded).max() ?? Date.distantPast)
