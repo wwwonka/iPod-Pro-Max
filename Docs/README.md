@@ -2,7 +2,7 @@
 
 Plan directeur pour faire d'iPod Pro Max une app qui **vit sur l'iPod**, se lance depuis **n'importe quel Mac, PC Windows ou Linux**, garde un **look Mac partout**, et reste aussi rapide qu'aujourd'hui. Une seule base de code Swift qui sait se compiler pour les trois OS.
 
-> Statut au 2026-10-30 : SwiftCrossUI est l’application principale dans `iPod Pro Max/`, compilée depuis le package racine. L’ancienne application SwiftUI est conservée dans `Refs/SwiftUI/` comme référence de portage. La vision finale et le prochain GitHub Project restent à définir avec le propriétaire. Les phases ci-dessous conservent le plan historique.
+> Statut au 2026-10-30 : SwiftCrossUI est l’application principale dans `iPod Pro Max/`, compilée depuis le package racine. L’ancienne application SwiftUI a été retirée du dépôt (dernière version dans le commit `9461a18`). La vision finale et le prochain GitHub Project restent à définir avec le propriétaire. Les phases ci-dessous conservent le plan historique.
 
 > Noyau portable et CLI en place (voir [[Package Swift]]). Avancement : [GitHub Project](https://github.com/users/wwwonka/projects/5). Ce vault s'ouvre dans Obsidian via « Open folder as vault » sur `Docs/`.
 

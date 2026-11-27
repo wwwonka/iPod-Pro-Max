@@ -6,7 +6,7 @@ Le noyau d'iPod Pro Max est un package Swift à la racine du repo (`Package.swif
 
 ## Application principale
 
-Depuis la promotion du 2026-10-30, ce package contient aussi `iPodProMaxApp`, l’application SwiftCrossUI dans `iPod Pro Max/`. Utiliser `Tools/Build/build.sh` pour appliquer les correctifs du framework avant de compiler. `swift build --product ipodpromax` reste la commande de compilation de la CLI. Le projet Xcode de référence est dans `Refs/SwiftUI/`.
+Depuis la promotion du 2026-10-30, ce package contient aussi `iPodProMaxApp`, l’application SwiftCrossUI dans `iPod Pro Max/`. Utiliser `Tools/Build/build.sh` pour appliquer les correctifs du framework avant de compiler. `swift build --product ipodpromax` reste la commande de compilation de la CLI. L’ancien projet Xcode de référence a été retiré (commit `9461a18`).
 
 ## Les cibles
 

@@ -35,7 +35,7 @@ Points d'attention :
 **Étape 0 : Fondations**
 - Sidebar pilotée par des données (enum de sections + descripteurs) au lieu de code par section ; fichiers : `UI/Sidebar.swift`, `SidebarMac/Gtk/WinUI`.
 - Protocole `PlaylistSource` / `Downloader` / `MetadataProvider` / `LyricsProvider` dans un module partagé (MediaKit), avec registre de plugins.
-- File de tâches longues (téléchargements, imports) : actor + progression groupée toutes les ~500 ms, sliding window `activeProcessorCount` (modèle : `LibraryStore.importFiles` dans `Refs/SwiftUI/`).
+- File de tâches longues (téléchargements, imports) : actor + progression groupée toutes les ~500 ms, sliding window `activeProcessorCount` (modèle : `LibraryStore.importFiles` de l’ancienne app SwiftUI, commit `9461a18`).
 - Squelettes des fenêtres Settings et Metadata Editor.
 
 **Étape 1 : Music, cœur**

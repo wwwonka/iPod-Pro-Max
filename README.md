@@ -55,7 +55,7 @@ L’interface propose une barre de médias, une navigation musicale secondaire (
 
 La page appareil lit les informations et permet l’éjection. La sélection multiple de chansons ou d’artistes (Cmd/Ctrl-clic et Shift-clic) et leur dépôt sur un iPod lancent un transfert en ajout uniquement, sans supprimer les autres pistes, playlists ou pochettes. Sync complet (avec crochets par piste), Import et Forget restent à connecter. Les données de l’app restent sur l’iPod : `known_hosts.json`, caches de bibliothèque par hôte, pochettes, conversions et préférences. Seuls les médias accessibles apparaissent ; les dossiers sources restent mémorisés même indisponibles. Le lanceur exécute directement l’app depuis l’iPod. Le noyau portable fournit aussi une CLI.
 
-L’ancienne application macOS et ses fonctionnalités sont décrites dans [Refs/SwiftUI/README.md](Refs/SwiftUI/README.md). Son projet Xcode reste disponible dans `Refs/SwiftUI/iPod Pro Max.xcodeproj`. `Tools/release.sh` reste réservé à cette ancienne application ; la compilation de l’application principale passe par `Tools/Build/build.sh`.
+L’ancienne application macOS SwiftUI a été retirée du dépôt ; sa dernière version, projet Xcode compris, reste dans l’historique (commit `9461a18`, dossier `Refs/SwiftUI/`). `Tools/release.sh` reste réservé à cette ancienne application ; la compilation de l’application principale passe par `Tools/Build/build.sh`.
 
 ## Documentation et suite
 

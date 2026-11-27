@@ -10,7 +10,7 @@
 ## Ce que l'app est aujourd'hui
 - L’application principale est SwiftCrossUI dans `iPod Pro Max/` : bibliothèque, navigation, recherche, détection des iPods, page appareil (éjection). Sync, Import et Forget ne sont pas encore branchés. Voir [[Application SwiftCrossUI]].
 - Le noyau portable (`iPodKit`, `MediaKit`, `DeviceKit`) et la CLI `ipodpromax` compilent sur macOS, Linux et Windows. Voir [[Package Swift]].
-- L’ancienne app Mac SwiftUI est conservée dans `Refs/SwiftUI/` comme référence de portage.
+- L’ancienne app Mac SwiftUI a été retirée du dépôt ; sa dernière version reste dans le commit `9461a18`.
 - Le format iTunesDB est implémenté en Swift pur, sans libgpod.
 - Les données de l’hôte restent dans `~/Library/Application Support/iPod Pro Max` (`library.json`, pochettes, caches, podcasts, transcodes).
 

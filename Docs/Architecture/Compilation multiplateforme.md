@@ -11,7 +11,7 @@ Tools/Build/build.sh mac
 Tools/Build/build.sh linux windows
 ```
 
-L’ancien projet Xcode est conservé dans `Refs/SwiftUI/` et référence le package racine via `../..`. Les copies de compilation locales des VM sont conservées à leurs emplacements existants pour réutiliser les caches ; il n’y a plus de second package d’interface ni de copie séparée du noyau.
+L’ancien projet Xcode a été retiré du dépôt (dernière version dans le commit `9461a18`). Les copies de compilation locales des VM sont conservées à leurs emplacements existants pour réutiliser les caches ; il n’y a plus de second package d’interface ni de copie séparée du noyau.
 
 ## Plan historique
 
