@@ -1,8 +1,10 @@
 #if canImport(AppKitBackend)
 import AppKit
 
-@MainActor final class PlayerLCD: NSVisualEffectView {
+@MainActor final class PlayerLCD: NSView {
     private let content = PlayerLCDContent()
+    private let lens = BackdropBlurView(frame: .zero, isLens: true)
+    private let contrastVeil = CALayer()
     private let innerShade = CAGradientLayer()
     private let leftShade = CAGradientLayer()
     private let rightShade = CAGradientLayer()
@@ -25,11 +27,16 @@ import AppKit
     override var mouseDownCanMoveWindow: Bool { false }
     override init(frame: NSRect) {
         super.init(frame: frame)
-        material = .underWindowBackground; blendingMode = .behindWindow; state = .active
         wantsLayer = true
         layer?.cornerRadius = 3
         layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
         layer?.masksToBounds = true
+        // A slightly magnified, more diffuse sample makes the insert feel optically separate.
+        // Only the background bends; labels, artwork and controls remain sharp.
+        addSubview(lens)
+        lens.wantsLayer = true
+        lens.layer?.setAffineTransform(CGAffineTransform(scaleX: 1.025, y: 1.08))
+        layer?.addSublayer(contrastVeil)
         // Shade falls inside the glass; no outer shadow or bright upper bevel.
         innerShade.colors = [NSColor.black.withAlphaComponent(0.035).cgColor,
                              NSColor.black.withAlphaComponent(0.07).cgColor,
@@ -59,6 +66,10 @@ import AppKit
     override func layout() {
         super.layout()
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        lens.frame = bounds.insetBy(dx: -4, dy: -3)
+        contrastVeil.frame = bounds
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        contrastVeil.backgroundColor = (dark ? NSColor.black.withAlphaComponent(0.16) : NSColor.white.withAlphaComponent(0.32)).cgColor
         innerShade.frame = bounds
         leftShade.frame = CGRect(x: 0, y: 0, width: 8, height: bounds.height)
         rightShade.frame = CGRect(x: bounds.width - 8, y: 0, width: 8, height: bounds.height)
@@ -78,6 +89,11 @@ import AppKit
         content.frame = bounds
         content.needsLayout = true
 
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
     }
 }
 

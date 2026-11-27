@@ -740,6 +740,8 @@
         // MARK: Search
 
         private var playerHeader: PlayerHeaderMac?
+        private lazy var frameBackdrop = BackdropBlurView(frame: .zero)
+        private let frameVeil = WindowFrameVeil()
         private var headerContentObservation: NSKeyValueObservation?
         private let searchField = PlayerSearchField()
         private let searchButton = ToolbarPlaybackButton()
@@ -1098,13 +1100,6 @@
             header.autoresizingMask = [.width, .minYMargin]
             header.wantsLayer = true
             header.layer?.masksToBounds = false
-            // Content that slides under the toolbar (rubber band, scrolling) is blurred as in Safari,
-            // so it reads as passing beneath the bar rather than over it. A plain blur of what lies beneath, with no material tint, as Safari's toolbar: the bar keeps
-            // the rail's colour and only the content passing under it changes.
-            let blur = BackdropBlurView(frame: header.bounds, radius: 12)
-            blur.identifier = NSUserInterfaceItemIdentifier("toolbarBlur")
-            blur.autoresizingMask = [.width, .height]
-            header.addSubview(blur, positioned: .below, relativeTo: nil)
             if #available(macOS 14.0, *) { header.clipsToBounds = false }
             header.onPointerPresence = { [weak self] in self?.player.setHeaderHovered($0) }
             header.onLayout = { [weak self] in
@@ -1171,6 +1166,7 @@
             searchField.isHidden = searchOwner == nil; searchButton.isHidden = true
             for view in [player.transport, player.volumeView, player.route, player.lcd, queueButton, searchField, searchButton] { header.addSubview(view) }
             content.addSubview(header, positioned: .above, relativeTo: nil)
+            attachFrameBackdrop(to: content, below: header)
             // inspectWindow runs before the backend installs its final content root.
             // Follow that replacement, rather than attaching to a discarded placeholder.
             headerContentObservation = window.observe(\.contentView, options: [.new]) { [weak self] _, _ in
@@ -1187,7 +1183,26 @@
                 header.frame = NSRect(x: 0, y: content.bounds.height - CGFloat(titleBarHeight), width: content.bounds.width, height: CGFloat(titleBarHeight))
                 content.addSubview(header, positioned: .above, relativeTo: nil)
             }
+            attachFrameBackdrop(to: content, below: header)
             layoutPlayerHeader()
+        }
+
+        /// The rail and toolbar form one continuous frame. Sample in window coordinates,
+        /// rather than terminating a separate backdrop at their inside corner.
+        private func attachFrameBackdrop(to content: NSView, below header: NSView) {
+            frameBackdrop.identifier = NSUserInterfaceItemIdentifier("windowFrameBackdrop")
+            frameBackdrop.autoresizingMask = [.width, .height]
+            frameBackdrop.frame = content.bounds
+            if frameBackdrop.superview !== content {
+                frameBackdrop.removeFromSuperview()
+                content.addSubview(frameBackdrop, positioned: .below, relativeTo: header)
+            }
+            frameVeil.autoresizingMask = [.width, .height]
+            frameVeil.frame = content.bounds
+            if frameVeil.superview !== content {
+                frameVeil.removeFromSuperview()
+                content.addSubview(frameVeil, positioned: .above, relativeTo: frameBackdrop)
+            }
         }
 
         private func layoutPlayerHeader() {
@@ -1864,6 +1879,19 @@
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             defer { withExtendedLifetime(inactiveCompanion) {} }
+            if env["IPPM_SNAPSHOT_UNDER_TOOLBAR"] != nil, let content = window.contentView {
+                @MainActor func prepare(_ view: NSView) {
+                    if let scroll = view as? NSScrollView, scroll.contentInsets.top > 0 {
+                        scroll.contentView.setBoundsOrigin(.zero)
+                        scroll.reflectScrolledClipView(scroll.contentView)
+                    }
+                    for child in view.subviews { prepare(child) }
+                }
+                prepare(content)
+                content.displayIfNeeded()
+                let hold = env["IPPM_SNAPSHOT_UNDER_TOOLBAR"].flatMap(Double.init) ?? 0.1
+                try? await Task.sleep(nanoseconds: UInt64(max(0, hold) * 1_000_000_000))
+            }
             guard let view = window.contentView?.superview,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
             else { return }
@@ -2116,25 +2144,172 @@ private final class FocusRingPrimerView: NSView {
 #endif
 
 
-/// Blurs whatever the window draws beneath it, without tint, through Core Animation's backdrop layer
-/// (what AppKit's own vibrancy and Safari's toolbar rely on). Without that class it stays clear.
+/// A neutral within-window blur over the window's shared glass. AppKit owns the backdrop;
+/// its material's additional colour layers are suppressed so the toolbar keeps the rail's finish.
 @MainActor
-final class BackdropBlurView: NSView {
+final class BackdropBlurView: NSVisualEffectView {
+    private static let sources = NSHashTable<NSScrollView>.weakObjects()
+    private static weak var toolbar: BackdropBlurView?
+    private let isLens: Bool
+    private let scrollMask = CALayer()
+    private let sourceMasks = NSMapTable<NSScrollView, CAGradientLayer>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+    private var scrollObserver: NSObjectProtocol?
+
+    static func register(_ scroll: NSScrollView) {
+        sources.add(scroll)
+        scroll.contentView.postsBoundsChangedNotifications = true
+    }
+
+    static func refreshToolbarMask() { toolbar?.updateScrollMask() }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    init(frame: NSRect, radius: CGFloat) {
+    override convenience init(frame: NSRect) { self.init(frame: frame, isLens: false) }
+
+    init(frame: NSRect, isLens: Bool) {
+        self.isLens = isLens
         super.init(frame: frame)
-        wantsLayer = true
-        guard let backdropClass = NSClassFromString("CABackdropLayer") as? CALayer.Type,
-              let filterClass = NSClassFromString("CAFilter") as? NSObject.Type,
-              let filter = filterClass.perform(NSSelectorFromString("filterWithType:"), with: "gaussianBlur")?.takeUnretainedValue() as? NSObject
-        else { return }
-        filter.setValue(radius, forKey: "inputRadius")
-        filter.setValue(true, forKey: "inputNormalizeEdges")
-        let backdrop = backdropClass.init()
-        backdrop.filters = [filter]
-        backdrop.frame = bounds
-        backdrop.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        layer?.addSublayer(backdrop)
+        material = .underWindowBackground
+        blendingMode = .withinWindow
+        state = .active
+        if !isLens {
+            Self.toolbar = self
+            wantsLayer = true
+            layer?.mask = scrollMask
+            scrollObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self, let clip = notification.object as? NSClipView,
+                          clip.window === self.window else { return }
+                    self.updateScrollMask()
+                }
+            }
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit { if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) } }
+
+    override func updateLayer() {
+        super.updateLayer()
+        keepOnlyBlur()
+    }
+
+    override func layout() {
+        super.layout()
+        keepOnlyBlur()
+        if !isLens { updateScrollMask() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // AppKit creates the material's layers when it first enters a window.
+        DispatchQueue.main.async { [weak self] in self?.keepOnlyBlur() }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+        DispatchQueue.main.async { [weak self] in self?.keepOnlyBlur() }
+    }
+
+    private func keepOnlyBlur() {
+        guard let layer else { return }
+        @MainActor func retainBackdrop(in layer: CALayer) -> Bool {
+            if let filters = layer.filters,
+               filters.contains(where: { (($0 as AnyObject).value(forKey: "name") as? String)?.hasPrefix("gaussianBlur") == true }) {
+                for filter in filters {
+                    let object = filter as AnyObject
+                    let name = object.value(forKey: "name") as? String ?? ""
+                    if name.hasPrefix("gaussianBlur") { object.setValue(isLens ? 34.0 : 30.0, forKey: "inputRadius") }
+                    if name.hasPrefix("colorSaturate") { object.setValue(isLens ? 0.08 : 0.15, forKey: "inputAmount") }
+                }
+                layer.filters = filters
+                return true
+            }
+            var hasBackdrop = false
+            for child in layer.sublayers ?? [] {
+                let keep = retainBackdrop(in: child)
+                child.isHidden = !keep
+                hasBackdrop = hasBackdrop || keep
+            }
+            return hasBackdrop
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        _ = retainBackdrop(in: layer)
+        CATransaction.commit()
+    }
+
+    /// Only content crossing the toolbar contributes. At rest the rail and header expose
+    /// the exact same window glass, with no second filter pass or hard rectangular join.
+    private func updateScrollMask() {
+        guard !isLens, let window else { return }
+        let barBottom = bounds.maxY - CGFloat(titleBarHeight)
+        let fadeBottom = barBottom - 12
+        var regions: [CALayer] = []
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        for scroll in Self.sources.allObjects where scroll.window === window && !scroll.isHiddenOrHasHiddenAncestor {
+            guard scroll.contentInsets.top > 0, let document = scroll.documentView else { continue }
+            let documentTop = document.convert(document.bounds, to: self).maxY
+            let overlap = documentTop - barBottom
+            guard overlap > 0.5 else { continue }
+            let rect = scroll.convert(scroll.bounds, to: self)
+            guard rect.maxY >= barBottom else { continue }
+            let left = max(CGFloat(mediaRailWidth), rect.minX - 24)
+            let right = min(bounds.maxX, rect.maxX + 24)
+            guard right > left else { continue }
+            let region: CAGradientLayer
+            if let cached = sourceMasks.object(forKey: scroll) { region = cached }
+            else {
+                region = CAGradientLayer()
+                region.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+                region.startPoint = CGPoint(x: 0, y: 0.5); region.endPoint = CGPoint(x: 1, y: 0.5)
+                let vertical = CAGradientLayer()
+                vertical.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor]
+                vertical.startPoint = CGPoint(x: 0.5, y: 0); vertical.endPoint = CGPoint(x: 0.5, y: 1)
+                region.mask = vertical
+                sourceMasks.setObject(region, forKey: scroll)
+            }
+            let frame = CGRect(x: left, y: fadeBottom, width: right - left, height: max(0, min(bounds.maxY, documentTop) - fadeBottom))
+            if region.frame != frame {
+                region.frame = frame
+                let feather = min(0.25, 24 / region.bounds.width)
+                region.locations = [0, NSNumber(value: Double(feather)), NSNumber(value: Double(1 - feather)), 1]
+                if let vertical = region.mask as? CAGradientLayer {
+                    vertical.frame = region.bounds
+                    vertical.locations = [0, NSNumber(value: Double(min(1, 12 / max(1, region.bounds.height)))), 1]
+                }
+            }
+            // Fully diffuse the source before the shared frame glass attenuates its reflection.
+            region.opacity = Float(min(1, overlap / 12))
+            regions.append(region)
+        }
+        scrollMask.frame = bounds
+        if scrollMask.sublayers?.elementsEqual(regions, by: { $0 === $1 }) != true { scrollMask.sublayers = regions }
+        if isHidden != regions.isEmpty { isHidden = regions.isEmpty }
+    }
+}
+
+/// The same external glass as the rail, over the diffused source. Opacity belongs here,
+/// after blurring, so lowering reflection strength never exposes sharp artwork below controls.
+@MainActor
+private final class WindowFrameVeil: NSVisualEffectView {
+    private let frameMask = CAShapeLayer()
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    init() {
+        super.init(frame: .zero)
+        material = .underWindowBackground
+        blendingMode = .behindWindow
+        state = .active
+        alphaValue = 0.76
+        wantsLayer = true
+        layer?.mask = frameMask
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        frameMask.frame = bounds
+        frameMask.path = CGPath(rect: CGRect(x: 0, y: bounds.maxY - CGFloat(titleBarHeight), width: bounds.width, height: CGFloat(titleBarHeight)), transform: nil)
+        CATransaction.commit()
+    }
 }

@@ -160,27 +160,38 @@ func symbolRGB(_ tint: SymbolTint, dark: Bool) -> (r: UInt8, g: UInt8, b: UInt8)
         return image?.withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular))
     }
 
-    /// Soundtracks: the `film` symbol with a small eighth note (the one in `music.quarternote.3`)
+    /// Soundtracks: an undivided film frame with Apple's flat-topped music note.
     /// centred in its frame, both in the accent colour like the other music shelves.
     @available(macOS 11, *)
     func filmWithNote(description: String?, pointSize: Double) -> NSImage? {
         guard let film = NSImage(systemSymbolName: "film", accessibilityDescription: description)?
                 .withSymbolConfiguration(.init(pointSize: pointSize, weight: .regular)),
               let note = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: pointSize * 0.5, weight: .semibold))
+                .withSymbolConfiguration(.init(pointSize: pointSize * 0.60, weight: .regular))
         else { return nil }
-        let size = film.size, noteSize = note.size
+        let size = film.size
         // Drawn when displayed, so the accent colour follows the system setting and appearance.
         let image = NSImage(size: size, flipped: false) { rect in
+            // Preserve the film's perforated sides and rim, leaving its centre open.
+            NSGraphicsContext.saveGraphicsState()
+            let rim = NSBezierPath(rect: rect)
+            rim.appendRect(rect.insetBy(dx: size.width * 0.27, dy: size.height * 0.19))
+            rim.windingRule = .evenOdd
+            rim.addClip()
             film.draw(in: rect)
-            let noteRect = NSRect(x: (size.width - noteSize.width) / 2, y: (size.height - noteSize.height) / 2,
-                                  width: noteSize.width, height: noteSize.height)
-            note.draw(in: noteRect)
+            NSGraphicsContext.restoreGraphicsState()
+            let h = size.height * 0.60
+            let w = h * note.size.width / note.size.height
+            let x = (size.width - w) / 2, y = (size.height - h) / 2
+            note.draw(in: NSRect(x: x, y: y, width: w, height: h))
             NSColor.controlAccentColor.set()
             rect.fill(using: .sourceAtop)
             return true
         }
         image.isTemplate = false
+        // NSImageView lays out SF Symbols by their alignment rect, not their full canvas.
+        // Preserve Film's metrics so the composite has exactly the same displayed size.
+        image.alignmentRect = film.alignmentRect
         image.accessibilityDescription = description
         return image
     }

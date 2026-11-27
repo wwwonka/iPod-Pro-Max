@@ -33,7 +33,9 @@
         init(_ scroll: NSScrollView) {
             self.scroll = scroll
             super.init(frame: .zero)
+            clipsToBounds = false
             scroll.automaticallyAdjustsContentInsets = false
+            BackdropBlurView.register(scroll)
             addSubview(scroll)
         }
         required init?(coder: NSCoder) { fatalError() }
@@ -55,8 +57,21 @@
 
         private func place() {
             let reach = toolbarReach(of: self)
+            if reach.extend > 0 {
+                // SwiftCrossUI's cornerRadius(0) still clips. Let a toolbar-adjacent list
+                // overflow those square wrappers, retaining rounded and explicit masks.
+                var ancestor = superview
+                while let view = ancestor, let content = window?.contentView, view !== content {
+                    if view.clipsToBounds, view.layer?.cornerRadius == 0, view.layer?.mask == nil {
+                        view.clipsToBounds = false
+                    }
+                    if view.convert(view.bounds, to: nil).maxY >= content.convert(content.bounds, to: nil).maxY { break }
+                    ancestor = view.superview
+                }
+            }
             let frame = NSRect(x: 0, y: isFlipped ? -reach.extend : 0, width: bounds.width, height: bounds.height + reach.extend)
             if scroll.frame != frame { scroll.frame = frame }
+            defer { BackdropBlurView.refreshToolbarMask() }
             guard reach.inset != extra else { return }
             extra = reach.inset
             let wasAtTop = scroll.contentView.bounds.minY <= -scroll.contentInsets.top + 0.5
