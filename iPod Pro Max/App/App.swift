@@ -19,28 +19,24 @@ import MediaKit
     private let nativeSplitProbe = ProcessInfo.processInfo.environment["IPPM_LEGACY_SPLIT"] == nil
 #endif
 
-@MainActor
-private final class LibraryOperations: SwiftCrossUI.ObservableObject {
-    let gate = PortableLibraryGate()
-    let writer = PortableLibraryWriter()
-}
-
 private final class AppearanceObserverToken {}
 
 struct ContentView: View {
     @Environment(\.chooseFile) private var chooseFile
     @Environment(\.openWindow) private var openWindow
     @Environment(\.presentAlert) private var presentAlert
-    @State var portableLibrary: LoadedPortableLibrary?
+    /// The library and its edits (see `LibrarySession`); the view only reads and forwards.
+    @State var session = LibrarySession()
+    var portableLibrary: LoadedPortableLibrary? { session.loaded }
+    var library: Library? {
+        get { session.library }
+        nonmutating set { session.library = newValue }
+    }
+    var playlistSaving: Bool { session.saving }
     @State var busyDevices: Set<String> = []
     @State var transferStatus = ""
     @State var scanning = false
-    @State var playlistSaving = false
-    @State private var pendingLibraryWrites = 0
-    @State private var pendingLibrarySave: LoadedPortableLibrary?
-    @State private var libraryOperations = LibraryOperations()
     @State var selectedSongIDs: [String] = []
-    @State var playlistWrite: Task<Void, Never>?
     @State var settingsLoaded = false
     @State var didBenchDevices = false
     @State var contentRevision = 0
@@ -51,7 +47,6 @@ struct ContentView: View {
     @State var selectedShowID: Foundation.UUID?
     @State var addingPodcast = false
     @State var podcastRows = PodcastRowsCache()
-    @State var library: Library?
     @State var ipods: [IPodDevice] = []
     /// The iPods' names, for the sidebar.
     @State var devices: [String] = []
@@ -278,6 +273,14 @@ struct ContentView: View {
             #endif
             await TemporaryCacheController.shared.startup()
             ApplicationLifecycle.shared.onError = { transferStatus = $0 }
+            session.onError = { transferStatus = $0 }
+            session.onReindexed = {
+                applyArtistPhotos()
+                ShareController.shared.update(tracks: portableLibrary?.cache.tracks ?? [], connectedDevice: ipods.first)
+                #if canImport(AppKitBackend)
+                configureMetadataEditor()
+                #endif
+            }
             ApplicationLifecycle.shared.savePreferences = { try await flushPreferences() }
             ApplicationLifecycle.shared.beforeExit = {
                 MusicTransfer.shared.acceptingDrops = false
@@ -422,7 +425,7 @@ struct ContentView: View {
                     Button("Create") {
                         let name = playlistEditorName.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !name.isEmpty {
-                            updatePlaylists { $0.append(LibraryPlaylist(name: name)) }
+                            session.createPlaylist(base: name, uniqueName: false)
                             playlistEditorVisible = false
                         }
                     }
@@ -590,11 +593,7 @@ struct ContentView: View {
     }
 
     private func flushPreferences() async throws {
-        await playlistWrite?.value
-        await libraryOperations.gate.acquire()
-        do { try await retryLibrarySaveLocked() }
-        catch { await libraryOperations.gate.release(); throw error }
-        await libraryOperations.gate.release()
+        try await session.flush()
         if settingsLoaded, let store = portableLibrary?.store, let mode {
             PortablePreferences.shared.stageMusicMode(mode.rawValue, store: store)
             if let tab = navigationSelection.wrappedValue.persistentName, let section = navigationSelection.wrappedValue.media?.persistentName {
@@ -759,8 +758,7 @@ struct ContentView: View {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let playlist = LibraryPlaylist(name: name)
-        updatePlaylists { $0.append(playlist) }
+        session.createPlaylist(base: name, uniqueName: false)
     }
 
     private func createVideoPlaylist() {
@@ -775,40 +773,17 @@ struct ContentView: View {
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        updateVideoPlaylists { $0.append(LibraryPlaylist(name: name)) }
+        session.createVideoPlaylist(named: field.stringValue)
     }
 
     #endif
 
     private func addTracksToPlaylist(_ ids: [String], _ playlistID: String) {
-        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
-            SubscriptionController.shared.addLibraryTracks(ids, toPlaylistID: playlistID)
-            return
-        }
-        guard let id = UUID(uuidString: playlistID) else { return }
-        let trackIDs = ids.compactMap(UUID.init(uuidString:))
-        updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }),
-                  playlists[index].subscriptionID == nil else { return }
-            var existing = Set(playlists[index].trackIDs)
-            for track in trackIDs where existing.insert(track).inserted { playlists[index].trackIDs.append(track) }
-        }
+        session.addTracks(ids, toPlaylist: playlistID)
     }
 
     private func removeTracksFromPlaylist(_ ids: [String], _ playlistID: String) {
-        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
-            SubscriptionController.shared.removeTracks(ids, fromPlaylistID: playlistID)
-            return
-        }
-        guard let id = UUID(uuidString: playlistID) else { return }
-        let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
-        updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }),
-                  playlists[index].subscriptionID == nil else { return }
-            playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
-        }
+        session.removeTracks(ids, fromPlaylist: playlistID)
     }
 
     private func pickCoverImage(forPlaylistID id: String) {
@@ -830,117 +805,28 @@ struct ContentView: View {
     }
 
     private func createNewPlaylist(isFolder: Bool) {
-        let base = isFolder ? "New Folder" : "New Playlist"
-        let existing = Set((library?.playlists ?? []).map(\.name))
-        var name = base
-        var n = 2
-        while existing.contains(name) {
-            name = "\(base) \(n)"
-            n += 1
-        }
-        let created = LibraryPlaylist(name: name, isFolder: isFolder)
-        library?.playlists.append(Playlist(id: created.id.uuidString, name: created.name, trackIDs: [], isFolder: created.isFolder, parentID: nil))
-        updatePlaylists { $0.append(created) }
-        selection = .playlist(created.id.uuidString)
-        editingPlaylistID = created.id.uuidString
+        let id = session.createPlaylist(base: isFolder ? "New Folder" : "New Playlist", isFolder: isFolder)
+        selection = .playlist(id)
+        editingPlaylistID = id
     }
 
     private func renamePlaylist(_ id: String, to name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let uuid = UUID(uuidString: id) else { return }
-        if let idx = library?.playlists.firstIndex(where: { $0.id == id }) {
-            library?.playlists[idx].name = trimmed
-        }
-        if SubscriptionController.shared.subscription(forPlaylistID: id) != nil {
-            SubscriptionController.shared.renamePlaylist(playlistID: id, to: trimmed)
-            return
-        }
-        updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == uuid }),
-                  playlists[index].subscriptionID == nil else { return }
-            playlists[index].name = trimmed
-        }
+        session.renamePlaylist(id, to: name)
     }
 
     private func sendPlaylist(_ id: String, toDevice device: String) {
-        guard let playlists = library?.playlists,
-              let target = playlists.first(where: { $0.id == id }) else { return }
-        let trackIDs: [String]
-        if target.isFolder {
-            trackIDs = playlists.filter { $0.parentID == id }.flatMap(\.trackIDs)
-        } else {
-            trackIDs = target.trackIDs
-        }
+        let trackIDs = session.trackIDs(forPlaylist: id)
         guard !trackIDs.isEmpty else { return }
         _ = MusicTransfer.shared.onDrop(trackIDs, device)
     }
 
     private func movePlaylist(_ id: String, toFolder folderID: String?, atIndex insertIndex: Int? = nil) {
-        guard let uuid = UUID(uuidString: id) else { return }
-        let targetParent = folderID.flatMap(UUID.init(uuidString:))
-        guard targetParent != uuid else { return }
-        if var list = library?.playlists,
-           let oldIdx = list.firstIndex(where: { $0.id == id }),
-           !list[oldIdx].isFolder {
-            var item = list.remove(at: oldIdx)
-            item.parentID = folderID
-            if let insertIndex {
-                let siblingIndices = list.indices.filter { list[$0].parentID == folderID }
-                let dest: Int
-                if insertIndex <= 0 {
-                    dest = siblingIndices.first ?? list.endIndex
-                } else if insertIndex >= siblingIndices.count {
-                    dest = siblingIndices.last.map { $0 + 1 } ?? list.endIndex
-                } else {
-                    dest = siblingIndices[insertIndex]
-                }
-                list.insert(item, at: dest)
-            } else {
-                list.insert(item, at: min(oldIdx, list.endIndex))
-            }
-            library?.playlists = list
-        }
-        updatePlaylists { playlists in
-            guard let oldIdx = playlists.firstIndex(where: { $0.id == uuid }), !playlists[oldIdx].isFolder else { return }
-            var item = playlists.remove(at: oldIdx)
-            item.parentID = targetParent
-            if let insertIndex {
-                let siblingIndices = playlists.indices.filter { playlists[$0].parentID == targetParent }
-                let dest: Int
-                if insertIndex <= 0 {
-                    dest = siblingIndices.first ?? playlists.endIndex
-                } else if insertIndex >= siblingIndices.count {
-                    dest = siblingIndices.last.map { $0 + 1 } ?? playlists.endIndex
-                } else {
-                    dest = siblingIndices[insertIndex]
-                }
-                playlists.insert(item, at: dest)
-            } else {
-                playlists.insert(item, at: min(oldIdx, playlists.endIndex))
-            }
-        }
+        session.movePlaylist(id, toFolder: folderID, atIndex: insertIndex)
     }
 
     private func reorderPlaylistTracks(_ ids: [String], to targetRow: Int) {
-        guard let playlistID = selectedPlaylistID, let uuid = UUID(uuidString: playlistID) else { return }
-        if SubscriptionController.shared.subscription(forPlaylistID: playlistID) != nil {
-            SubscriptionController.shared.reorderTracks(playlistID: playlistID, movedIDs: ids, toTargetRow: targetRow)
-            return
-        }
-        let moving = ids.compactMap(UUID.init(uuidString:))
-        guard !moving.isEmpty else { return }
-        let movingSet = Set(moving)
-        updatePlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == uuid }) else { return }
-            var current = playlists[index].trackIDs
-            let clamped = max(0, min(current.count, targetRow))
-            let beforeCount = current[..<clamped].filter { movingSet.contains($0) }.count
-            let orderedMoving = current.filter { movingSet.contains($0) }
-            current.removeAll { movingSet.contains($0) }
-            let insertAt = max(0, min(current.count, clamped - beforeCount))
-            current.insert(contentsOf: orderedMoving, at: insertAt)
-            playlists[index].trackIDs = current
-        }
+        guard let playlistID = selectedPlaylistID else { return }
+        session.reorderTracks(ids, to: targetRow, inPlaylist: playlistID)
     }
 
     private var selectedPlaylistID: String? {
@@ -949,22 +835,11 @@ struct ContentView: View {
     }
 
     private func addVideosToPlaylist(_ ids: [String], _ playlistID: String) {
-        guard let id = UUID(uuidString: playlistID) else { return }
-        let trackIDs = ids.compactMap(UUID.init(uuidString:))
-        updateVideoPlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
-            var existing = Set(playlists[index].trackIDs)
-            for track in trackIDs where existing.insert(track).inserted { playlists[index].trackIDs.append(track) }
-        }
+        session.addVideos(ids, toPlaylist: playlistID)
     }
 
     private func removeVideosFromPlaylist(_ ids: [String], _ playlistID: String) {
-        guard let id = UUID(uuidString: playlistID) else { return }
-        let trackIDs = Set(ids.compactMap(UUID.init(uuidString:)))
-        updateVideoPlaylists { playlists in
-            guard let index = playlists.firstIndex(where: { $0.id == id }) else { return }
-            playlists[index].trackIDs.removeAll { trackIDs.contains($0) }
-        }
+        session.removeVideos(ids, fromPlaylist: playlistID)
     }
 
     private var selectedVideoPlaylistID: String? {
@@ -1028,7 +903,7 @@ struct ContentView: View {
     }
 
     private func deletePlaylist(_ id: String) {
-        guard let playlist = library?.playlists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        guard let playlist = library?.playlists.first(where: { $0.id == id }) else { return }
         if playlist.subscriptionID != nil {
             unsubscribePlaylist(id)
             return
@@ -1037,50 +912,30 @@ struct ContentView: View {
         alert.informativeText = "Delete “\(playlist.name)”? Your music files won't be deleted."
         alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        updatePlaylists { $0.removeAll { $0.id == uuid } }
+        session.deletePlaylist(id)
         navigationSelection.wrappedValue = .music
     }
 
     private func renameVideoPlaylist(_ id: String) {
-        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }) else { return }
         let alert = NSAlert(); alert.messageText = "Rename Video Playlist"
         let field = NSTextField(string: playlist.name); field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = field; alert.addButton(withTitle: "Rename"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        updateVideoPlaylists { playlists in
-            if let index = playlists.firstIndex(where: { $0.id == uuid }) { playlists[index].name = name }
-        }
+        session.renameVideoPlaylist(id, to: field.stringValue)
     }
 
     private func deleteVideoPlaylist(_ id: String) {
-        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }), let uuid = UUID(uuidString: id) else { return }
+        guard let playlist = library?.videoPlaylists.first(where: { $0.id == id }) else { return }
         let alert = NSAlert(); alert.messageText = "Delete Video Playlist?"
         alert.informativeText = "Delete “\(playlist.name)”? Your video files won't be deleted."
         alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        updateVideoPlaylists { $0.removeAll { $0.id == uuid } }
+        session.deleteVideoPlaylist(id)
         navigationSelection.wrappedValue = .videos
     }
 
     #endif
-
-    /// All cache writes and scans share one gate. A failed write remains staged for exit/eject.
-    private func retryLibrarySaveLocked() async throws {
-        try await libraryOperations.writer.flush()
-        guard let saved = pendingLibrarySave else { return }
-        let indexed = await Task.detached(priority: .utility) {
-            Library.portable(saved.cache, source: saved.store.hostFolder.url.path, artworkFolder: saved.store.artwork)
-        }.value
-        portableLibrary = saved; library = indexed
-        pendingLibrarySave = nil
-        applyArtistPhotos()
-        ShareController.shared.update(tracks: saved.cache.tracks, connectedDevice: ipods.first)
-        #if canImport(AppKitBackend)
-        configureMetadataEditor()
-        #endif
-    }
 
     #if canImport(AppKitBackend)
     private func configureMetadataEditor() {
@@ -1113,7 +968,7 @@ struct ContentView: View {
                     }
                 }.value
 
-                enqueueLibraryWriteWithStore("metadata", completion: completion) { cache, artworkFolder in
+                session.write("metadata", completion: completion) { cache, artworkFolder in
                     let savedArtworkKey = customArtworkData.flatMap {
                         MetadataArtworkSaver.saveCustomArtwork($0, into: artworkFolder)
                     }
@@ -1134,84 +989,17 @@ struct ContentView: View {
     }
     #endif
 
-    private func enqueueLibraryWrite(_ label: String, edit: @escaping @Sendable (inout PortableLibraryCache) -> Void) {
-        enqueueLibraryWriteWithStore(label, completion: nil) { cache, _ in edit(&cache) }
-    }
-
-    private func enqueueLibraryWriteWithStore(
-        _ label: String,
-        completion: (@MainActor (Result<Void, Error>) -> Void)?,
-        edit: @escaping @Sendable (inout PortableLibraryCache, URL) -> Void
-    ) {
-        let previous = playlistWrite
-        pendingLibraryWrites += 1
-        playlistSaving = true
-        playlistWrite = Task {
-            await previous?.value
-            await libraryOperations.gate.acquire()
-            var result: Result<Void, Error> = .success(())
-            do {
-                try await retryLibrarySaveLocked()
-                guard let loaded = portableLibrary else { throw PortableLoading.LoadingError.noRoot }
-                let saved = await Task.detached(priority: .utility) {
-                    var value = loaded
-                    edit(&value.cache, loaded.store.artwork)
-                    value.cache.reconcileFavoriteReferences()
-                    return value
-                }.value
-                pendingLibrarySave = saved
-                try await libraryOperations.writer.save(saved.cache, to: saved.store)
-                try await retryLibrarySaveLocked()
-                if label == "favorites" { ListAppearance.shared.endFavoriteWrite(saved: true) }
-            } catch {
-                if label == "favorites" { ListAppearance.shared.endFavoriteWrite(saved: false) }
-                transferStatus = "Couldn't save \(label): \(error.localizedDescription)"
-                result = .failure(error)
-            }
-            pendingLibraryWrites -= 1
-            playlistSaving = pendingLibraryWrites > 0
-            await libraryOperations.gate.release()
-            completion?(result)
-        }
-    }
-
-    private func updatePlaylists(_ change: @escaping @Sendable (inout [LibraryPlaylist]) -> Void) {
-        enqueueLibraryWrite("playlist") { change(&$0.playlists) }
-    }
-
     private func reorderSidebarSection(_ section: String, items: [SidebarItem]) {
         if section == "Playlists" {
-            let orderedIDs = items.compactMap { item -> Foundation.UUID? in
-                if case .playlist(let id) = item { return Foundation.UUID(uuidString: id) }
+            session.reorderPlaylists(items.compactMap { item -> String? in
+                if case .playlist(let id) = item { return id }
                 return nil
-            }
-            updatePlaylists { playlists in
-                var byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
-                var reordered: [LibraryPlaylist] = []
-                for id in orderedIDs {
-                    if let playlist = byID.removeValue(forKey: id) { reordered.append(playlist) }
-                }
-                for playlist in playlists where byID[playlist.id] != nil {
-                    reordered.append(playlist)
-                }
-                playlists = reordered
-            }
+            })
         } else if section == "Video Playlists" {
-            let orderedIDs = items.compactMap { item -> Foundation.UUID? in
-                if case .videoPlaylist(let id) = item { return Foundation.UUID(uuidString: id) }
+            session.reorderVideoPlaylists(items.compactMap { item -> String? in
+                if case .videoPlaylist(let id) = item { return id }
                 return nil
-            }
-            updateVideoPlaylists { playlists in
-                var byID = Dictionary(uniqueKeysWithValues: playlists.map { ($0.id, $0) })
-                var reordered: [LibraryPlaylist] = []
-                for id in orderedIDs {
-                    if let playlist = byID.removeValue(forKey: id) { reordered.append(playlist) }
-                }
-                for playlist in playlists where byID[playlist.id] != nil {
-                    reordered.append(playlist)
-                }
-                playlists = reordered
-            }
+            })
         } else {
             sidebarOrder[section] = items.compactMap(\.persistentName)
             if let store = portableLibrary?.store {
@@ -1246,33 +1034,9 @@ struct ContentView: View {
     /// The icon changes at once (`ListAppearance`); the library is saved and reindexed behind it.
     /// The selection is left as it is.
     private func setFavorite(_ favorite: Bool, ids: [String]? = nil) {
-        let ids = ids ?? selectedSongIDs
-        guard !ids.isEmpty else { return }
-        let selected = Set(ids)
-        ListAppearance.shared.beginFavoriteWrite(ids, favorite: favorite)
-        enqueueLibraryWrite("favorites") { cache in
-            var pathsByID: [Foundation.UUID: String] = [:]
-            for index in cache.tracks.indices where selected.contains(cache.tracks[index].id.uuidString) && cache.tracks[index].mediaKind == .song {
-                cache.tracks[index].isFavorite = favorite
-                pathsByID[cache.tracks[index].id] = cache.tracks[index].path
-            }
-            if favorite {
-                var refs = cache.favoriteReferences ?? []
-                var existing = Set(refs.map(\.id))
-                for idString in ids {
-                    guard let uuid = Foundation.UUID(uuidString: idString),
-                          let path = pathsByID[uuid],
-                          existing.insert(uuid).inserted else { continue }
-                    refs.append(PortableFavoriteReference(id: uuid, path: path))
-                }
-                cache.favoriteReferences = refs
-            }
-        }
+        session.setFavorite(favorite, ids: ids ?? selectedSongIDs)
     }
 
-    private func updateVideoPlaylists(_ change: @escaping @Sendable (inout [LibraryPlaylist]) -> Void) {
-        enqueueLibraryWrite("video playlist") { change(&$0.videoPlaylists) }
-    }
 
     private func configureMusic() async {
         guard !scanning else { return }
@@ -1304,23 +1068,18 @@ struct ContentView: View {
     @discardableResult private func addSource(kind: String, folder: URL) async -> Bool {
         guard let kind = SourceKind(rawValue: kind) else { return false }
         var success = false
-        await libraryOperations.gate.acquire()
-        do {
-            try await retryLibrarySaveLocked()
+        do { try await session.exclusive {
             guard let store = portableLibrary?.store else { throw PortableLoading.LoadingError.noRoot }
             try await Task.detached(priority: .utility) { _ = try store.addSource(kind: kind, path: folder.path) }.value
             try await refreshAfterSourceChange(kind, store: store)
             success = true
-        } catch { transferStatus = "Couldn't add folder: \(error.localizedDescription)" }
-        await libraryOperations.gate.release()
+        } } catch { transferStatus = "Couldn't add folder: \(error.localizedDescription)" }
         return success
     }
 
     @discardableResult private func removeSource(id: Foundation.UUID) async -> Bool {
         var success = false
-        await libraryOperations.gate.acquire()
-        do {
-            try await retryLibrarySaveLocked()
+        do { try await session.exclusive {
             guard let store = portableLibrary?.store else { throw PortableLoading.LoadingError.noRoot }
             let source = try await Task.detached(priority: .utility) { () throws -> KnownSource? in
                 let source = try store.data.readChecked(KnownHosts.self, from: "known_hosts.json")?.hosts.first { $0.id == store.hostID }?.sources.first { $0.id == id }
@@ -1329,8 +1088,7 @@ struct ContentView: View {
                 return source
             }.value
             if let source { try await refreshAfterSourceChange(source.kind, store: store, removedPath: source.path); success = true }
-        } catch { transferStatus = "Couldn't remove folder: \(error.localizedDescription)" }
-        await libraryOperations.gate.release()
+        } } catch { transferStatus = "Couldn't remove folder: \(error.localizedDescription)" }
         return success
     }
 
@@ -1352,12 +1110,9 @@ struct ContentView: View {
     }
 
     private func loadPortable(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool, removedKind: SourceKind? = nil) async {
-        await libraryOperations.gate.acquire()
-        do {
-            try await retryLibrarySaveLocked()
+        do { try await session.exclusive {
             try await loadPortableLocked(folder: folder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind)
-        } catch { transferStatus = "Couldn't load library: \(error.localizedDescription)" }
-        await libraryOperations.gate.release()
+        } } catch { transferStatus = "Couldn't load library: \(error.localizedDescription)" }
     }
 
     private func loadPortableLocked(folder: URL? = nil, audiobooksFolder: URL? = nil, refresh: Bool, removedKind: SourceKind? = nil, removedSourcePath: String? = nil) async throws {
@@ -1370,7 +1125,7 @@ struct ContentView: View {
             }
             let loaded = try await PortableLoading.load(folder: configuredFolder, audiobooksFolder: audiobooksFolder, refresh: refresh, removedKind: removedKind, removedSourcePath: removedSourcePath)
             let indexed = await Task.detached(priority: .userInitiated) { Library.portable(loaded.cache, source: loaded.store.hostFolder.url.path, artworkFolder: loaded.store.artwork) }.value
-            portableLibrary = loaded; library = indexed
+            session.install(loaded, indexed: indexed)
             SettingsController.shared.attach(loaded.store)
             #if canImport(AppKitBackend)
             configureMetadataEditor()
@@ -1398,7 +1153,7 @@ struct ContentView: View {
                     tracksProvider: { [self] in portableLibrary?.cache.tracks ?? [] },
                     playlistsProvider: { [self] in portableLibrary?.cache.playlists ?? [] },
                     libraryMutator: { [self] mutation in
-                        enqueueLibraryWrite("subscription", edit: mutation)
+                        session.write("subscription", apply: mutation)
                     },
                     onSelectPlaylist: { [self] pid in
                         navigationSelection.wrappedValue = .playlist(pid)
@@ -1465,7 +1220,7 @@ struct ContentView: View {
     private var sidebarColumn: some View {
         VStack(spacing: 0) {
             #if canImport(AppKitBackend)
-            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, sidebarOrder: sidebarOrder, editingPlaylistID: editingPlaylistID, subscriptionRevision: subscriptionRevision, onEject: eject,
+            Sidebar(devices: $devices, library: Binding(get: { session.library }, set: { session.library = $0 }), selection: navigationSelection, busyDevices: $busyDevices, sidebarOrder: sidebarOrder, editingPlaylistID: editingPlaylistID, subscriptionRevision: subscriptionRevision, onEject: eject,
                 onAdd: { media in
                     switch media {
                     case .music: Task { await configureMusic() }
@@ -1495,7 +1250,7 @@ struct ContentView: View {
                 onSendPlaylistToDevice: { id, device in sendPlaylist(id, toDevice: device) },
                 onClearEditing: { editingPlaylistID = nil })
             #else
-            Sidebar(devices: $devices, library: $library, selection: navigationSelection, busyDevices: $busyDevices, onEject: eject,
+            Sidebar(devices: $devices, library: Binding(get: { session.library }, set: { session.library = $0 }), selection: navigationSelection, busyDevices: $busyDevices, onEject: eject,
                 onAdd: { media in
                     switch media {
                     case .music: Task { await configureMusic() }

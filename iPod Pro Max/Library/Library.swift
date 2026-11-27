@@ -32,6 +32,10 @@ struct Playlist: Decodable, Identifiable, Equatable {
     var subscriptionID: String? = nil
 }
 
+extension Playlist: PlaylistTreeNode {
+    var isSubscribed: Bool { subscriptionID != nil }
+}
+
 private struct LibraryFavoriteRef: Decodable {
     var id: String
 }
@@ -241,6 +245,30 @@ struct Library {
             }
         }
         library.trackIDs = Set(library.allRows.map(\.id))
+        return library
+    }
+
+    /// After an edit that only touched playlists: rebuilds the playlist lists and their rows from the
+    /// rows already indexed, without re-sorting the tracks or checking artwork on disk. O(tracks).
+    func reindexingPlaylists(from cache: PortableLibraryCache) -> Library {
+        var library = self
+        library.playlists = cache.playlists.map {
+            Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString),
+                     isFolder: $0.isFolder, parentID: $0.parentID?.uuidString, subscriptionID: $0.subscriptionID?.uuidString)
+        }
+        library.videoPlaylists = cache.videoPlaylists.map { Playlist(id: $0.id.uuidString, name: $0.name, trackIDs: $0.trackIDs.map(\.uuidString)) }
+        func numbered(_ playlists: [Playlist], _ rows: [TrackRow]) -> [String: [TrackRow]] {
+            let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return Dictionary(playlists.map { playlist in
+                (playlist.id, playlist.trackIDs.compactMap { byID[$0] }.enumerated().map { index, row in
+                    var copy = row
+                    copy.number = "\(index + 1)"
+                    return copy
+                })
+            }, uniquingKeysWith: { first, _ in first })
+        }
+        library.rowsByPlaylist = numbered(library.playlists, allRows)
+        library.rowsByVideoPlaylist = numbered(library.videoPlaylists, videoRows)
         return library
     }
 
