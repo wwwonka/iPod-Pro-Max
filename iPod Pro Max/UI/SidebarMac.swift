@@ -2,6 +2,7 @@
     import AppKit
     import AppKitBackend
     import MediaKit
+    import iPodKit
     import SwiftCrossUI
 
     /// On macOS the sidebar is a real source-list NSOutlineView, like the one SwiftUI's
@@ -73,6 +74,7 @@
             outline.registerForDraggedTypes([.string])
 
             let scroll = PinnedScrollView()
+            BackdropBlurView.register(scroll)
             scroll.documentView = outline
             scroll.drawsBackground = false
             // Nothing opaque or light between the list and the dark glass behind it.
@@ -198,7 +200,9 @@
         final class SlidingContainer: NSView {
             override init(frame: NSRect) {
                 super.init(frame: frame)
-                clipsToBounds = true
+                // Clip horizontally while letting rows travel into the toolbar above us.
+                clipsToBounds = false
+                wantsLayer = true
                 // The dark glass behind makes the list dark in either appearance.
                 appearance = NSAppearance(named: .darkAqua)
             }
@@ -225,9 +229,14 @@
             }
 
             override func resizeSubviews(withOldSize oldSize: NSSize) {
+                defer { BackdropBlurView.refreshToolbarMask() }
                 let width = max(bounds.width, MacChrome.shared.pinnedSidebarContentWidth ?? 0)
                 guard let scroll = subviews.first else { return }
                 let reach = toolbarReach(of: self)
+                let mask = (layer?.mask as? CAShapeLayer) ?? CAShapeLayer()
+                mask.path = CGPath(rect: CGRect(x: 0, y: isFlipped ? -reach.extend : 0,
+                                               width: bounds.width, height: bounds.height + reach.extend), transform: nil)
+                layer?.mask = mask
                 let target = NSRect(x: 0, y: isFlipped ? -reach.extend : 0, width: width, height: bounds.height + reach.extend)
                 if let list = scroll as? NSScrollView, list.contentInsets.top != reach.inset {
                     let atTop = list.contentView.bounds.minY <= -list.contentInsets.top + 0.5
@@ -1213,36 +1222,22 @@
             contextTargetID = id
             contextTargetRow = clickedRow
             let menu = NSMenu()
-            if node.subscriptionID != nil {
-                if node.isSyncing {
-                    let stop = NSMenuItem(title: "Stop", action: #selector(contextStopSubscription), keyEquivalent: "")
-                    stop.target = self
-                    menu.addItem(stop)
-                } else {
-                    let refresh = NSMenuItem(title: "Refresh", action: #selector(contextRefreshSubscription), keyEquivalent: "")
-                    refresh.target = self
-                    menu.addItem(refresh)
+            let sourceName = node.subscriptionID == nil ? nil : SubscriptionController.shared.subscription(forPlaylistID: id)?.sourceName
+            for action in SidebarRules.actions(subscribed: node.subscriptionID != nil, syncing: node.isSyncing, sourceName: sourceName) {
+                guard let action else { menu.addItem(.separator()); continue }
+                let selector: Selector
+                switch action {
+                case .stop: selector = #selector(contextStopSubscription)
+                case .refresh: selector = #selector(contextRefreshSubscription)
+                case .openSource: selector = #selector(contextOpenSubscriptionURL)
+                case .rename: selector = #selector(contextRenamePlaylist)
+                case .delete: selector = #selector(contextDeletePlaylist)
+                case .unsubscribe: selector = #selector(contextUnsubscribePlaylist)
                 }
-                if let sub = SubscriptionController.shared.subscription(forPlaylistID: id) {
-                    let open = NSMenuItem(title: "Open in \(sub.sourceName)", action: #selector(contextOpenSubscriptionURL), keyEquivalent: "")
-                    open.target = self
-                    menu.addItem(open)
-                }
-                let rename = NSMenuItem(title: "Rename", action: #selector(contextRenamePlaylist), keyEquivalent: "")
-                rename.target = self
-                menu.addItem(rename)
-                menu.addItem(.separator())
-                let unsub = NSMenuItem(title: "Unsubscribe…", action: #selector(contextUnsubscribePlaylist), keyEquivalent: "")
-                unsub.target = self
-                menu.addItem(unsub)
-                return menu
+                let menuItem = NSMenuItem(title: action.title, action: selector, keyEquivalent: "")
+                menuItem.target = self
+                menu.addItem(menuItem)
             }
-            let rename = NSMenuItem(title: "Rename", action: #selector(contextRenamePlaylist), keyEquivalent: "")
-            rename.target = self
-            let delete = NSMenuItem(title: "Delete", action: #selector(contextDeletePlaylist), keyEquivalent: "")
-            delete.target = self
-            menu.addItem(rename)
-            menu.addItem(delete)
             return menu
         }
 
@@ -1304,10 +1299,10 @@
                 return
             }
 
-            let canDrag = groupNode.children.count > 1 || groupNode.isFolder || {
+            let canDrag = SidebarRules.canDrag(siblingCount: groupNode.children.count, inFolder: groupNode.isFolder, isPlaylist: {
                 if case .playlist = node.item { return true }
                 return false
-            }()
+            }())
             window.makeFirstResponder(self)
 
             let wasAlreadySelected = (clickedRow == selectedRow)
@@ -1509,9 +1504,7 @@
                         MediaRailDropBridge.shared.setHighlighted(false)
                     }
 
-                    let dx = abs(pointer.x - startPoint.x)
-                    let dy = abs(pointer.y - startPoint.y)
-                    let horizontalIntent = dx > 28 && dx > dy * 1.5
+                    let horizontalIntent = SidebarRules.isHorizontalIntent(dx: pointer.x - startPoint.x, dy: pointer.y - startPoint.y)
                     let insideX = !horizontalIntent && pointer.x >= bounds.minX && pointer.x <= bounds.maxX
 
                     var newFolderID: String?
@@ -1529,24 +1522,16 @@
                                       folderParent.isFolder,
                                       folderParent !== groupNode,
                                       case .playlist(let fID) = folderParent.item {
-                                var boundaries: [(index: Int, y: CGFloat)] = []
+                                let childRows = folderParent.children.map { row(forItem: $0) }.filter { $0 >= 0 }
                                 var childCircleX: CGFloat = 10 + indentationPerLevel
-                                for (idx, sub) in folderParent.children.enumerated() {
-                                    let sr = row(forItem: sub)
-                                    if sr >= 0 {
-                                        let rc = rect(ofRow: sr)
-                                        if boundaries.isEmpty {
-                                            boundaries.append((0, rc.minY))
-                                            if let childCell = view(atColumn: 0, row: sr, makeIfNecessary: false) as? Sidebar.SidebarCell,
-                                               let iv = childCell.imageView {
-                                                childCircleX = convert(iv.bounds, from: iv).minX - 2
-                                            }
-                                        }
-                                        boundaries.append((idx + 1, rc.maxY))
-                                    }
+                                if let firstRow = childRows.first,
+                                   let childCell = view(atColumn: 0, row: firstRow, makeIfNecessary: false) as? Sidebar.SidebarCell,
+                                   let iv = childCell.imageView {
+                                    childCircleX = convert(iv.bounds, from: iv).minX - 2
                                 }
-                                if let best = boundaries.min(by: { abs($0.y - pointer.y) < abs($1.y - pointer.y) }) {
-                                    newFolderInsert = (fID, best.index, best.y, childCircleX)
+                                let spans = childRows.map { r -> (minY: Double, maxY: Double) in let rc = rect(ofRow: r); return (Double(rc.minY), Double(rc.maxY)) }
+                                if let best = SidebarRules.nearestInsertion(spans: spans, to: pointer.y) {
+                                    newFolderInsert = (fID, best.index, CGFloat(best.y), childCircleX)
                                 }
                             }
                         }
@@ -1588,25 +1573,13 @@
                     }
                     targetFolderInsert = nil
 
-                    let insideGroupY = !groupNode.isFolder
-                        ? pointer.y >= groupTop - rowH * 0.5
-                        : (pointer.y >= groupTop - rowH * 0.5 && pointer.y <= groupBottom + rowH * 0.5)
+                    let insideGroupY = SidebarRules.isInsideGroup(pointerY: pointer.y, top: groupTop, bottom: groupBottom, rowHeight: rowH, groupIsFolder: groupNode.isFolder)
                     if insideX && insideGroupY {
                         isValidTarget = true
                         moveToTopLevelIndex = nil
                         insertionLine.isHidden = true
                         let midY = pointer.y - grabOffsetY + rowH * 0.5
-                        var slotMids: [CGFloat] = []
-                        slotMids.reserveCapacity(slots.count)
-                        var sy = groupTop
-                        for originalIndex in slots {
-                            let h = blockHeights[originalIndex]
-                            slotMids.append(sy + h * 0.5)
-                            sy += h
-                        }
-                        let targetIndex = slots.indices.min {
-                            abs(midY - slotMids[$0]) < abs(midY - slotMids[$1])
-                        } ?? currentIndex
+                        let targetIndex = SidebarRules.nearestSlot(midY: midY, heights: slots.map { Double(blockHeights[$0]) }, top: groupTop) ?? currentIndex
                         let targetIsFolder = draggedPlaylistID != nil && groupNode.children[slots[targetIndex]].isFolder
                         if targetIndex != currentIndex, !targetIsFolder {
                             let moved = slots.remove(at: currentIndex)
@@ -1622,24 +1595,21 @@
                             let sectionMinY = sectionRow >= 0 ? rect(ofRow: sectionRow).minY : 0
                             if pointer.y >= sectionMinY {
                                 let topNodes = playlistsSection.children
-                                var boundaries: [(index: Int, y: CGFloat)] = []
-                                for (idx, child) in topNodes.enumerated() {
+                                let spans = topNodes.compactMap { child -> (minY: Double, maxY: Double)? in
                                     let r = row(forItem: child)
-                                    if r >= 0 {
-                                        let rc = rect(ofRow: r)
-                                        if boundaries.isEmpty { boundaries.append((0, rc.minY)) }
-                                        var maxY = rc.maxY
-                                        if child.isFolder {
-                                            for sub in child.children {
-                                                let sr = row(forItem: sub)
-                                                if sr >= 0 { maxY = max(maxY, rect(ofRow: sr).maxY) }
-                                            }
+                                    guard r >= 0 else { return nil }
+                                    let rc = rect(ofRow: r)
+                                    var maxY = rc.maxY
+                                    if child.isFolder {
+                                        for sub in child.children {
+                                            let sr = row(forItem: sub)
+                                            if sr >= 0 { maxY = max(maxY, rect(ofRow: sr).maxY) }
                                         }
-                                        boundaries.append((idx + 1, maxY))
                                     }
+                                    return (Double(rc.minY), Double(maxY))
                                 }
-                                let best = boundaries.min(by: { abs($0.y - pointer.y) < abs($1.y - pointer.y) })
-                                let insertY = best?.y ?? groupBottom
+                                let best = SidebarRules.nearestInsertion(spans: spans, to: pointer.y)
+                                let insertY = best.map { CGFloat($0.y) } ?? groupBottom
                                 moveToTopLevelIndex = best?.index ?? topNodes.count
                                 insertionLine.circleX = 10
                                 insertionLine.frame = NSRect(x: 0, y: insertY - 4, width: bounds.width, height: 8)
@@ -1684,8 +1654,15 @@
                 }
             }
 
-            let finalIndex = (!cancelled && isValidTarget) ? currentIndex : startIndex
-            let didFolderMove = !cancelled && draggedPlaylistID != nil && (hoveredFolderID != nil || targetFolderInsert != nil || moveToTopLevelIndex != nil)
+            var dragState = SidebarRules.DragState()
+            dragState.cancelled = cancelled
+            dragState.deviceID = hoveredDeviceID
+            dragState.folderID = hoveredFolderID
+            dragState.folderInsert = targetFolderInsert
+            dragState.topLevelIndex = moveToTopLevelIndex
+            if isValidTarget { dragState.reorder = (startIndex, currentIndex) }
+            let drop = SidebarRules.drop(dragState, playlistID: draggedPlaylistID ?? draggedAnyPlaylistID, movable: draggedPlaylistID != nil)
+            let didFolderMove: Bool = { if case .moveToFolder = drop { return true }; return false }()
             floating.removeFromSuperview()
             draggedCell?.forceBlackIcon = false
             neutralRow?.suppressSelection = false
@@ -1693,20 +1670,17 @@
                 draggedRowView.alphaValue = 1
             }
             coordinator?.isReordering = false
-            if let draggedAnyPlaylistID, let hoveredDeviceID, !cancelled {
-                coordinator?.onSendPlaylistToDevice(draggedAnyPlaylistID, hoveredDeviceID)
-            } else if !cancelled, let draggedPlaylistID, let hoveredFolderID {
-                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: hoveredFolderID, atIndex: nil, in: self)
-                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, hoveredFolderID, nil)
-            } else if !cancelled, let draggedPlaylistID, let insert = targetFolderInsert {
-                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: insert.folderID, atIndex: insert.index, in: self)
-                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, insert.folderID, insert.index)
-            } else if !cancelled, let draggedPlaylistID, let topIdx = moveToTopLevelIndex {
-                coordinator?.applyLocalFolderMove(playlistID: draggedPlaylistID, toFolder: nil, atIndex: topIdx, in: self)
-                coordinator?.onMovePlaylistToFolder(draggedPlaylistID, nil, topIdx)
-            } else if finalIndex != startIndex {
-                let movedNode = groupNode.children.remove(at: startIndex)
-                groupNode.children.insert(movedNode, at: finalIndex)
+            switch drop {
+            case .none:
+                break
+            case .sendToDevice(let playlistID, let deviceID):
+                coordinator?.onSendPlaylistToDevice(playlistID, deviceID)
+            case .moveToFolder(let playlistID, let folderID, let index):
+                coordinator?.applyLocalFolderMove(playlistID: playlistID, toFolder: folderID, atIndex: index, in: self)
+                coordinator?.onMovePlaylistToFolder(playlistID, folderID, index)
+            case .reorder(let from, let to):
+                let movedNode = groupNode.children.remove(at: from)
+                groupNode.children.insert(movedNode, at: to)
                 coordinator?.commitReorder(group: groupNode, in: self)
             }
             if wasExpandedFolder {
