@@ -150,8 +150,20 @@ import MediaKit
         let activity = activities.list.selected
         let effective = display.resolvedMode
         let position = preview ?? plot.scrub.proposed ?? playback.position
-        let key = "\(track?.id ?? "")|\(effective.rawValue)|\(activity?.id ?? "")|\(effective == .lyrics ? (display.lyricIndex ?? -1) : -1)|\(playback.error)"
-        let presentationChanged = key != lastPresentation
+        var input = PlayerLCDPresentation.Input()
+        input.track = track.map {
+            PlayerLCDPresentation.Track(id: $0.id, title: $0.title, artist: $0.artist, album: $0.album, path: $0.path ?? "",
+                                        playbackTitle: $0.playbackTitle, playbackSubtitle: $0.playbackSubtitle)
+        }
+        input.playing = playback.playing; input.error = playback.error
+        input.position = position; input.duration = playback.duration; input.rate = playback.rate
+        input.mode = display.mode; input.effectiveMode = effective
+        input.lyrics = display.lyrics; input.lyricIndex = display.lyricIndex
+        input.showsRemaining = display.showsRemaining; input.idleDetail = display.idleDetail
+        input.activity = activity; input.activityCount = activities.list.items.count
+        input.hovered = hovered
+        let shown = PlayerLCDPresentation(input)
+        let presentationChanged = shown.contentKey != lastPresentation
         if presentationChanged {
             // Crossfade content only. The shared placeholder, clock and glass
             // remain stable when moving between tracks with identical artwork.
@@ -161,72 +173,49 @@ import MediaKit
                     view.layer?.add(fade, forKey: "trackContent")
                 }
             }
-            lastPresentation = key
+            lastPresentation = shown.contentKey
         }
         mode.isEnabled = track != nil
         mode.isHidden = true
-        let canChangeView = track != nil || activity != nil || !activities.list.items.isEmpty
         for view in [previousMode, nextMode] {
-            let opacity: CGFloat = hovered && canChangeView ? 1 : 0
-            fade(view, to: opacity, animated: hoverChanged)
-            view.isEnabled = canChangeView
+            fade(view, to: hovered && shown.canChangeView ? 1 : 0, animated: hoverChanged)
+            view.isEnabled = shown.canChangeView
         }
-        let symbols: [PlayerLCDMode: String] = [.title: "text.alignleft", .spectrum: "chart.bar.fill", .waveform: "waveform", .lyrics: "quote.bubble"]
-        mode.setSymbol(symbols[display.mode] ?? "text.alignleft", size: 10)
-        mode.toolTip = "Display: \(display.mode.rawValue.capitalized)"
-        let showTitle = effective == .title
-        let available = track != nil && playback.error.isEmpty && activity == nil
-        cover.isHidden = !available
+        mode.setSymbol(shown.modeSymbol, size: 10)
+        mode.toolTip = shown.modeToolTip
+        let available = shown.available
+        cover.isHidden = shown.coverHidden
         reveal.isHidden = true
         reveal.isEnabled = track.map { display.canReveal($0.id) } ?? false
         cover.isEnabled = reveal.isEnabled
-        more.isHidden = !available || !showTitle
-        more.isEnabled = available && showTitle
-        elapsed.isHidden = !available || effective == .spectrum || effective == .lyrics
-        remaining.isHidden = elapsed.isHidden
-        setSpinning(activity?.state == .running && activity?.fraction == nil)
-        for view in [backActivity, nextActivity, cancel, indicator] { view.isHidden = activity == nil && activities.list.items.isEmpty }
-        cancel.isHidden = activity == nil
-        indicator.stringValue = activities.list.items.isEmpty ? "" : String(repeating: "•", count: min(5, activities.list.items.count))
-        if let activity {
-            hoverTime.isHidden = true
-            title.setText(activity.title); subtitle.stringValue = activity.detail
-            title.isHidden = false; subtitle.isHidden = false
-            plot.activity = activity; plot.needsDisplay = true
-            cancel.isEnabled = activity.cancellable || activity.state != .running
-            cancel.setSymbol(activity.state == .failed ? "xmark" : activity.state == .completed ? "checkmark" : "xmark", size: 10)
-        } else if !playback.error.isEmpty {
-            title.setText("⚠ " + playback.error); title.isHidden = false; subtitle.isHidden = true
-            plot.activity = nil
-        } else if track == nil {
-            title.setText(""); subtitle.stringValue = display.idleDetail
-            title.isHidden = true; subtitle.isHidden = display.idleDetail.isEmpty
-            plot.activity = nil
-        } else {
-            plot.activity = nil
-            title.isHidden = !showTitle && effective != .lyrics
-            subtitle.isHidden = title.isHidden
-            if effective == .lyrics {
-                let index = display.lyricIndex
-                title.setText(index.map { display.lyrics[$0].text.isEmpty ? "♪" : display.lyrics[$0].text } ?? "♪")
-                let next = index.map { $0 + 1 } ?? 0
-                subtitle.stringValue = next < display.lyrics.count ? display.lyrics[next].text : ""
-            } else {
-                title.setText(track?.playbackTitle ?? (track?.title.isEmpty == false ? track!.title : URL(fileURLWithPath: track?.path ?? "").lastPathComponent))
-                subtitle.stringValue = track?.playbackSubtitle ?? [track?.artist ?? "", track?.album ?? ""].filter { !$0.isEmpty }.joined(separator: " — ")
-            }
+        more.isHidden = shown.moreHidden
+        more.isEnabled = !shown.moreHidden
+        elapsed.isHidden = shown.timeHidden
+        remaining.isHidden = shown.timeHidden
+        setSpinning(shown.spinning)
+        for view in [backActivity, nextActivity, cancel, indicator] { view.isHidden = shown.activityControlsHidden }
+        cancel.isHidden = shown.cancelHidden
+        indicator.stringValue = shown.indicator
+        if activity != nil { hoverTime.isHidden = true }
+        title.setText(shown.titleText); subtitle.stringValue = shown.subtitleText
+        title.isHidden = shown.titleHidden; subtitle.isHidden = shown.subtitleHidden
+        plot.activity = activity
+        if activity != nil {
+            plot.needsDisplay = true
+            cancel.isEnabled = shown.cancelEnabled
+            cancel.setSymbol(shown.cancelSymbol, size: 10)
         }
-        title.canAnimate = playback.playing && activity == nil && isDisplayVisible && (effective == .title || effective == .lyrics)
-        let trackOpacity: CGFloat = track != nil && !playback.playing && activity == nil ? 0.65 : 1
+        title.canAnimate = shown.textScrolls && isDisplayVisible
+        let trackOpacity = CGFloat(shown.metadataOpacity)
         let spectrumOverlay = (available || plot.isReleasingSpectrum) && effective == .spectrum
         let active = MacWindowLifecycle.shared.isWindowVisuallyActive(window)
         let metadataOpacity: CGFloat = spectrumOverlay ? 0 : trackOpacity * (active ? 1 : 0.45)
         fade(title, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
         fade(subtitle, to: metadataOpacity, animated: hoverChanged && spectrumOverlay)
-        fade(more, to: hovered && available && showTitle ? 1 : 0, animated: hoverChanged)
+        fade(more, to: shown.moreVisible ? 1 : 0, animated: hoverChanged)
         if playback.duration > 0 || elapsed.stringValue.isEmpty || track == nil {
-            let nextElapsed = (playback.duration > 0 ? time(position) : "--:--") + (playback.rate == 1 ? "" : " · \(playback.rate)×")
-            let nextRemaining = playback.duration > 0 ? (display.showsRemaining ? "−" + time(max(0, playback.duration - position)) : time(playback.duration)) : "--:--"
+            let nextElapsed = shown.elapsedText
+            let nextRemaining = shown.remainingText
             if timeTrackID != track?.id, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 for view in [elapsed, remaining] {
                     let fade = CATransition(); fade.type = .fade; fade.duration = 0.18
@@ -261,7 +250,7 @@ import MediaKit
             } else { cover.showArtwork(nil, key: nil) }
 
         }
-        setAccessibilityValue([activity?.title ?? track?.title ?? "", subtitle.stringValue, time(position), effective.rawValue].joined(separator: ", "))
+        setAccessibilityValue(shown.accessibilityValue)
         if presentationChanged || hoverChanged { needsLayout = true; layoutSubtreeIfNeeded() }
 
     }
@@ -442,7 +431,7 @@ import MediaKit
         for child in view.subviews { if let found = findVolumeSlider(in: child) { return found } }
         return nil
     }
-    private func time(_ value: Double) -> String { let n = Int(max(0, value.isFinite ? value : 0)); return n >= 3600 ? String(format: "%d:%02d:%02d", n / 3600, n / 60 % 60, n % 60) : String(format: "%d:%02d", n / 60, n % 60) }
+    private func time(_ value: Double) -> String { PlayerLCDPresentation.time(value) }
     @objc private func previousLCDMode() { changeLCDMode(-1) }
     @objc private func nextLCDMode() { changeLCDMode(1) }
     private func changeLCDMode(_ direction: Int) {
