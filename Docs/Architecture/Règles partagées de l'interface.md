@@ -8,11 +8,15 @@ Depuis le 2026-11-27, les décisions de l'interface ne sont plus prises dans les
 | `SidebarRules` | `Sources/iPodKit/SidebarRules.swift` | Les lignes qu'on peut glisser, le point d'insertion, ce que fait un dépôt (vers un iPod, dans un dossier, réordonnancement) et le menu contextuel d'une playlist | `SidebarMac.swift` | `SidebarRulesTests` |
 | `PlayerLCDPresentation` | `Sources/MediaKit/PlayerLCDPresentation.swift` | Ce que le LCD affiche : priorité activité, puis erreur, puis piste, puis repos ; éléments visibles selon le mode ; textes, temps, paroles, vitesse ; indicateurs d'activité ; estompage en pause ; clé de fondu | `PlayerLCDContentMac.swift` (animations, pochettes, tracé) | `PlayerLCDPresentationTests` |
 | `PlayerHeaderRules` | `Sources/iPodKit/PlayerHeaderRules.swift` | La page qui possède la recherche, et ce qui s'affiche selon la largeur (champ, loupe ou rien ; repli sous 900 pt) ; l'action, le symbole et le libellé du bouton Play (pause, lancer la sélection, ou Stop avec ⌥) ; le niveau du haut-parleur ; l'ouverture unique de la fenêtre au lancement | `WindowChromeMac.swift`, `ToolbarPlayerMac.swift` | `PlayerHeaderRulesTests` |
+| `PlaybackClock` + `PlaybackRules` | `Sources/MediaKit/PlaybackClock.swift` | La position de lecture entre deux rapports du moteur : avancée selon le temps écoulé et la vitesse, figée sur un seek en attente, confirmations périmées ignorées. Plus quand Précédent revient au début (après 3 s) et les vitesses permises pour la parole | `PlaybackController` (`iPod Pro Max/Library/`) | `PlaybackClockTests` |
 
 ## Règles à suivre
 - **Toute nouvelle décision d'interface** (visibilité, texte, action, ordre) va dans l'un de ces modules, ou dans un nouveau module du même genre, jamais dans un fichier `*Mac.swift`.
 - **Ces modules sont appelés à chaque événement** : mouvement du pointeur, avancée de la lecture, rafraîchissement. Ils restent en O(1) ou O(lignes), sans allocation inutile et sans accès disque.
-- **Les tests passent par l'interface du module**, sans fenêtre : `swift test --filter "PlaylistEdits|SidebarRules|PlayerLCDPresentation|PlayerHeaderRules"`.
+- **Les tests passent par l'interface du module**, sans fenêtre : `swift test --filter "PlaylistEdits|SidebarRules|PlayerLCDPresentation|PlayerHeaderRules|PlaybackClock"`.
+
+## Ce dont PlaybackController dépend dans l'app
+Seul `PlaybackController.host` relie le contrôleur au reste de l'app : remise à zéro de la file, pistes ajoutées, lancement d'une sélection, lignes de bibliothèque pour un dépôt dans la file, présence du lecteur. Il est rempli au lancement dans `App.swift`.
 
 ## Reste à faire
-- `PlaybackController` dépend encore de callbacks remplis au lancement par d'autres fichiers. Il devrait lancer lui-même la lecture, aller dans MediaKit et être testé avec un faux moteur audio.
+- Le contrôleur lui-même reste dans la cible de l'app : il dépend de `TrackRow`, de `PlayerDisplayController`, des moteurs par plateforme et de SwiftCrossUI. Pour le tester avec un faux moteur audio, il faudrait d'abord déplacer `TrackRow` et le protocole `AudioEngine` dans MediaKit.

@@ -41,11 +41,20 @@ extension AudioEngine {
     @SwiftCrossUI.Published private(set) var queueRevision = 0
     private(set) var transportAnimationNonce = 0
     private(set) var queueRows: [TrackRow] = []
-    var onQueueReset: (() -> Void)?
-    var onEnqueue: (([TrackRow]) -> Void)?
-    var startSelection: ((TrackRow, [TrackRow]) -> Void)?
-    var libraryRowsProvider: ([String]) -> [TrackRow] = { _ in [] }
-    var onPresenceChanged: ((Bool) -> Void)?
+    /// What the controller needs from the app, set once at launch: the only seam to the rest of it.
+    struct Host {
+        /// The queue was replaced or emptied.
+        var didReset: () -> Void = {}
+        /// Rows entered the queue (to remember where playback came from).
+        var didEnqueue: ([TrackRow]) -> Void = { _ in }
+        /// Starts playback from a selection the way the app does (nil: `start(_:in:)`).
+        var startSelection: ((TrackRow, [TrackRow]) -> Void)?
+        /// Library rows for track IDs dropped on the queue.
+        var rows: ([String]) -> [TrackRow] = { _ in [] }
+        /// A track started (true) or playback closed (false).
+        var presenceChanged: (Bool) -> Void = { _ in }
+    }
+    var host = Host()
     private var engineStorage: AudioEngine?
     var activeEngine: AudioEngine? { engineStorage }
     private var session: (any MediaSession)?
@@ -57,8 +66,16 @@ extension AudioEngine {
     }
     private var spokenRates: [PlaybackContentKind: Double] = [:]
     private var replacingTrack = false
-    private var pendingSeek: Double?
-    private var anchorTime = ProcessInfo.processInfo.systemUptime
+    /// Position, duration, rate and pending seek (shared, tested in MediaKit); the published
+    /// fields above mirror it for the views.
+    private var clock = PlaybackClock()
+    private var now: Double { ProcessInfo.processInfo.systemUptime }
+    private func publishClock() {
+        if position != clock.position { position = clock.position }
+        if duration != clock.duration { duration = clock.duration }
+        if rate != clock.rate { rate = clock.rate }
+        if playing != clock.playing { playing = clock.playing }
+    }
     private var visible = true
     private var unmutedVolume = 0.8
     private var engine: AudioEngine {
@@ -95,9 +112,7 @@ extension AudioEngine {
         }
     }
     var exactPosition: Double {
-        if let pendingSeek { return min(duration, pendingSeek + (playing ? (ProcessInfo.processInfo.systemUptime - anchorTime) * rate : 0)) }
-        if let current = engineStorage?.currentPosition, current.isFinite { return max(0, current) }
-        return min(duration, position + (playing ? (ProcessInfo.processInfo.systemUptime - anchorTime) * rate : 0))
+        clock.current(at: now, enginePosition: engineStorage?.currentPosition)
     }
     private func publishSession(positionOverride: Double? = nil) {
         if session == nil, track != nil { session = sessionFactory(); configureSessionCommands() }
@@ -115,8 +130,8 @@ extension AudioEngine {
     func enqueue(_ incoming: [TrackRow], next: Bool = false, at insertion: Int? = nil) {
         let valid = incoming.filter { $0.path != nil }
         guard let first = valid.first else { return }
-        if track == nil { if let startSelection { startSelection(first, valid) } else { start(first, in: valid) }; return }
-        onEnqueue?(valid)
+        if track == nil { if let start = host.startSelection { start(first, valid) } else { start(first, in: valid) }; return }
+        host.didEnqueue(valid)
         for row in valid { rows[row.id] = row }
         if let insertion { queue.insert(valid.map(\.id), at: insertion) }
         else if next { queue.insert(valid.map(\.id), at: 0) }
@@ -130,36 +145,32 @@ extension AudioEngine {
     func clearUpcoming() { queue.clearUpcoming(); refreshQueue(); publishSession() }
     func setRepeat(_ mode: PlaybackQueue.RepeatMode) { repeatMode = mode; queue.repeatMode = mode; publishSession() }
     func setRate(_ value: Double) {
-        guard let track, track.playbackKind != .music, [0.75, 1, 1.25, 1.5, 2].contains(value) else { return }
-        position = exactPosition; anchorTime = ProcessInfo.processInfo.systemUptime
-        rate = value; spokenRates[track.playbackKind] = value; engineStorage?.setRate(value); publishSession()
+        guard let track, PlaybackRules.canSetRate(value, spoken: track.playbackKind != .music) else { return }
+        clock.setRate(value, at: now, enginePosition: engineStorage?.currentPosition); publishClock()
+        spokenRates[track.playbackKind] = value; engineStorage?.setRate(value); publishSession()
     }
     private func configure(_ engine: AudioEngine) {
         engineStorage = engine
         engine.onProgress = { [weak self] position, duration in
             guard let self, self.track != nil else { return }
-            let oldDuration = self.duration
-            if self.pendingSeek == nil {
-                self.position = max(0, position.isFinite ? position : 0)
-                self.anchorTime = ProcessInfo.processInfo.systemUptime
-            }
-            self.duration = max(0, duration.isFinite ? duration : 0)
-            if oldDuration == 0, self.duration > 0 { self.publishSession() }
+            let durationKnown = self.clock.progress(position: position, duration: duration, at: self.now)
+            self.publishClock()
+            if durationKnown { self.publishSession() }
         }
         engine.onPlaybackState = { [weak self] playing in
             guard let self, !self.replacingTrack, self.track != nil, self.playing != playing else { return }
-            self.position = self.exactPosition; self.anchorTime = ProcessInfo.processInfo.systemUptime
-            self.playing = playing; self.publishSession()
+            self.clock.setPlaying(playing, at: self.now, enginePosition: self.engineStorage?.currentPosition)
+            self.publishClock(); self.publishSession()
         }
         engine.onEnd = { [weak self] in self?.next(automatic: true) }
         engine.onError = { [weak self] message in
             guard let self else { return }
-            self.engine.stop(); self.playing = false; self.error = message; self.publishSession()
+            self.engine.stop(); self.clock.stop(); self.publishClock(); self.error = message; self.publishSession()
         }
         engine.setVolume(volume)
     }
     func start(_ track: TrackRow, in displayed: [TrackRow]) {
-        onQueueReset?(); onEnqueue?(displayed)
+        host.didReset(); host.didEnqueue(displayed)
         rows = Dictionary(displayed.filter { $0.path != nil }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         guard rows[track.id] != nil else { return }
         queue.start(ids: displayed.filter { $0.path != nil }.map(\.id), at: track.id)
@@ -173,12 +184,10 @@ extension AudioEngine {
         let revision = generation
         analysis?.cancel()
         engine.stop()
-        pendingSeek = nil
-        track = row; position = 0; duration = 0; error = ""; samples = []; playing = true
-        anchorTime = ProcessInfo.processInfo.systemUptime
-        rate = row.playbackKind == .music ? 1 : (spokenRates[row.playbackKind] ?? 1)
+        clock.load(rate: row.playbackKind == .music ? 1 : (spokenRates[row.playbackKind] ?? 1), at: now)
+        track = row; error = ""; samples = []; publishClock()
         refreshQueue()
-        onPresenceChanged?(true)
+        host.presenceChanged(true)
         engine.load(URL(fileURLWithPath: path))
         guard error.isEmpty else { return }
         engine.setVolume(volume)
@@ -204,14 +213,14 @@ extension AudioEngine {
     func toggle() {
         guard track != nil else { return }
         if !error.isEmpty, let track { load(track); return }
-        if !playing, duration > 0, position >= duration { seek(0) }
+        if !playing, clock.atEnd { seek(0) }
         setPlaying(!playing)
     }
     func setPlaying(_ value: Bool) {
         guard track != nil else { return }
         if value && !error.isEmpty, let track { load(track); return }
         guard playing != value else { return }
-        position = exactPosition; anchorTime = ProcessInfo.processInfo.systemUptime; playing = value
+        clock.setPlaying(value, at: now, enginePosition: engineStorage?.currentPosition); publishClock()
         if playing { engine.play() } else { engine.pause() }
         publishSession()
     }
@@ -220,27 +229,26 @@ extension AudioEngine {
             #if canImport(AppKitBackend)
             close()
             #else
-            engine.pause(); playing = false
-            if automatic { position = duration }
+            engine.pause()
+            if automatic { clock.finish() } else { clock.stop() }
+            publishClock()
             #endif
             return
         }
         load(row)
     }
     func previous() {
-        if exactPosition > 3 { seek(0); return }
+        if PlaybackRules.previousRestarts(position: exactPosition) { seek(0); return }
         if let id = queue.previous(), let row = rows[id] { load(row) }
     }
     func seek(_ seconds: Double) {
         guard seconds.isFinite, track != nil else { return }
-        let value = min(max(0, seconds), duration)
-        pendingSeek = value; position = value; anchorTime = ProcessInfo.processInfo.systemUptime
+        let value = clock.beginSeek(to: seconds, at: now); publishClock()
         let revision = generation
         publishSession(positionOverride: value)
         engine.seek(value) { [weak self] in
-            guard let self, self.generation == revision, self.pendingSeek == value else { return }
-            self.pendingSeek = nil; self.position = value; self.anchorTime = ProcessInfo.processInfo.systemUptime
-            self.publishSession(positionOverride: value)
+            guard let self, self.generation == revision, self.clock.completeSeek(value, at: self.now) else { return }
+            self.publishClock(); self.publishSession(positionOverride: value)
         }
     }
     func setVolume(_ value: Double) {
@@ -279,12 +287,12 @@ extension AudioEngine {
         let pending = analysis; close(); await pending?.value
     }
     func close() {
-        onQueueReset?()
-        pendingSeek = nil
+        host.didReset()
+        clock.reset()
         generation += 1; analysis?.cancel(); analysis = nil
         engineStorage?.stop(); engineStorage = nil; queue.clear(); rows = [:]
-        track = nil; playing = false; samples = []; position = 0; duration = 0; error = ""
+        track = nil; samples = []; publishClock(); error = ""
         refreshQueue(); publishSession()
-        onPresenceChanged?(false)
+        host.presenceChanged(false)
     }
 }

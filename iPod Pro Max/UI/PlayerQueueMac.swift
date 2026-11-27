@@ -153,7 +153,7 @@ import SwiftCrossUI
         let ids = queueIDs(from: pasteboard)
         if !ids.isEmpty { playback.moveInQueue(ids, to: offset); return true }
         guard pasteboard.string(forType: .string) == TrackDrag.payload else { return false }
-        let tracks = playback.libraryRowsProvider(TrackDrag.ids)
+        let tracks = playback.host.rows(TrackDrag.ids)
         guard !tracks.isEmpty else { return false }
         playback.enqueue(tracks, at: offset); return true
     }

@@ -160,15 +160,15 @@ struct ContentView: View {
                 else { await chooseAndAdd(.audiobooks, title: "Choose Audiobooks Folder") }
             } }
             AppCommands.addPhotosFolder = { Task { await addPhotosFolder() } }
-            PlaybackController.shared.onQueueReset = { PlayerDisplayController.shared.clearSources() }
-            PlaybackController.shared.onEnqueue = { rows in recordPlaybackSource(rows) }
-            PlaybackController.shared.startSelection = { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } }
+            PlaybackController.shared.host.didReset = { PlayerDisplayController.shared.clearSources() }
+            PlaybackController.shared.host.didEnqueue = { rows in recordPlaybackSource(rows) }
+            PlaybackController.shared.host.startSelection = { row, rows in if let library { startPlayback(row, displayed: rows, library: library) } }
             PlayerDisplayController.shared.canReveal = { id in
                 library?.trackIDs.contains(id) == true || audiobookRows.contains(where: { $0.id == id }) || PodcastController.shared.episodeIDs.contains(UUID(uuidString: id) ?? UUID())
             }
             PlayerDisplayController.shared.favoriteValue = { id in library?.allRows.first { $0.id == id }?.isFavorite }
             PlayerDisplayController.shared.onFavorite = { id, favorite in setFavorite(favorite, ids: [id]) }
-            PlaybackController.shared.libraryRowsProvider = { ids in
+            PlaybackController.shared.host.rows = { ids in
                 let wanted = Set(ids)
                 let candidates = (library?.allRows ?? []) + audiobookRows + PodcastController.shared.shows.flatMap { show in
                     show.episodes.compactMap { episode -> TrackRow? in
@@ -261,7 +261,7 @@ struct ContentView: View {
                 #endif
             }
             #if !canImport(AppKitBackend)
-            PlaybackController.shared.onPresenceChanged = { visible in
+            PlaybackController.shared.host.presenceChanged = { visible in
                 if visible { playerVisible = true }
                 else {
                     Task {
