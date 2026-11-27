@@ -45,9 +45,9 @@
         static let launchPanelEnabled = ProcessInfo.processInfo.environment["IPPM_NO_LAUNCH_PANEL"] == nil
         /// Longest the launch may wait: a slow iPod must never keep the app from showing.
         private static let launchTimeout: UInt64 = 4_000_000_000
-        private var launchIsReady = false
+        /// Reveals the window once, when ready (shared rules).
+        private var launch = PlayerHeaderRules.Launch()
         private var launchTimeoutTask: Task<Void, Never>?
-        private var revealedInitialWindow = false
         /// The sidebar's list view, registered when AppKit creates it.
         weak var sidebarAnchor: NSView?
         /// A marker inside the main view's content.
@@ -187,13 +187,13 @@
         }
         func checkPlayerHeaderSearch() async -> Bool {
             guard let window else { return false }
-            let savedFrame = window.frame, savedOwner = searchOwner, savedText = searchField.stringValue
-            let savedPrompt = searchField.placeholderString, savedChange = onSearchChange, savedExpanded = searchExpanded
+            let savedFrame = window.frame, savedSearch = search, savedText = searchField.stringValue
+            let savedPrompt = searchField.placeholderString, savedChange = onSearchChange
             let savedResponder = window.firstResponder
             defer {
-                searchOwner = savedOwner; onSearchChange = savedChange
+                search = savedSearch; onSearchChange = savedChange
                 searchField.stringValue = savedText; searchField.placeholderString = savedPrompt
-                searchExpanded = savedExpanded; window.setFrame(savedFrame, display: false)
+                window.setFrame(savedFrame, display: false)
                 updateSearchVisibility(); layoutPlayerHeader(); window.makeFirstResponder(savedResponder)
             }
             let owner = NSObject()
@@ -259,7 +259,7 @@
             if Self.launchPanelEnabled {
                 window.alphaValue = 0
                 // Ready before the window existed: reveal once its chrome and content are laid out.
-                if launchIsReady { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.revealWhenReady() } } }
+                if launch.ready { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.revealWhenReady() } } }
             }
             MacWindowLifecycle.shared.beforeTerminate = { try await ApplicationLifecycle.shared.prepareForExit() }
             MacWindowLifecycle.shared.onTerminationError = { ApplicationLifecycle.shared.report($0) }
@@ -333,15 +333,14 @@
 
         /// Everything the first page shows is loaded (or the time limit passed).
         private func launchReady() {
-            launchIsReady = true
+            launch.markReady()
             launchTimeoutTask?.cancel()
             launchTimeoutTask = nil
             revealWhenReady()
         }
 
         private func revealWhenReady() {
-            guard launchIsReady, let window, !revealedInitialWindow else { return }
-            revealedInitialWindow = true
+            guard let window, launch.reveal(hasWindow: true) else { return }
             MacLaunchTransition.shared.expand(window)
         }
 
@@ -745,7 +744,8 @@
         private var headerContentObservation: NSKeyValueObservation?
         private let searchField = PlayerSearchField()
         private let searchButton = ToolbarPlaybackButton()
-        private var searchOwner: AnyObject?
+        /// Which page owns the search, and its narrow-window expansion (shared rules).
+        private var search = PlayerHeaderRules.Search()
         private var onSearchChange: (String) -> Void = { _ in }
         private var lastDeliveredSearchText: String?
         private var searchDismissObservers: [NSObjectProtocol] = []
@@ -797,11 +797,11 @@
         }
 
         func isCurrentSearchOwner(_ owner: AnyObject) -> Bool {
-            searchOwner === owner
+            search.isOwner(ObjectIdentifier(owner))
         }
 
         func updateSearchCallback(owner: AnyObject, onChange: @escaping (String) -> Void) {
-            guard searchOwner === owner else { return }
+            guard search.isOwner(ObjectIdentifier(owner)) else { return }
             onSearchChange = onChange
         }
 
@@ -815,8 +815,7 @@
             installFindMenuItem()
             // Pages own the query and whether the native field is shown.
             if visible {
-                let ownerChanged = searchOwner !== owner
-                searchOwner = owner
+                let ownerChanged = search.claim(ObjectIdentifier(owner))
                 onSearchChange = onChange
                 let field = searchField
                 let promptChanged = field.placeholderString != prompt
@@ -831,33 +830,29 @@
                 if ownerChanged || promptChanged || field.isHidden == hasSearchHiddenState {
                     updateSearchVisibility()
                 }
-            } else if searchOwner === owner {
-                searchOwner = nil
+            } else if search.release(ObjectIdentifier(owner)) {
                 updateSearchVisibility()
             }
         }
 
         private var hasSearchHiddenState: Bool {
-            searchOwner != nil && !searchCollapsed
+            search.hasOwner && !searchCollapsed
         }
 
         // Like the Finder's: in a narrow window the search field gives way to a magnifier button, and
         // a click on it brings the field back (focused) until it loses focus empty.
-        private static let searchCollapseWidth: CGFloat = 900
-        private var searchExpanded = false
         private var searchResizeObserver: NSObjectProtocol?
 
         private var searchCollapsed: Bool {
-            guard let window, window.frame.width < Self.searchCollapseWidth else { return false }
-            return !searchExpanded
+            guard let window else { return false }
+            return search.collapsed(windowWidth: window.frame.width)
         }
 
         /// Shows the field, the magnifier, or neither, for the page and the window's width.
         private func updateSearchVisibility(relayoutSynchronously: Bool = false) {
-            let hasSearch = searchOwner != nil
-            if let window, window.frame.width >= Self.searchCollapseWidth { searchExpanded = false }
-            let nextFieldHidden = !hasSearch || searchCollapsed
-            let nextButtonHidden = !(hasSearch && searchCollapsed)
+            let display = window.map { search.display(windowWidth: $0.frame.width) } ?? (search.hasOwner ? .field : .hidden)
+            let nextFieldHidden = display != .field
+            let nextButtonHidden = display != .button
             guard nextFieldHidden != searchField.isHidden || nextButtonHidden != searchButton.isHidden else { return }
             searchField.isHidden = nextFieldHidden
             searchButton.isHidden = nextButtonHidden
@@ -876,7 +871,7 @@
         }
 
         @objc func expandSearch(_ sender: Any?) {
-            searchExpanded = true
+            search.expand()
             updateSearchVisibility(relayoutSynchronously: true)
             // The field has to be on screen before it can take the focus.
             DispatchQueue.main.async { [weak self] in
@@ -902,8 +897,7 @@
         func controlTextDidEndEditing(_ notification: Notification) {
             searchField.setEditing(false)
             guard !preserveSearchFocusAcrossDeactivation,
-                  searchExpanded, let field = notification.object as? NSSearchField, field.stringValue.isEmpty else { return }
-            searchExpanded = false
+                  let field = notification.object as? NSSearchField, search.endEditing(text: field.stringValue) else { return }
             updateSearchVisibility(relayoutSynchronously: true)
         }
 
@@ -921,7 +915,7 @@
 
         @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
             // Only "Find…" is ours to validate here; it is available while a page has a search field.
-            item.keyEquivalent == "f" ? searchOwner != nil : true
+            item.keyEquivalent == "f" ? search.canFind : true
         }
 
         private var findMonitor: Any?
@@ -934,7 +928,7 @@
             findMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
                 guard let self, let window, event.window === window,
                       event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                      event.charactersIgnoringModifiers == "f", self.searchOwner != nil else { return event }
+                      event.charactersIgnoringModifiers == "f", self.search.canFind else { return event }
                 if #available(macOS 11.0, *) { MainActor.assumeIsolated { self.findInPage(nil) } }
                 return nil
             }
@@ -1013,7 +1007,7 @@
             guard preserveSearchFocusAcrossDeactivation,
                   let window,
                   MacWindowLifecycle.shared.isWindowVisuallyActive(window),
-                  searchOwner != nil else { return }
+                  search.hasOwner else { return }
 
             if let ev = NSApp.currentEvent,
                ev.type == .leftMouseDown,
@@ -1059,8 +1053,7 @@
                 window.makeFirstResponder(nil)
             }
             searchField.setEditing(false)
-            if collapsingExpanded && searchExpanded && searchField.stringValue.isEmpty {
-                searchExpanded = false
+            if collapsingExpanded && search.endEditing(text: searchField.stringValue) {
                 updateSearchVisibility(relayoutSynchronously: true)
             }
             if flushDisplay {
@@ -1163,7 +1156,7 @@
             searchButton.setSymbol("magnifyingglass", size: 15)
             searchButton.isBordered = false; searchButton.target = self; searchButton.action = #selector(expandSearch(_:))
             searchButton.setAccessibilityLabel("Search"); searchButton.toolTip = "Search"
-            searchField.isHidden = searchOwner == nil; searchButton.isHidden = true
+            searchField.isHidden = !search.hasOwner; searchButton.isHidden = true
             for view in [player.transport, player.volumeView, player.route, player.lcd, queueButton, searchField, searchButton] { header.addSubview(view) }
             content.addSubview(header, positioned: .above, relativeTo: nil)
             attachFrameBackdrop(to: content, below: header)

@@ -37,3 +37,5 @@ Package.swift
 L’application principale est désormais la cible `iPodProMaxApp`, avec ses sources dans `iPod Pro Max/` (App, UI, Library, Platforms, Resources). Le package racine réunit cette cible, les trois bibliothèques et la CLI. AppModel et AppUI ci-dessus restent des propositions historiques, pas des cibles existantes. L’ancienne application SwiftUI a été retirée du dépôt (commit `9461a18`).
 
 iPodKit, MediaKit, DeviceKit et le CLI existent : voir [[Package Swift]]. Écarts avec le plan ci-dessus : une seule cible MediaKit au lieu de MediaKitApple et MediaKitPortable, un SHA-1 maison au lieu de swift-crypto, une cible C `CWinDevices` pour Windows. Les modèles de bibliothèque (`LibraryTrack`, `DeviceSyncRecord`…) sont dans iPodKit, parce que `SyncEngine` en dépend ; ils pourront passer dans AppModel en phase 3. Voir [[ADR-006 Noyau portable sans dépendance Apple]].
+
+Les décisions de l'interface partagées entre les backends : [[Règles partagées de l'interface]].

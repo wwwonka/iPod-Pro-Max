@@ -2,6 +2,7 @@
 import AppKit
 import AVKit
 import SwiftCrossUI
+import iPodKit
 
 @MainActor final class ToolbarControlGroup: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
@@ -44,7 +45,11 @@ import SwiftCrossUI
     private var lastShowsStop = false
     private var lastAnimationNonce = 0
     private var pendingTransportAnimation: (trackID: String?, playing: Bool)?
-    private var showsStop: Bool { headerHovered && optionHeld && controller.track != nil }
+    /// The play button's state and action (shared rules).
+    private var transportState: PlayerHeaderRules.Transport {
+        .init(hasTrack: controller.track != nil, playing: controller.playing, hasSelection: selection != nil, optionHovered: headerHovered && optionHeld)
+    }
+    private var showsStop: Bool { transportState.stopArmed }
     var trailingControlsWidth: CGFloat = 194
     static let maximumVolumeSliderWidth: CGFloat = 117
     private(set) var volumeSliderWidth: CGFloat = maximumVolumeSliderWidth
@@ -259,23 +264,23 @@ import SwiftCrossUI
     private func refresh() {
         let routePlayer = (controller.activeEngine as? PlatformAudioEngine)?.routePlayer
         if route.player !== routePlayer { route.player = routePlayer }
-        previous.isEnabled = controller.track != nil; next.isEnabled = controller.track != nil
-        play.isEnabled = controller.track != nil || selection != nil
-        play.matchesDisabledTint = controller.track == nil
+        let state = transportState
+        previous.isEnabled = state.skipEnabled; next.isEnabled = state.skipEnabled
+        play.isEnabled = state.playEnabled
+        play.matchesDisabledTint = !state.hasTrack
         if controller.transportAnimationNonce != lastAnimationNonce {
             lastAnimationNonce = controller.transportAnimationNonce
             pendingTransportAnimation = (controller.track?.id, controller.playing)
         }
-        let stopChanged = showsStop != lastShowsStop
-        lastShowsStop = showsStop
-        let playPauseAnimated = !showsStop && pendingTransportAnimation?.trackID == controller.track?.id && pendingTransportAnimation?.playing == controller.playing
+        let stopChanged = state.stopArmed != lastShowsStop
+        lastShowsStop = state.stopArmed
+        let playPauseAnimated = !state.stopArmed && pendingTransportAnimation?.trackID == controller.track?.id && pendingTransportAnimation?.playing == controller.playing
         let animate = stopChanged || playPauseAnimated
-        let symbol = showsStop ? "stop.fill" : controller.playing ? "pause.fill" : "play.fill"
-        play.setSymbol(symbol, size: 20, animated: animate)
-        play.setAccessibilityLabel(showsStop ? "Stop" : controller.playing ? "Pause" : "Play")
+        play.setSymbol(state.symbol, size: 20, animated: animate)
+        play.setAccessibilityLabel(state.label)
         if playPauseAnimated || pendingTransportAnimation?.trackID != controller.track?.id { pendingTransportAnimation = nil }
         if slider.doubleValue != controller.volume { slider.setVolume(controller.volume, animated: true) }
-        let level = controller.volume == 0 ? 0 : controller.volume < 0.33 ? 1 : controller.volume < 0.67 ? 2 : 3
+        let level = PlayerHeaderRules.speakerLevel(volume: controller.volume)
         if level != speakerLevel {
             let oldLevel = speakerLevel
             speakerLevel = level
@@ -297,8 +302,13 @@ import SwiftCrossUI
         toggle()
     }
     @objc func toggle() {
-        if controller.track != nil { controller.toggle() }
-        else if let selection { if let onStart { onStart(selection, selectionRows) } else { controller.start(selection, in: selectionRows) } }
+        switch transportState.action {
+        case .toggle, .stop: controller.toggle()
+        case .startSelection:
+            guard let selection else { return }
+            if let onStart { onStart(selection, selectionRows) } else { controller.start(selection, in: selectionRows) }
+        case .none: break
+        }
     }
     @objc private func goPrevious() { controller.previous() }
     @objc private func goNext() { controller.next() }
